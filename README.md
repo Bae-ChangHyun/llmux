@@ -1,105 +1,230 @@
-# vLLM Container Manager
+<div align="center">
 
-vLLM을 docker로 서빙할때 여러 모델을 손쉽게 바꿔가며 서빙하기 위한 도구입니다.
+<img src="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-light.png" alt="vLLM Logo" width="300"/>
 
-## Usage
+# vLLM Compose
 
-### Method 1: run.sh 스크립트 사용
+**Docker Compose 기반 vLLM 멀티 모델 서빙 관리 도구**
 
-```bash
-# 프로필 목록 보기
-./run.sh list
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)](https://docs.docker.com/compose/)
+[![vLLM](https://img.shields.io/badge/vLLM-v0.13.0-green?style=flat-square)](https://github.com/vllm-project/vllm)
+[![NVIDIA](https://img.shields.io/badge/NVIDIA-GPU-76B900?style=flat-square&logo=nvidia)](https://www.nvidia.com/)
 
-# 컨테이너 시작
-./run.sh {profile} up
+[빠른 시작](#-빠른-시작) • [사용법](#-사용법) • [프로필 추가](#-새-모델-프로필-추가하기) • [LoRA 설정](#-lora-adapter-설정)
 
-# 컨테이너 중지
-./run.sh {profile} down
-
-# 로그 확인
-./run.sh {profile} logs
-
-# 컨테이너 상태 확인
-./run.sh {profile} status
-
-# 실행 중인 모든 vLLM 컨테이너 보기
-./run.sh ps
-
-# GPU 사용량 확인
-./run.sh gpu
-```
-
-### 방법 2: docker compose 직접 사용
-
-스크립트 없이 docker compose 명령어로 직접 실행할 수 있습니다. <br>
-{profile}에 원하는 프로필명을 넣으세요
-
-```bash
-# 시작 (--env-file 두 번 사용)
-docker compose --env-file .env.common --env-file profiles/{profile}.env -p {profile} up -d
-
-# 중지
-docker compose -p {profile} down
-
-# 로그 확인
-docker logs -f vlm
-```
-
-**LoRA 사용 시:**
-```bash
-# LORA_OPTIONS 환경변수 설정 후 실행
-export LORA_OPTIONS="--enable-lora --max-loras 2 --max-lora-rank 16 --lora-modules ocr-li=/app/lora/qwen3vl_li/lora_model"
-docker compose --env-file .env.common --env-file profiles/vlm.env -p vlm up -d
-```
-
-## 새 모델 추가하기
-
-1. `config/` 디렉토리에 모델 설정 yaml 추가
-2. `profiles/` 디렉토리에 프로필 env 파일 생성
-   - 네이밍: `{NAME}.env` (파일명이 곧 프로필명)
-
+</div>
 
 ---
 
+## 💡 왜 만들었나?
+
+여러 GPU가 있는 서버에서 vLLM으로 모델 서빙을 하다 보면...
+
+- 이 모델 테스트하려고 올렸다가
+- 저 모델로 바꾸려고 내렸다가
+- 다시 다른 모델 올렸다가
+- GPU 번호 뭐였지? 포트 뭐였지?
+
+**너무 귀찮아서** 만들었습니다.
+
+프로필 파일 하나 만들어두면 `./run.sh vlm up` 한 줄로 끝.
+
+---
+
+## 🎨 구조
+
+```
+vllm-compose/
+├── profiles/              # 모델별 프로필 (.env)
+│   ├── vlm.env
+│   ├── llm.env
+│   └── clova.env
+├── config/                # vLLM 설정 (YAML)
+│   ├── qwen3-vl-30b-a3b-fp8.yaml
+│   └── gpt-oss-120b.yaml
+├── docker-compose.yaml
+├── .env.common            # 공통 설정 (HF Token 등)
+└── run.sh                 # 관리 스크립트
+```
+
+---
+
+## 🚀 빠른 시작
+
+### 사전 요구사항
+
+```bash
+docker --version
+docker compose version
+nvidia-smi
+```
+
+### 1. 저장소 클론
+
+```bash
+git clone https://github.com/Bae-ChangHyun/vllm-compose.git
+cd vllm-compose
+```
+
+### 2. 공통 설정
+
+`.env.common` 파일 생성:
+
+```bash
+HF_TOKEN=your_huggingface_token
+HF_CACHE_PATH=~/.cache/huggingface
+LORA_BASE_PATH=/path/to/lora/adapters  # LoRA 사용시
+```
+
+### 3. 프로필 확인
+
+```bash
+./run.sh list
+```
+
+### 4. 모델 서빙
+
+```bash
+./run.sh vlm up
+```
+
+---
+
+## 📖 사용법
+
+### run.sh 명령어
+
+| 명령어 | 설명 |
+|:---:|:---|
+| `./run.sh list` | 프로필 목록 |
+| `./run.sh {profile} up` | 컨테이너 시작 |
+| `./run.sh {profile} down` | 컨테이너 중지 |
+| `./run.sh {profile} logs` | 로그 보기 |
+| `./run.sh {profile} status` | 상태 확인 |
+| `./run.sh ps` | 실행 중인 컨테이너 |
+| `./run.sh gpu` | GPU 상태 |
+
+### Docker Compose 직접 사용
+
+```bash
+# 시작
+docker compose --env-file .env.common --env-file profiles/vlm.env -p vlm up -d
+
+# 중지
+docker compose -p vlm down
+
+# 로그
+docker logs -f vlm
+```
+
+---
+
+## 🔧 새 모델 프로필 추가하기
+
+### 1. 모델 설정 (config/)
+
+```yaml
+# config/my-model.yaml
+model: huggingface/model-name
+max-model-len: 32768
+gpu-memory-utilization: 0.8
+```
+
+### 2. 프로필 생성 (profiles/)
+
+```bash
+# profiles/mymodel.env
+CONTAINER_NAME=mymodel
+VLLM_PORT=8003
+CONFIG_NAME=my-model
+
+GPU_ID=0
+TENSOR_PARALLEL_SIZE=1
+
+# LoRA (optional)
+ENABLE_LORA=false
+```
+
+### 3. 실행
+
+```bash
+./run.sh mymodel up
+```
+
+---
+
+## 🔗 LoRA Adapter 설정
+
 <details>
-<summary>LoRA Adapter 상세 설정</summary>
+<summary><strong>LoRA 설정 방법</strong></summary>
 
-### LoRA 설정 방법
-
-프로필 파일에서 LoRA 설정을 활성화합니다:
+### 프로필에 LoRA 설정
 
 ```bash
 # profiles/vlm.env
-
-# LoRA Configuration
 ENABLE_LORA=true
 MAX_LORAS=2
 MAX_LORA_RANK=16
-LORA_MODULES=ocr-li=/app/lora/qwen3vl_li/lora_model,ocr-jk=/app/lora/qwen3vl_jk/lora_model
+LORA_MODULES=ocr-li=/app/lora/qwen3vl_li/lora_model
 ```
 
-### LoRA 설정 파라미터
+### 파라미터
 
 | 파라미터 | 설명 |
 |----------|------|
-| `ENABLE_LORA` | LoRA 지원 활성화 (true/false) |
-| `MAX_LORAS` | 동시 처리할 최대 LoRA 수 |
-| `MAX_LORA_RANK` | 허용할 최대 LoRA rank |
-| `LORA_MODULES` | LoRA 모듈 목록 (name=path 형식, 쉼표 구분) |
+| `ENABLE_LORA` | LoRA 활성화 (true/false) |
+| `MAX_LORAS` | 동시 LoRA 수 |
+| `MAX_LORA_RANK` | 최대 rank |
+| `LORA_MODULES` | name=path 형식, 쉼표 구분 |
 
-### LoRA 경로 규칙
+### 경로 매핑
 
-- `.env.common`의 `LORA_BASE_PATH`가 컨테이너의 `/app/lora`에 마운트됩니다
-- `LORA_MODULES`에서는 `/app/lora/` 하위 경로를 사용합니다
-- 예: 호스트의 `/root/working/ocr_finetune/models/finetuned/qwen3vl_li/lora_model`
-  → 컨테이너에서 `/app/lora/qwen3vl_li/lora_model`
+```
+호스트: $LORA_BASE_PATH/qwen3vl_li/lora_model
+컨테이너: /app/lora/qwen3vl_li/lora_model
+```
 
-### VLM LoRA 제한사항
+### VLM LoRA 제한
 
-vLLM의 VLM LoRA 지원에는 제한이 있습니다:
-- Language Model 레이어 LoRA: **지원됨**
-- Vision Encoder 레이어 LoRA: **미지원**
-
-Vision 레이어도 파인튜닝한 경우, `merge_and_unload()`로 병합한 모델을 사용하세요.
+- ✅ Language Model 레이어: 지원
+- ❌ Vision Encoder 레이어: 미지원
 
 </details>
+
+---
+
+## 🐛 문제 해결
+
+<details>
+<summary><strong>컨테이너 시작 안됨</strong></summary>
+
+```bash
+./run.sh {profile} logs
+./run.sh gpu
+```
+
+</details>
+
+<details>
+<summary><strong>GPU 메모리 부족</strong></summary>
+
+`config/{model}.yaml`에서 `gpu-memory-utilization` 값 낮추기
+
+</details>
+
+<details>
+<summary><strong>포트 충돌</strong></summary>
+
+프로필의 `VLLM_PORT` 변경
+
+</details>
+
+---
+
+<div align="center">
+
+**vLLM Compose** - 모델 바꾸기 귀찮을 때
+
+<img src="https://www.docker.com/wp-content/uploads/2022/03/Moby-logo.png" alt="Docker" width="80"/>
+
+</div>
