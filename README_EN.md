@@ -4,13 +4,13 @@
 
 # vLLM Compose
 
-**Docker Compose 기반 vLLM 멀티 모델 서빙 관리 도구**
+**Docker Compose based vLLM Multi-Model Serving Manager**
 
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)](https://docs.docker.com/compose/)
 [![vLLM](https://img.shields.io/badge/vLLM-v0.13.0-green?style=flat-square)](https://github.com/vllm-project/vllm)
 [![NVIDIA](https://img.shields.io/badge/NVIDIA-GPU-76B900?style=flat-square&logo=nvidia)](https://www.nvidia.com/)
 
-[English](README_EN.md) | 한국어
+English | [한국어](README.md)
 
 [Quick Start](#-quick-start) • [Usage](#-usage) • [Add Profile](#-add-new-model-profile) • [LoRA](#-lora-adapter)
 
@@ -20,16 +20,16 @@
 
 ## 💡 Why?
 
-여러 GPU가 있는 서버에서 vLLM으로 모델 서빙을 하다 보면...
+When serving models with vLLM on a multi-GPU server...
 
-- 이 모델 테스트하려고 올렸다가
-- 저 모델로 바꾸려고 내렸다가
-- 다시 다른 모델 올렸다가
-- GPU 번호 뭐였지? 포트 뭐였지?
+- Start this model to test
+- Stop it to switch to another model
+- Start yet another model
+- Wait, which GPU was it? What port?
 
-**너무 귀찮아서** 만들었습니다.
+**Too annoying.** So I built this.
 
-프로필 파일 하나 만들어두면 `./run.sh vlm up` 한 줄로 끝.
+Create a profile file once, then just `./run.sh vlm up`. Done.
 
 ---
 
@@ -37,16 +37,16 @@
 
 ```
 vllm-compose/
-├── profiles/              # 모델별 프로필 (.env)
+├── profiles/              # Model profiles (.env)
 │   ├── vlm.env
 │   ├── llm.env
 │   └── clova.env
-├── config/                # vLLM 설정 (YAML)
+├── config/                # vLLM configs (YAML)
 │   ├── qwen3-vl-30b-a3b-fp8.yaml
 │   └── gpt-oss-120b.yaml
 ├── docker-compose.yaml
-├── .env.common            # 공통 설정 (HF Token 등)
-└── run.sh                 # 관리 스크립트
+├── .env.common            # Common settings (HF Token, etc.)
+└── run.sh                 # Management script
 ```
 
 ---
@@ -70,12 +70,12 @@ cd vllm-compose
 
 ### 2. Common Settings
 
-`.env.common` 파일 생성:
+Create `.env.common`:
 
 ```bash
 HF_TOKEN=your_huggingface_token
 HF_CACHE_PATH=~/.cache/huggingface
-LORA_BASE_PATH=/path/to/lora/adapters  # LoRA 사용시
+LORA_BASE_PATH=/path/to/lora/adapters  # If using LoRA
 ```
 
 ### 3. Check Profiles
@@ -98,13 +98,13 @@ LORA_BASE_PATH=/path/to/lora/adapters  # LoRA 사용시
 
 | Command | Description |
 |:---:|:---|
-| `./run.sh list` | 프로필 목록 |
-| `./run.sh {profile} up` | 컨테이너 시작 |
-| `./run.sh {profile} down` | 컨테이너 중지 |
-| `./run.sh {profile} logs` | 로그 보기 |
-| `./run.sh {profile} status` | 상태 확인 |
-| `./run.sh ps` | 실행 중인 컨테이너 |
-| `./run.sh gpu` | GPU 상태 |
+| `./run.sh list` | List profiles |
+| `./run.sh {profile} up` | Start container |
+| `./run.sh {profile} down` | Stop container |
+| `./run.sh {profile} logs` | View logs |
+| `./run.sh {profile} status` | Check status |
+| `./run.sh ps` | Running containers |
+| `./run.sh gpu` | GPU status |
 
 ### Direct Docker Compose
 
@@ -225,6 +225,6 @@ Change `VLLM_PORT` in profile
 
 <div align="center">
 
-**vLLM Compose** 
+**vLLM Compose** - When switching models gets annoying
 
 </div>
