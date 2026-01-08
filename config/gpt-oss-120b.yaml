@@ -1,3 +1,4 @@
+# https://docs.vllm.ai/projects/recipes/en/latest/OpenAI/GPT-OSS.html
 model: openai/gpt-oss-120b
 max-model-len: 32768
 gpu-memory-utilization: 0.8
@@ -13,3 +14,4 @@ async-scheduling: true
 #max-num-batched-tokens: 8192
 #stream-interval: 20
 #speculative-config: '{"model":"nvidia/gpt-oss-120b-Eagle3-v2","num_speculative_tokens":3,"method":"eagle3","draft_tensor_parallel_size":1}'
+

@@ -1,3 +1,4 @@
+# https://docs.vllm.ai/projects/recipes/en/latest/Qwen/Qwen3-VL.html
 model: Qwen/Qwen3-VL-30B-A3B-Instruct-FP8 
 max-model-len: 65536
 gpu-memory-utilization: 0.75
