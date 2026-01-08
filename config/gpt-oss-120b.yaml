@@ -1,0 +1,15 @@
+model: openai/gpt-oss-120b
+max-model-len: 32768
+gpu-memory-utilization: 0.8
+enable-auto-tool-choice: true
+tool-call-parser: openai
+reasoning-parser: openai_gptoss
+max-num-seqs: 15
+kv-cache-dtype: fp8
+compilation-config: '{"pass_config":{"fuse_allreduce_rms":true,"eliminate_noops":true}}'
+no-enable-prefix-caching: true
+max-cudagraph-capture-size: 2048
+async-scheduling: true
+#max-num-batched-tokens: 8192
+#stream-interval: 20
+#speculative-config: '{"model":"nvidia/gpt-oss-120b-Eagle3-v2","num_speculative_tokens":3,"method":"eagle3","draft_tensor_parallel_size":1}'

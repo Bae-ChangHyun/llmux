@@ -1,0 +1,6 @@
+model: naver-hyperclovax/HyperCLOVAX-SEED-Think-32B
+gpu-memory-utilization: 0.75
+limit-mm-per-prompt.video: 0
+mm-encoder-tp-mode: data
+enable-request-id-headers: true
+async-scheduling: true
