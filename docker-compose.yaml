@@ -1,6 +1,6 @@
 services:
   vllm:
-    image: vllm/vllm-openai:v0.13.0
+    image: vllm/vllm-openai:${VLLM_VERSION}
     container_name: ${CONTAINER_NAME}
     runtime: nvidia
     deploy:
