@@ -73,6 +73,7 @@ cd vllm-compose
 `.env.common` 파일 생성:
 
 ```bash
+VLLM_VERSION=v0.13.0                   # vLLM 이미지 버전
 HF_TOKEN=your_huggingface_token
 HF_CACHE_PATH=~/.cache/huggingface
 LORA_BASE_PATH=/path/to/lora/adapters  # LoRA 사용시
@@ -240,6 +241,23 @@ response = client.chat.completions.create(
 
 - ✅ Language Model layers: Supported
 - ❌ Vision Encoder layers: Not supported
+
+### Model-Specific LoRA Support
+
+일부 모델은 vLLM에서 LoRA를 지원하지 않을 수 있습니다. `SupportsLoRA` 인터페이스 구현 여부에 따라 결정됩니다.
+
+| Model | LoRA Support | Note |
+|-------|:------------:|------|
+| Qwen2-VL, Qwen3-VL | ✅ | |
+| LLaVA | ✅ | |
+| DeepSeek-OCR | ✅ | v0.13.0 이후 버전 필요 ([PR #31569](https://github.com/vllm-project/vllm/pull/31569)) |
+
+> **Note:** DeepSeek-OCR LoRA 지원은 2026년 1월 2일 main 브랜치에 머지되었습니다.
+> v0.13.0에서는 지원되지 않으며, `latest` 또는 다음 릴리즈 버전이 필요합니다.
+> ```bash
+> # .env.common에서 버전 변경
+> VLLM_VERSION=latest
+> ```
 
 </details>
 
