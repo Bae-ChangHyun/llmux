@@ -1,0 +1,3 @@
+model: deepseek-ai/DeepSeek-OCR
+gpu-memory-utilization: 0.8
+
