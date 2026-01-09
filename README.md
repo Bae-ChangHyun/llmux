@@ -165,23 +165,37 @@ ENABLE_LORA=false
 
 공식 릴리즈에 포함되지 않은 최신 기능이나 버그 수정이 필요할 때 사용합니다.
 
-vLLM 공식 저장소를 clone하여 [공식 Dockerfile](https://github.com/vllm-project/vllm/tree/main/docker)로 빌드합니다.
+### Fast Build (권장)
 
-### Build from main branch
+[공식 Dockerfile](https://github.com/vllm-project/vllm/tree/main/docker)을 사용하되, **자동으로 현재 PC의 GPU를 감지**하여 해당 아키텍처만 빌드합니다.
 
 ```bash
+# main 브랜치 빌드
 ./run.sh build
+
+# 특정 브랜치/태그 빌드
+./run.sh build v0.8.0
+./run.sh build fix-some-bug
 ```
 
-### Build from specific branch/tag
+출력 예시:
+```
+Detected GPU: NVIDIA GeForce RTX 4080 SUPER (sm_8.9)
+Building for your GPU only - MUCH faster!
+```
+
+> vLLM 공식 Dockerfile을 그대로 사용하므로, vLLM 업데이트 시 자동 반영됩니다.
+
+### Official Build (모든 GPU 지원)
+
+공식 Dockerfile로 모든 GPU 아키텍처용 빌드. 다른 서버에 배포할 이미지가 필요할 때 사용합니다.
 
 ```bash
-# 특정 브랜치
-./run.sh build fix-lora-bug
-
-# 특정 버전 태그
-./run.sh build v0.8.0
+./run.sh build --official
+./run.sh build v0.8.0 --official
 ```
+
+> ⚠️ **경고:** 공식 빌드는 **수 시간**이 소요될 수 있습니다.
 
 ### Run with dev build
 
@@ -189,15 +203,12 @@ vLLM 공식 저장소를 clone하여 [공식 Dockerfile](https://github.com/vllm
 ./run.sh vlm up --dev
 ```
 
-### How it works
+### Build Time Comparison
 
-1. `./run.sh build` 실행 시:
-   - `.vllm-src/`에 vLLM 저장소 clone (이미 있으면 업데이트)
-   - 공식 `docker/Dockerfile`로 빌드 (`--target vllm-openai`)
-   - `vllm-dev:{branch}` 이미지 생성
-
-2. `./run.sh {profile} up --dev` 실행 시:
-   - 빌드된 `vllm-dev:{branch}` 이미지로 컨테이너 실행
+| 빌드 방식 | 소요 시간 | 용도 |
+|----------|----------|------|
+| Fast (기본) | 10-30분 | 로컬 테스트, 개발 |
+| Official | 3-6시간 | 배포용 이미지 |
 
 ### Configuration (.env.common)
 
@@ -205,8 +216,6 @@ vLLM 공식 저장소를 clone하여 [공식 Dockerfile](https://github.com/vllm
 # 빌드할 브랜치 지정 (optional)
 VLLM_BRANCH=main
 ```
-
-> **Note:** 첫 빌드는 30분 이상 소요될 수 있습니다.
 
 </details>
 
