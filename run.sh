@@ -17,18 +17,25 @@ NC='\033[0m' # No Color
 show_help() {
     echo -e "${BLUE}vLLM Container Management${NC}"
     echo ""
-    echo "Usage: ./run.sh <profile> <action>"
+    echo "Usage: ./run.sh <profile> <action> [options]"
     echo ""
     echo "Actions:"
-    echo "  up      - Start container"
-    echo "  down    - Stop container"
-    echo "  logs    - Show container logs (follow mode)"
-    echo "  status  - Show container status"
+    echo "  up           - Start container"
+    echo "  up --dev     - Start container with dev build (from source)"
+    echo "  down         - Stop container"
+    echo "  logs         - Show container logs (follow mode)"
+    echo "  status       - Show container status"
+    echo ""
+    echo "Build commands:"
+    echo "  ./run.sh build [branch]  # Build vLLM from source (default: main)"
     echo ""
     echo "Examples:"
-    echo "  ./run.sh vlm up      # Start VLM container"
-    echo "  ./run.sh llm down    # Stop LLM container"
-    echo "  ./run.sh clova logs  # Show CLOVA logs"
+    echo "  ./run.sh vlm up          # Start VLM container (official image)"
+    echo "  ./run.sh vlm up --dev    # Start VLM container (dev build)"
+    echo "  ./run.sh build           # Build vLLM from main branch"
+    echo "  ./run.sh build fix-lora  # Build vLLM from specific branch"
+    echo "  ./run.sh llm down        # Stop LLM container"
+    echo "  ./run.sh clova logs      # Show CLOVA logs"
     echo ""
     echo "Other commands:"
     echo "  ./run.sh list        # List available profiles"
@@ -125,22 +132,95 @@ build_lora_options() {
     echo "$lora_options"
 }
 
+run_build() {
+    local branch=${1:-main}
+    local vllm_src_dir="$SCRIPT_DIR/.vllm-src"
+
+    echo -e "${BLUE}Building vLLM from source (branch: $branch)...${NC}"
+    echo -e "${YELLOW}Using official vLLM Dockerfile${NC}"
+    echo -e "${YELLOW}This may take 30+ minutes on first build.${NC}"
+    echo ""
+
+    # Clone or update vLLM repository
+    if [[ -d "$vllm_src_dir/.git" ]]; then
+        echo -e "${BLUE}Updating existing vLLM source...${NC}"
+        cd "$vllm_src_dir"
+        git fetch origin
+        git checkout "$branch" 2>/dev/null || git checkout -b "$branch" "origin/$branch"
+        git pull origin "$branch" 2>/dev/null || true
+    else
+        echo -e "${BLUE}Cloning vLLM repository...${NC}"
+        rm -rf "$vllm_src_dir"
+        git clone https://github.com/vllm-project/vllm.git "$vllm_src_dir"
+        cd "$vllm_src_dir"
+        git checkout "$branch"
+    fi
+
+    echo ""
+    echo -e "${BLUE}Building Docker image using official Dockerfile...${NC}"
+    echo ""
+
+    # Build using official Dockerfile
+    docker build \
+        -f docker/Dockerfile \
+        --target vllm-openai \
+        -t "vllm-dev:$branch" \
+        .
+
+    local result=$?
+
+    cd "$SCRIPT_DIR"
+
+    if [[ $result -eq 0 ]]; then
+        echo ""
+        echo -e "${GREEN}Build completed successfully!${NC}"
+        echo "Image: vllm-dev:$branch"
+        echo ""
+        echo "Usage: ./run.sh <profile> up --dev"
+    else
+        echo -e "${RED}Build failed!${NC}"
+    fi
+
+    return $result
+}
+
 run_up() {
     local profile_path=$1
     local profile_name=$2
+    local use_dev=$3
 
     # Check for conflicts
     if ! check_conflict "$profile_path"; then
         return 1
     fi
 
-    echo -e "${GREEN}Starting $profile_name...${NC}"
-
     # Build LoRA options and export as environment variable
     export LORA_OPTIONS=$(build_lora_options "$profile_path")
 
     cd "$SCRIPT_DIR"
-    docker compose --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
+
+    if [[ "$use_dev" == "true" ]]; then
+        echo -e "${GREEN}Starting $profile_name (dev build)...${NC}"
+
+        # Check if dev image exists
+        local branch=$(grep "^VLLM_BRANCH=" "$COMMON_ENV" 2>/dev/null | cut -d'=' -f2)
+        branch=${branch:-main}
+
+        if ! docker image inspect "vllm-dev:$branch" &>/dev/null; then
+            echo -e "${YELLOW}Dev image not found. Building first...${NC}"
+            run_build "$branch"
+            if [[ $? -ne 0 ]]; then
+                return 1
+            fi
+        fi
+
+        export VLLM_BRANCH="$branch"
+        docker compose -f docker-compose.dev.yaml --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
+    else
+        echo -e "${GREEN}Starting $profile_name...${NC}"
+        docker compose --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
+    fi
+
     local result=$?
 
     if [[ $result -eq 0 ]]; then
@@ -157,6 +237,10 @@ run_up() {
             if [[ -n "$lora_modules" ]]; then
                 echo "LoRA Modules: $lora_modules"
             fi
+        fi
+
+        if [[ "$use_dev" == "true" ]]; then
+            echo -e "Build: ${YELLOW}Dev (from source)${NC}"
         fi
     fi
 
@@ -224,9 +308,13 @@ case "$1" in
     "gpu")
         show_gpu
         ;;
+    "build")
+        run_build "$2"
+        ;;
     *)
         PROFILE_NAME=$1
         ACTION=$2
+        OPTION=$3
 
         PROFILE_PATH=$(find_profile "$PROFILE_NAME")
 
@@ -239,7 +327,11 @@ case "$1" in
 
         case "$ACTION" in
             "up")
-                run_up "$PROFILE_PATH" "$PROFILE_NAME"
+                if [[ "$OPTION" == "--dev" ]]; then
+                    run_up "$PROFILE_PATH" "$PROFILE_NAME" "true"
+                else
+                    run_up "$PROFILE_PATH" "$PROFILE_NAME" "false"
+                fi
                 ;;
             "down")
                 run_down "$PROFILE_NAME"
