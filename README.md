@@ -160,31 +160,81 @@ ENABLE_LORA=false
 <details>
 <summary><strong>LoRA Configuration</strong></summary>
 
-### Profile Settings
+### Step 1: Set Base Path (.env.common)
+
+```bash
+# .env.common
+LORA_BASE_PATH=/home/user/models/lora-adapters
+```
+
+### Step 2: Configure Profile (profiles/*.env)
 
 ```bash
 # profiles/vlm.env
 ENABLE_LORA=true
 MAX_LORAS=2
 MAX_LORA_RANK=16
-LORA_MODULES=ocr-li=/app/lora/qwen3vl_li/lora_model
+LORA_MODULES=adapter_name=/app/lora/adapter_folder
+```
+
+### Path Mapping (중요!)
+
+로컬 경로가 컨테이너 내부 `/app/lora`로 마운트됩니다:
+
+```
+📁 Local (LORA_BASE_PATH)              📁 Container
+/home/user/models/lora-adapters/   →   /app/lora/
+├── my_adapter_v1/                     ├── my_adapter_v1/
+├── my_adapter_v2/                     ├── my_adapter_v2/
+└── project_adapter/                   └── project_adapter/
+```
+
+**예시:**
+- 로컬: `/home/user/models/lora-adapters/my_adapter_v1`
+- 컨테이너: `/app/lora/my_adapter_v1`
+- LORA_MODULES 설정: `my_lora=/app/lora/my_adapter_v1`
+
+⚠️ **주의:** LORA_MODULES의 경로는 반드시 `/app/lora/`로 시작해야 합니다!
+
+### Multiple Adapters (여러 어댑터 사용)
+
+쉼표(`,`)로 구분하여 여러 어댑터 등록:
+
+```bash
+# 단일 어댑터
+LORA_MODULES=adapter1=/app/lora/my_adapter_v1
+
+# 복수 어댑터
+LORA_MODULES=adapter1=/app/lora/my_adapter_v1,adapter2=/app/lora/my_adapter_v2
+
+# 실제 예시
+LORA_MODULES=ocr_ko=/app/lora/qwen3vl_ocr_korean,ocr_en=/app/lora/qwen3vl_ocr_english
+```
+
+### API 호출 시 어댑터 선택
+
+```python
+# 기본 모델 사용
+response = client.chat.completions.create(
+    model="base-model-name",
+    messages=[...]
+)
+
+# 특정 LoRA 어댑터 사용
+response = client.chat.completions.create(
+    model="adapter1",  # LORA_MODULES에서 정의한 이름
+    messages=[...]
+)
 ```
 
 ### Parameters
 
 | Parameter | Description |
 |----------|------|
-| `ENABLE_LORA` | Enable LoRA (true/false) |
-| `MAX_LORAS` | Max concurrent LoRAs |
-| `MAX_LORA_RANK` | Max rank |
-| `LORA_MODULES` | name=path format, comma separated |
-
-### Path Mapping
-
-```
-Host: $LORA_BASE_PATH/qwen3vl_li/lora_model
-Container: /app/lora/qwen3vl_li/lora_model
-```
+| `ENABLE_LORA` | LoRA 활성화 (true/false) |
+| `MAX_LORAS` | 동시 로드 가능한 최대 LoRA 수 |
+| `MAX_LORA_RANK` | 최대 rank 값 |
+| `LORA_MODULES` | name=/app/lora/path 형식, 쉼표로 구분 |
 
 ### VLM LoRA Limitation
 
