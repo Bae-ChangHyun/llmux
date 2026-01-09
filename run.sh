@@ -116,11 +116,9 @@ build_lora_options() {
         fi
 
         if [[ -n "$lora_modules" ]]; then
-            # Split by comma and add each module
-            IFS=',' read -ra modules <<< "$lora_modules"
-            for module in "${modules[@]}"; do
-                lora_options="$lora_options --lora-modules $module"
-            done
+            # Replace comma with space to pass all modules to single --lora-modules option
+            local modules_formatted="${lora_modules//,/ }"
+            lora_options="$lora_options --lora-modules $modules_formatted"
         fi
     fi
 
