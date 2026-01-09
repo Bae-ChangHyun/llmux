@@ -1,6 +1,10 @@
 # Environment files with secrets
 .env.common
 
+# Profile files (contain local settings)
+profiles/*.env
+!profiles/example.env
+
 # Temporary files
 *.tmp
 *.log
