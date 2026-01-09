@@ -101,9 +101,11 @@ LORA_BASE_PATH=/path/to/lora/adapters  # LoRA 사용시
 |:---:|:---|
 | `./run.sh list` | 프로필 목록 |
 | `./run.sh {profile} up` | 컨테이너 시작 |
+| `./run.sh {profile} up --dev` | 소스 빌드로 컨테이너 시작 |
 | `./run.sh {profile} down` | 컨테이너 중지 |
 | `./run.sh {profile} logs` | 로그 보기 |
 | `./run.sh {profile} status` | 상태 확인 |
+| `./run.sh build [branch]` | vLLM 소스 빌드 |
 | `./run.sh ps` | 실행 중인 컨테이너 |
 | `./run.sh gpu` | GPU 상태 |
 
@@ -153,6 +155,60 @@ ENABLE_LORA=false
 ```bash
 ./run.sh mymodel up
 ```
+
+---
+
+## 🔨 Development Build
+
+<details>
+<summary><strong>Build vLLM from Source</strong></summary>
+
+공식 릴리즈에 포함되지 않은 최신 기능이나 버그 수정이 필요할 때 사용합니다.
+
+vLLM 공식 저장소를 clone하여 [공식 Dockerfile](https://github.com/vllm-project/vllm/tree/main/docker)로 빌드합니다.
+
+### Build from main branch
+
+```bash
+./run.sh build
+```
+
+### Build from specific branch/tag
+
+```bash
+# 특정 브랜치
+./run.sh build fix-lora-bug
+
+# 특정 버전 태그
+./run.sh build v0.8.0
+```
+
+### Run with dev build
+
+```bash
+./run.sh vlm up --dev
+```
+
+### How it works
+
+1. `./run.sh build` 실행 시:
+   - `.vllm-src/`에 vLLM 저장소 clone (이미 있으면 업데이트)
+   - 공식 `docker/Dockerfile`로 빌드 (`--target vllm-openai`)
+   - `vllm-dev:{branch}` 이미지 생성
+
+2. `./run.sh {profile} up --dev` 실행 시:
+   - 빌드된 `vllm-dev:{branch}` 이미지로 컨테이너 실행
+
+### Configuration (.env.common)
+
+```bash
+# 빌드할 브랜치 지정 (optional)
+VLLM_BRANCH=main
+```
+
+> **Note:** 첫 빌드는 30분 이상 소요될 수 있습니다.
+
+</details>
 
 ---
 

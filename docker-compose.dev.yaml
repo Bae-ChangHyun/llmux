@@ -1,0 +1,43 @@
+# Development compose file - uses vLLM built from source
+# Usage:
+#   1. Build first: ./run.sh build [branch]
+#   2. Run: ./run.sh {profile} up --dev
+
+services:
+  vllm:
+    image: vllm-dev:${VLLM_BRANCH:-main}
+    container_name: ${CONTAINER_NAME}
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['${GPU_ID}']
+              capabilities: [gpu]
+    volumes:
+      - ${HF_CACHE_PATH}:/root/.cache/huggingface
+      - ./config:/config/
+      - ${LORA_BASE_PATH}:/app/lora:ro
+    ports:
+      - "${VLLM_PORT}:8000"
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
+      - TZ=Asia/Seoul
+      - NVIDIA_VISIBLE_DEVICES=${GPU_ID}
+      - VLLM_ENABLE_V1_MULTIPROCESSING=0
+    ipc: host
+    command: --config /config/${CONFIG_NAME}.yaml --tensor-parallel-size=${TENSOR_PARALLEL_SIZE} --trust-remote-code ${LORA_OPTIONS}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    networks:
+      - vllm-network
+
+networks:
+  vllm-network:
+    name: vllm-network
