@@ -132,16 +132,46 @@ build_lora_options() {
     echo "$lora_options"
 }
 
+# Detect GPU compute capability
+detect_gpu_arch() {
+    local arch=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ')
+    if [[ -z "$arch" ]]; then
+        echo ""
+        return 1
+    fi
+    echo "$arch"
+}
+
 run_build() {
-    local branch=${1:-main}
+    local branch="main"
+    local use_official=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --official)
+                use_official=true
+                shift
+                ;;
+            *)
+                branch="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ "$use_official" == "true" ]]; then
+        run_build_official "$branch"
+    else
+        run_build_fast "$branch"
+    fi
+}
+
+# Clone or update vLLM repository
+clone_or_update_vllm() {
+    local branch=$1
     local vllm_src_dir="$SCRIPT_DIR/.vllm-src"
 
-    echo -e "${BLUE}Building vLLM from source (branch: $branch)...${NC}"
-    echo -e "${YELLOW}Using official vLLM Dockerfile${NC}"
-    echo -e "${YELLOW}This may take 30+ minutes on first build.${NC}"
-    echo ""
-
-    # Clone or update vLLM repository
     if [[ -d "$vllm_src_dir/.git" ]]; then
         echo -e "${BLUE}Updating existing vLLM source...${NC}"
         cd "$vllm_src_dir"
@@ -155,12 +185,76 @@ run_build() {
         cd "$vllm_src_dir"
         git checkout "$branch"
     fi
+}
+
+# Fast local build - uses official Dockerfile with YOUR GPU only
+run_build_fast() {
+    local branch=${1:-main}
+    local vllm_src_dir="$SCRIPT_DIR/.vllm-src"
+
+    # Auto-detect GPU architecture
+    local gpu_arch=$(detect_gpu_arch)
+    if [[ -z "$gpu_arch" ]]; then
+        echo -e "${RED}Error: Could not detect GPU. Make sure nvidia-smi works.${NC}"
+        echo -e "${YELLOW}Tip: Use './run.sh build --official' for official build${NC}"
+        return 1
+    fi
+
+    local gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+
+    echo -e "${BLUE}Building vLLM from source (branch: $branch)${NC}"
+    echo -e "${GREEN}Detected GPU: $gpu_name (sm_$gpu_arch)${NC}"
+    echo -e "${GREEN}Building for your GPU only - MUCH faster!${NC}"
+    echo ""
+
+    clone_or_update_vllm "$branch"
+
+    echo ""
+    echo -e "${BLUE}Building with official Dockerfile (GPU: $gpu_arch only)...${NC}"
+    echo ""
+
+    # Build using official Dockerfile with local GPU arch only
+    docker build \
+        -f docker/Dockerfile \
+        --build-arg torch_cuda_arch_list="$gpu_arch" \
+        --target vllm-openai \
+        -t "vllm-dev:$branch" \
+        .
+
+    local result=$?
+
+    cd "$SCRIPT_DIR"
+
+    if [[ $result -eq 0 ]]; then
+        echo ""
+        echo -e "${GREEN}Build completed successfully!${NC}"
+        echo "Image: vllm-dev:$branch"
+        echo ""
+        echo "Usage: ./run.sh <profile> up --dev"
+    else
+        echo -e "${RED}Build failed!${NC}"
+    fi
+
+    return $result
+}
+
+# Official build - builds for ALL GPU architectures (slow)
+run_build_official() {
+    local branch=${1:-main}
+    local vllm_src_dir="$SCRIPT_DIR/.vllm-src"
+
+    echo -e "${BLUE}Building vLLM from source (branch: $branch)...${NC}"
+    echo -e "${YELLOW}Using official vLLM Dockerfile (ALL architectures)${NC}"
+    echo -e "${YELLOW}This may take several HOURS on first build.${NC}"
+    echo ""
+
+    clone_or_update_vllm "$branch"
 
     echo ""
     echo -e "${BLUE}Building Docker image using official Dockerfile...${NC}"
     echo ""
 
-    # Build using official Dockerfile
+    # Build using official Dockerfile (all architectures)
     docker build \
         -f docker/Dockerfile \
         --target vllm-openai \

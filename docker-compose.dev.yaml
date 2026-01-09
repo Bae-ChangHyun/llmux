@@ -27,6 +27,9 @@ services:
       - NVIDIA_VISIBLE_DEVICES=${GPU_ID}
       - VLLM_ENABLE_V1_MULTIPROCESSING=0
     ipc: host
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     command: --config /config/${CONFIG_NAME}.yaml --tensor-parallel-size=${TENSOR_PARALLEL_SIZE} --trust-remote-code ${LORA_OPTIONS}
     restart: unless-stopped
     healthcheck:
