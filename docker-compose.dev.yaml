@@ -5,7 +5,7 @@
 
 services:
   vllm:
-    image: vllm-dev:${VLLM_BRANCH:-main}
+    image: vllm-dev:${VLLM_DEV_TAG:-${VLLM_BRANCH:-main}}
     container_name: ${CONTAINER_NAME}
     runtime: nvidia
     deploy:
