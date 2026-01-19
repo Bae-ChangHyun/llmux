@@ -65,13 +65,21 @@ list_profiles() {
             config=$(grep "^CONFIG_NAME=" "$profile" | cut -d'=' -f2)
             enable_lora=$(grep "^ENABLE_LORA=" "$profile" | cut -d'=' -f2)
 
+            # Get actual model name from config file
+            config_file="$SCRIPT_DIR/config/${config}.yaml"
+            if [[ -f "$config_file" ]]; then
+                model_name=$(grep "^model:" "$config_file" | cut -d':' -f2- | sed 's/^ *//')
+            else
+                model_name="$config"
+            fi
+
             if [[ "$enable_lora" == "true" ]]; then
                 lora_status="ON"
             else
                 lora_status="-"
             fi
 
-            printf "%-15s %-6s %-6s %-8s %s\n" "$profile_name" "$gpu_id" "$port" "$lora_status" "$config"
+            printf "%-15s %-6s %-6s %-8s %s\n" "$profile_name" "$gpu_id" "$port" "$lora_status" "$model_name"
         fi
     done
     echo ""
@@ -387,15 +395,26 @@ run_up() {
 }
 
 run_down() {
-    local profile_name=$1
+    local profile_path=$1
+    local profile_name=$2
+    local container_name=$(grep "^CONTAINER_NAME=" "$profile_path" | cut -d'=' -f2)
+
+    # Check if container exists
+    if ! docker ps -a --format '{{.Names}}' | grep -q "^${container_name}$"; then
+        echo -e "${YELLOW}$profile_name is not running${NC}"
+        return 0
+    fi
 
     echo -e "${YELLOW}Stopping $profile_name...${NC}"
 
-    cd "$SCRIPT_DIR"
-    docker compose -p "$profile_name" down
+    docker stop "$container_name" >/dev/null 2>&1
+    docker rm "$container_name" >/dev/null 2>&1
 
     if [[ $? -eq 0 ]]; then
         echo -e "${GREEN}$profile_name stopped successfully!${NC}"
+    else
+        echo -e "${RED}Failed to stop $profile_name${NC}"
+        return 1
     fi
 }
 
@@ -518,7 +537,7 @@ case "$1" in
                 run_up "$PROFILE_PATH" "$PROFILE_NAME" "$USE_DEV" "$CUSTOM_TAG"
                 ;;
             "down")
-                run_down "$PROFILE_NAME"
+                run_down "$PROFILE_PATH" "$PROFILE_NAME"
                 ;;
             "logs")
                 run_logs "$PROFILE_PATH"
