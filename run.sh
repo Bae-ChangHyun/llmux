@@ -17,21 +17,33 @@ NC='\033[0m' # No Color
 show_help() {
     echo -e "${BLUE}vLLM Container Management${NC}"
     echo ""
-    echo "Usage: ./run.sh <profile> <action>"
+    echo "Usage: ./run.sh <profile> <action> [options]"
     echo ""
     echo "Actions:"
-    echo "  up      - Start container"
-    echo "  down    - Stop container"
-    echo "  logs    - Show container logs (follow mode)"
-    echo "  status  - Show container status"
+    echo "  up              - Start container"
+    echo "  up --dev        - Start container with dev build (from source)"
+    echo "  up --dev --tag TAG  - Start with specific dev image version"
+    echo "  down            - Stop container"
+    echo "  logs            - Show container logs (follow mode)"
+    echo "  status          - Show container status"
+    echo ""
+    echo "Build commands:"
+    echo "  ./run.sh build [branch]            # Build with auto date tag (branch-YYYYMMDD)"
+    echo "  ./run.sh build [branch] --tag TAG  # Build with custom tag"
+    echo "  ./run.sh build --official          # Build for all GPU architectures (slow)"
     echo ""
     echo "Examples:"
-    echo "  ./run.sh vlm up      # Start VLM container"
-    echo "  ./run.sh llm down    # Stop LLM container"
-    echo "  ./run.sh clova logs  # Show CLOVA logs"
+    echo "  ./run.sh vlm up                        # Start VLM (official image)"
+    echo "  ./run.sh vlm up --dev                  # Start VLM (latest dev build)"
+    echo "  ./run.sh vlm up --dev --tag main-20260116  # Start with specific version"
+    echo "  ./run.sh build                         # Build from main (tag: main-20260116)"
+    echo "  ./run.sh build fix-lora --tag v1.0     # Build with custom tag"
+    echo "  ./run.sh llm down                      # Stop LLM container"
+    echo "  ./run.sh clova logs                    # Show CLOVA logs"
     echo ""
     echo "Other commands:"
     echo "  ./run.sh list        # List available profiles"
+    echo "  ./run.sh images      # List built vllm-dev images"
     echo "  ./run.sh ps          # Show all running vLLM containers"
     echo "  ./run.sh gpu         # Show GPU usage"
 }
@@ -53,13 +65,21 @@ list_profiles() {
             config=$(grep "^CONFIG_NAME=" "$profile" | cut -d'=' -f2)
             enable_lora=$(grep "^ENABLE_LORA=" "$profile" | cut -d'=' -f2)
 
+            # Get actual model name from config file
+            config_file="$SCRIPT_DIR/config/${config}.yaml"
+            if [[ -f "$config_file" ]]; then
+                model_name=$(grep "^model:" "$config_file" | cut -d':' -f2- | sed 's/^ *//')
+            else
+                model_name="$config"
+            fi
+
             if [[ "$enable_lora" == "true" ]]; then
                 lora_status="ON"
             else
                 lora_status="-"
             fi
 
-            printf "%-15s %-6s %-6s %-8s %s\n" "$profile_name" "$gpu_id" "$port" "$lora_status" "$config"
+            printf "%-15s %-6s %-6s %-8s %s\n" "$profile_name" "$gpu_id" "$port" "$lora_status" "$model_name"
         fi
     done
     echo ""
@@ -125,22 +145,229 @@ build_lora_options() {
     echo "$lora_options"
 }
 
+# Detect GPU compute capability
+detect_gpu_arch() {
+    local arch=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ')
+    if [[ -z "$arch" ]]; then
+        echo ""
+        return 1
+    fi
+    echo "$arch"
+}
+
+run_build() {
+    local branch="main"
+    local use_official=false
+    local custom_tag=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --official)
+                use_official=true
+                shift
+                ;;
+            --tag)
+                custom_tag="$2"
+                shift 2
+                ;;
+            *)
+                branch="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ "$use_official" == "true" ]]; then
+        run_build_official "$branch" "$custom_tag"
+    else
+        run_build_fast "$branch" "$custom_tag"
+    fi
+}
+
+# Clone or update vLLM repository
+clone_or_update_vllm() {
+    local branch=$1
+    local vllm_src_dir="$SCRIPT_DIR/.vllm-src"
+
+    if [[ -d "$vllm_src_dir/.git" ]]; then
+        echo -e "${BLUE}Updating existing vLLM source...${NC}"
+        cd "$vllm_src_dir"
+        git fetch origin
+        git checkout "$branch" 2>/dev/null || git checkout -b "$branch" "origin/$branch"
+        git pull origin "$branch" 2>/dev/null || true
+    else
+        echo -e "${BLUE}Cloning vLLM repository...${NC}"
+        rm -rf "$vllm_src_dir"
+        git clone https://github.com/vllm-project/vllm.git "$vllm_src_dir"
+        cd "$vllm_src_dir"
+        git checkout "$branch"
+    fi
+}
+
+# Fast local build - uses official Dockerfile with YOUR GPU only
+run_build_fast() {
+    local branch=${1:-main}
+    local custom_tag=${2:-}
+    local vllm_src_dir="$SCRIPT_DIR/.vllm-src"
+
+    # Auto-detect GPU architecture
+    local gpu_arch=$(detect_gpu_arch)
+    if [[ -z "$gpu_arch" ]]; then
+        echo -e "${RED}Error: Could not detect GPU. Make sure nvidia-smi works.${NC}"
+        echo -e "${YELLOW}Tip: Use './run.sh build --official' for official build${NC}"
+        return 1
+    fi
+
+    local gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+
+    # Generate tags
+    local date_tag="${branch}-$(date +%Y%m%d)"
+    local main_tag="${custom_tag:-$date_tag}"
+
+    echo -e "${BLUE}Building vLLM from source (branch: $branch)${NC}"
+    echo -e "${GREEN}Detected GPU: $gpu_name (sm_$gpu_arch)${NC}"
+    echo -e "${GREEN}Building for your GPU only - MUCH faster!${NC}"
+    echo -e "${YELLOW}Tag: vllm-dev:$main_tag${NC}"
+    echo ""
+
+    clone_or_update_vllm "$branch"
+
+    echo ""
+    echo -e "${BLUE}Building with official Dockerfile (GPU: $gpu_arch only)...${NC}"
+    echo ""
+
+    # Build using official Dockerfile with local GPU arch only
+    docker build \
+        -f docker/Dockerfile \
+        --build-arg torch_cuda_arch_list="$gpu_arch" \
+        --build-arg RUN_WHEEL_CHECK=false \
+        --target vllm-openai \
+        -t "vllm-dev:$main_tag" \
+        -t "vllm-dev:$branch" \
+        .
+
+    local result=$?
+
+    cd "$SCRIPT_DIR"
+
+    if [[ $result -eq 0 ]]; then
+        echo ""
+        echo -e "${GREEN}Build completed successfully!${NC}"
+        echo "Images tagged as:"
+        echo "  - vllm-dev:$main_tag"
+        echo "  - vllm-dev:$branch (latest for this branch)"
+        echo ""
+        echo "Usage:"
+        echo "  ./run.sh <profile> up --dev              # Use latest ($branch)"
+        echo "  ./run.sh <profile> up --dev --tag $main_tag  # Use specific version"
+    else
+        echo -e "${RED}Build failed!${NC}"
+    fi
+
+    return $result
+}
+
+# Official build - builds for ALL GPU architectures (slow)
+run_build_official() {
+    local branch=${1:-main}
+    local custom_tag=${2:-}
+    local vllm_src_dir="$SCRIPT_DIR/.vllm-src"
+
+    # Generate tags
+    local date_tag="${branch}-$(date +%Y%m%d)"
+    local main_tag="${custom_tag:-$date_tag}"
+
+    echo -e "${BLUE}Building vLLM from source (branch: $branch)...${NC}"
+    echo -e "${YELLOW}Using official vLLM Dockerfile (ALL architectures)${NC}"
+    echo -e "${YELLOW}This may take several HOURS on first build.${NC}"
+    echo -e "${YELLOW}Tag: vllm-dev:$main_tag${NC}"
+    echo ""
+
+    clone_or_update_vllm "$branch"
+
+    echo ""
+    echo -e "${BLUE}Building Docker image using official Dockerfile...${NC}"
+    echo ""
+
+    # Build using official Dockerfile (all architectures)
+    # Skip wheel size check for official builds (builds for all GPUs are large)
+    docker build \
+        -f docker/Dockerfile \
+        --build-arg RUN_WHEEL_CHECK=false \
+        --target vllm-openai \
+        -t "vllm-dev:$main_tag" \
+        -t "vllm-dev:$branch" \
+        .
+
+    local result=$?
+
+    cd "$SCRIPT_DIR"
+
+    if [[ $result -eq 0 ]]; then
+        echo ""
+        echo -e "${GREEN}Build completed successfully!${NC}"
+        echo "Images tagged as:"
+        echo "  - vllm-dev:$main_tag"
+        echo "  - vllm-dev:$branch (latest for this branch)"
+        echo ""
+        echo "Usage:"
+        echo "  ./run.sh <profile> up --dev              # Use latest ($branch)"
+        echo "  ./run.sh <profile> up --dev --tag $main_tag  # Use specific version"
+    else
+        echo -e "${RED}Build failed!${NC}"
+    fi
+
+    return $result
+}
+
 run_up() {
     local profile_path=$1
     local profile_name=$2
+    local use_dev=$3
+    local custom_tag=$4
 
     # Check for conflicts
     if ! check_conflict "$profile_path"; then
         return 1
     fi
 
-    echo -e "${GREEN}Starting $profile_name...${NC}"
-
     # Build LoRA options and export as environment variable
     export LORA_OPTIONS=$(build_lora_options "$profile_path")
 
     cd "$SCRIPT_DIR"
-    docker compose --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
+
+    if [[ "$use_dev" == "true" ]]; then
+        echo -e "${GREEN}Starting $profile_name (dev build)...${NC}"
+
+        # Check if dev image exists
+        local branch=$(grep "^VLLM_BRANCH=" "$COMMON_ENV" 2>/dev/null | cut -d'=' -f2)
+        branch=${branch:-main}
+
+        local image_tag="${custom_tag:-$branch}"
+
+        if ! docker image inspect "vllm-dev:$image_tag" &>/dev/null; then
+            if [[ -n "$custom_tag" ]]; then
+                echo -e "${RED}Error: Image vllm-dev:$image_tag not found${NC}"
+                echo -e "${YELLOW}Available images:${NC}"
+                docker images vllm-dev --format "  {{.Tag}}"
+                return 1
+            else
+                echo -e "${YELLOW}Dev image not found. Building first...${NC}"
+                run_build "$branch"
+                if [[ $? -ne 0 ]]; then
+                    return 1
+                fi
+            fi
+        fi
+
+        export VLLM_DEV_TAG="$image_tag"
+        docker compose -f docker-compose.dev.yaml --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
+    else
+        echo -e "${GREEN}Starting $profile_name...${NC}"
+        docker compose --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
+    fi
+
     local result=$?
 
     if [[ $result -eq 0 ]]; then
@@ -158,21 +385,36 @@ run_up() {
                 echo "LoRA Modules: $lora_modules"
             fi
         fi
+
+        if [[ "$use_dev" == "true" ]]; then
+            echo -e "Build: ${YELLOW}Dev (from source) - vllm-dev:$image_tag${NC}"
+        fi
     fi
 
     return $result
 }
 
 run_down() {
-    local profile_name=$1
+    local profile_path=$1
+    local profile_name=$2
+    local container_name=$(grep "^CONTAINER_NAME=" "$profile_path" | cut -d'=' -f2)
+
+    # Check if container exists
+    if ! docker ps -a --format '{{.Names}}' | grep -q "^${container_name}$"; then
+        echo -e "${YELLOW}$profile_name is not running${NC}"
+        return 0
+    fi
 
     echo -e "${YELLOW}Stopping $profile_name...${NC}"
 
-    cd "$SCRIPT_DIR"
-    docker compose -p "$profile_name" down
+    docker stop "$container_name" >/dev/null 2>&1
+    docker rm "$container_name" >/dev/null 2>&1
 
     if [[ $? -eq 0 ]]; then
         echo -e "${GREEN}$profile_name stopped successfully!${NC}"
+    else
+        echo -e "${RED}Failed to stop $profile_name${NC}"
+        return 1
     fi
 }
 
@@ -210,6 +452,31 @@ show_gpu() {
     done
 }
 
+show_images() {
+    echo -e "${BLUE}vLLM Development Images:${NC}"
+    echo ""
+
+    if ! docker images vllm-dev --format "{{.Tag}}" 2>/dev/null | grep -q .; then
+        echo -e "${YELLOW}No vllm-dev images found.${NC}"
+        echo ""
+        echo "Build one with: ./run.sh build [branch]"
+        return 0
+    fi
+
+    printf "%-30s %-15s %-20s\n" "TAG" "SIZE" "CREATED"
+    echo "---------------------------------------------------------------------"
+
+    docker images vllm-dev --format "{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}" | \
+    while IFS=$'\t' read -r tag size created; do
+        # Parse created date (format: 2026-01-16 17:47:23 +0900 KST)
+        created_short=$(echo "$created" | cut -d' ' -f1,2)
+        printf "%-30s %-15s %-20s\n" "$tag" "$size" "$created_short"
+    done
+
+    echo ""
+    echo "Usage: ./run.sh <profile> up --dev --tag <TAG>"
+}
+
 # Main logic
 case "$1" in
     ""|"-h"|"--help"|"help")
@@ -218,15 +485,23 @@ case "$1" in
     "list")
         list_profiles
         ;;
+    "images")
+        show_images
+        ;;
     "ps")
         show_ps
         ;;
     "gpu")
         show_gpu
         ;;
+    "build")
+        shift
+        run_build "$@"
+        ;;
     *)
         PROFILE_NAME=$1
         ACTION=$2
+        shift 2
 
         PROFILE_PATH=$(find_profile "$PROFILE_NAME")
 
@@ -239,10 +514,30 @@ case "$1" in
 
         case "$ACTION" in
             "up")
-                run_up "$PROFILE_PATH" "$PROFILE_NAME"
+                USE_DEV="false"
+                CUSTOM_TAG=""
+
+                # Parse options
+                while [[ $# -gt 0 ]]; do
+                    case $1 in
+                        --dev)
+                            USE_DEV="true"
+                            shift
+                            ;;
+                        --tag)
+                            CUSTOM_TAG="$2"
+                            shift 2
+                            ;;
+                        *)
+                            shift
+                            ;;
+                    esac
+                done
+
+                run_up "$PROFILE_PATH" "$PROFILE_NAME" "$USE_DEV" "$CUSTOM_TAG"
                 ;;
             "down")
-                run_down "$PROFILE_NAME"
+                run_down "$PROFILE_PATH" "$PROFILE_NAME"
                 ;;
             "logs")
                 run_logs "$PROFILE_PATH"
