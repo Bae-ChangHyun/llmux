@@ -45,6 +45,11 @@
 
 ## ✨ 핵심 기능
 
+### 🖥️ 인터랙티브 TUI 모드
+* **메뉴 기반 인터페이스**: `./run.sh` 실행만으로 모든 기능을 GUI처럼 사용
+* **직관적인 조작**: 프로필 선택, 컨테이너 관리, 빌드까지 메뉴에서 선택
+* **CLI 호환**: TUI 없이 기존 명령어 방식도 그대로 지원
+
 ### 🚀 프로필 기반 멀티 모델 관리
 * **간단한 프로필 시스템**: `.env` 파일로 모델별 설정을 독립적으로 관리
 * **원클릭 실행**: `./run.sh {profile} up` 한 줄로 모델 서빙 시작
@@ -156,7 +161,63 @@ Available profiles:
 
 ## 📖 사용 방법
 
-### run.sh 명령어
+vLLM Compose는 **TUI (인터랙티브) 모드**와 **CLI (명령어) 모드** 두 가지 방식을 지원합니다.
+
+<details open>
+<summary><strong>🖥️ TUI 모드 (인터랙티브)</strong></summary>
+
+터미널에서 메뉴 기반 인터페이스로 모든 기능을 사용할 수 있습니다.
+
+```bash
+# TUI 모드 실행
+./run.sh tui
+
+# 또는 인자 없이 실행
+./run.sh
+```
+
+> **요구사항**: `whiptail` 또는 `dialog` 설치 필요
+> ```bash
+> # Ubuntu/Debian
+> sudo apt-get install whiptail
+> ```
+
+#### TUI 메인 메뉴
+
+```
+┌──────────────── vLLM Compose ─────────────────┐
+│                                               │
+│  1. 🚀 Start Container    컨테이너 시작        │
+│  2. 🛑 Stop Container     컨테이너 중지        │
+│  3. 📋 View Logs          로그 보기           │
+│  4. 📊 Container Status   컨테이너 상태        │
+│  5. 🎮 GPU Status         GPU 상태 확인        │
+│  6. 🔨 Build vLLM         vLLM 소스 빌드       │
+│  7. 🗂️  Manage Images      이미지 관리         │
+│  8. ❌ Exit               종료                │
+│                                               │
+└───────────────────────────────────────────────┘
+```
+
+#### 주요 기능
+
+| 메뉴 | 설명 |
+|:---:|:---|
+| Start Container | 프로필 선택 → 이미지 선택 (공식/개발) → 컨테이너 시작 |
+| Stop Container | 실행 중인 컨테이너 선택 → 중지 및 삭제 |
+| View Logs | 컨테이너 선택 → 실시간 로그 표시 |
+| GPU Status | nvidia-smi 출력을 팝업으로 표시 |
+| Build vLLM | 브랜치 입력 → Fast/Official 빌드 선택 |
+| Manage Images | vllm-dev 이미지 목록 조회 및 삭제 |
+
+</details>
+
+<details>
+<summary><strong>⌨️ CLI 모드 (명령어)</strong></summary>
+
+터미널에서 직접 명령어를 입력하여 사용합니다.
+
+#### 명령어 목록
 
 | 명령어 | 설명 |
 |:---:|:---|
@@ -170,7 +231,7 @@ Available profiles:
 | `./run.sh ps` | 현재 실행 중인 모든 컨테이너 목록 |
 | `./run.sh gpu` | GPU 상태 및 사용량 확인 |
 
-### 사용 예시
+#### 사용 예시
 
 ```bash
 # 프로필 목록 확인
@@ -189,8 +250,7 @@ Available profiles:
 ./run.sh vlm down
 ```
 
-<details>
-<summary><strong>직접 Docker Compose 명령 사용하기</strong></summary>
+#### 직접 Docker Compose 명령 사용하기
 
 run.sh 스크립트 없이 Docker Compose를 직접 사용할 수도 있습니다.
 
