@@ -8,3 +8,10 @@ profiles/*.env
 # Temporary files
 *.tmp
 *.log
+todo.md
+
+# Config files (new additions only - existing examples remain tracked)
+config/
+
+# vLLM source directory (cloned for dev build)
+.vllm-src/
