@@ -109,28 +109,127 @@ get_image_menu_items() {
     echo "$items"
 }
 
+# Get running container list for menu (matches with profiles)
+get_running_container_menu_items() {
+    local items=""
+    for profile in "$PROFILES_DIR"/*.env; do
+        if [[ -f "$profile" ]]; then
+            local name=$(basename "$profile" .env)
+            local container=$(grep "^CONTAINER_NAME=" "$profile" | cut -d'=' -f2)
+            # Check if container is running
+            if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
+                local port=$(grep "^VLLM_PORT=" "$profile" | cut -d'=' -f2)
+                local gpu=$(grep "^GPU_ID=" "$profile" | cut -d'=' -f2)
+                items="$items $name \"Running - GPU:$gpu Port:$port\""
+            fi
+        fi
+    done
+    echo "$items"
+}
+
 #=============================================================================
 # TUI MENU FUNCTIONS
 #=============================================================================
+
+# Quick Setup - Create Profile + Config at once
+quick_setup_menu() {
+    # Model name input
+    local model=$(tui_inputbox "Quick Setup" "Enter HuggingFace model name:\n(e.g., lightonai/LightOnOCR-2-1B)" "")
+    [[ -z "$model" ]] && return
+
+    # Extract name from model (part after last /)
+    local name=$(echo "$model" | rev | cut -d'/' -f1 | rev)
+
+    # Convert to lowercase and replace invalid chars for container name
+    local safe_name=$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]-' '-' | sed 's/-*$//')
+
+    # Check if already exists
+    if [[ -f "$PROFILES_DIR/$safe_name.env" ]]; then
+        tui_msgbox "Error" "Profile '$safe_name' already exists."
+        return
+    fi
+    if [[ -f "$SCRIPT_DIR/config/$safe_name.yaml" ]]; then
+        tui_msgbox "Error" "Config '$safe_name' already exists."
+        return
+    fi
+
+    # GPU ID
+    local gpu=$(tui_inputbox "GPU" "Enter GPU ID (e.g., 0 or 0,1):" "0")
+    [[ -z "$gpu" ]] && return
+
+    # Port
+    local port=$(tui_inputbox "Port" "Enter vLLM port:" "8000")
+    [[ -z "$port" ]] && return
+
+    # GPU memory utilization
+    local gpu_util=$(tui_inputbox "GPU Memory" "GPU memory utilization (0.0-1.0):" "0.9")
+    [[ -z "$gpu_util" ]] && return
+
+    # Tensor parallel (auto-detect from GPU count)
+    local gpu_count=$(echo "$gpu" | tr ',' '\n' | wc -l)
+    local tp="$gpu_count"
+
+    # Confirmation
+    local msg="Model: $model\n"
+    msg="${msg}Name: $safe_name\n"
+    msg="${msg}GPU: $gpu (TP=$tp)\n"
+    msg="${msg}Port: $port\n"
+    msg="${msg}GPU Util: $gpu_util"
+
+    if ! tui_yesno "Confirm Quick Setup" "$msg\n\nCreate profile and config?"; then
+        return
+    fi
+
+    # Create config file
+    cat > "$SCRIPT_DIR/config/$safe_name.yaml" << EOF
+model: $model
+gpu-memory-utilization: $gpu_util
+EOF
+
+    # Create profile file
+    cat > "$PROFILES_DIR/$safe_name.env" << EOF
+# Profile: $safe_name
+# Model: $model
+# GPU: $gpu, Port: $port
+
+CONTAINER_NAME=$safe_name
+VLLM_PORT=$port
+CONFIG_NAME=$safe_name
+
+# GPU Configuration
+GPU_ID=$gpu
+TENSOR_PARALLEL_SIZE=$tp
+
+# LoRA Configuration (optional)
+ENABLE_LORA=false
+#MAX_LORAS=2
+#MAX_LORA_RANK=16
+#LORA_MODULES=adapter1=/app/lora/path1
+EOF
+
+    tui_msgbox "Success" "Created:\n- Config: config/$safe_name.yaml\n- Profile: profiles/$safe_name.env\n\nStart with: ./run.sh $safe_name up"
+}
 
 # Main Menu
 show_main_menu() {
     while true; do
         local choice=$(tui_menu "vLLM Container Management" "Select an option:" \
+            "Q" "Quick Setup (Profile + Config)" \
             "1" "Container Management (up/down/logs/status)" \
             "2" "Profile Management (create/edit/delete)" \
             "3" "Config Management (create/edit)" \
             "4" "Build Management (build/images)" \
             "5" "System Info (GPU/PS)" \
-            "Q" "Exit")
+            "X" "Exit")
 
         case "$choice" in
+            Q) quick_setup_menu ;;
             1) container_menu ;;
             2) profile_menu ;;
             3) config_menu ;;
             4) build_menu ;;
             5) system_menu ;;
-            Q|"") break ;;
+            X|"") break ;;
         esac
     done
 }
@@ -209,13 +308,13 @@ container_up_menu() {
 
 # Container Down Menu
 container_down_menu() {
-    local items=$(get_profile_menu_items)
+    local items=$(get_running_container_menu_items)
     if [[ -z "$items" ]]; then
-        tui_msgbox "Error" "No profiles found."
+        tui_msgbox "Info" "No running containers found."
         return
     fi
 
-    local profile=$(eval "tui_menu \"Stop Container\" \"Select profile to stop:\" $items")
+    local profile=$(eval "tui_menu \"Stop Container\" \"Select container to stop:\" $items")
     [[ -z "$profile" ]] && return
 
     local profile_path="$PROFILES_DIR/$profile.env"
@@ -231,13 +330,13 @@ container_down_menu() {
 
 # Container Logs Menu
 container_logs_menu() {
-    local items=$(get_profile_menu_items)
+    local items=$(get_running_container_menu_items)
     if [[ -z "$items" ]]; then
-        tui_msgbox "Error" "No profiles found."
+        tui_msgbox "Info" "No running containers found."
         return
     fi
 
-    local profile=$(eval "tui_menu \"View Logs\" \"Select profile:\" $items")
+    local profile=$(eval "tui_menu \"View Logs\" \"Select container:\" $items")
     [[ -z "$profile" ]] && return
 
     local profile_path="$PROFILES_DIR/$profile.env"
