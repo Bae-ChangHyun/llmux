@@ -26,24 +26,37 @@
 
 **너무 귀찮아서** 만들었습니다.
 
-프로필 파일 하나 만들어두면 `./run.sh mymodel up` 한 줄로 끝.
+**TUI 메뉴 기반 인터페이스로 복잡한 설정 없이 쉽게 시작하세요!**
 
 ---
 
 ## ✨ 핵심 기능
 
 🖥️ **TUI 인터랙티브 모드** - 메뉴 기반으로 모든 기능을 GUI처럼 사용
+
 🔄 **스마트 버전 관리** - Docker Hub 연동, Official/Nightly 자동 조회 및 정리
+
 🚀 **프로필 기반 관리** - `.env` 파일로 모델별 설정을 독립 관리
+
 ⚡ **GPU 자동 매핑** - GPU별 포트 자동 할당 및 충돌 방지
+
 🔨 **소스 빌드** - GPU 자동 감지로 10-30분 빌드 (Fast Build)
+
 🔗 **LoRA 지원** - 멀티 어댑터 동시 로드 및 자동 경로 매핑
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. Clone & 설정
+### 사전 준비
+
+```bash
+docker --version        # Docker 설치 확인
+docker compose version  # Docker Compose 설치 확인
+nvidia-smi             # NVIDIA GPU 확인
+```
+
+### Clone & 공통 설정
 
 ```bash
 git clone https://github.com/Bae-ChangHyun/vllm-compose.git
@@ -57,27 +70,40 @@ HF_CACHE_PATH=~/.cache/huggingface
 EOF
 ```
 
-### 2. Quick Setup (TUI 사용)
+---
+
+### 방법 1: TUI 사용 (추천)
+
+**메뉴 기반으로 모든 작업을 쉽게 수행**
 
 ```bash
 ./run.sh
-# 메인 메뉴에서 "Quick Setup" 선택
-# → 모델명 입력 → GPU/포트 설정 → 자동으로 프로필 생성
 ```
 
-또는 수동으로 프로필 생성:
+1. **Quick Setup** 선택
+2. 모델명 입력 (예: `Qwen/Qwen3-VL-30B`)
+3. GPU ID, 포트 입력
+4. 자동으로 프로필+설정 생성
+5. 컨테이너 시작 메뉴에서 바로 실행!
 
-<details>
-<summary><strong>수동 프로필 생성 방법</strong></summary>
+> TUI 메뉴에서 프로필 생성/수정/삭제, 컨테이너 관리, 버전 선택 등 모든 작업 가능
+
+---
+
+### 방법 2: CLI 사용
+
+**터미널 명령어로 직접 제어**
+
+#### 1) 프로필 생성
 
 ```bash
-# 1. config/mymodel.yaml 생성
+# config/mymodel.yaml
 cat > config/mymodel.yaml << EOF
 model: huggingface/model-name
 gpu-memory-utilization: 0.9
 EOF
 
-# 2. profiles/mymodel.env 생성
+# profiles/mymodel.env
 cat > profiles/mymodel.env << EOF
 CONTAINER_NAME=mymodel
 VLLM_PORT=8000
@@ -88,26 +114,10 @@ ENABLE_LORA=false
 EOF
 ```
 
-</details>
-
-### 3. 모델 서빙 시작
+#### 2) 실행
 
 ```bash
 ./run.sh mymodel up
-```
-
----
-
-## 📖 기본 사용법
-
-```bash
-./run.sh                # TUI 인터랙티브 모드
-./run.sh list           # 프로필 목록 및 상태
-./run.sh version        # 버전 정보 (Current/Latest/Nightly)
-./run.sh {profile} up   # 컨테이너 시작
-./run.sh {profile} down # 컨테이너 중지
-./run.sh {profile} logs # 로그 보기
-./run.sh gpu            # GPU 상태 확인
 ```
 
 ---
