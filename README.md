@@ -45,6 +45,17 @@
 
 ## ✨ 핵심 기능
 
+### 🖥️ 인터랙티브 TUI 모드
+* **메뉴 기반 인터페이스**: `./run.sh` 실행만으로 모든 기능을 GUI처럼 사용
+* **직관적인 조작**: 프로필 선택, 컨테이너 관리, 빌드까지 메뉴에서 선택
+* **CLI 호환**: TUI 없이 기존 명령어 방식도 그대로 지원
+
+### 🔄 스마트 버전 관리
+* **실시간 버전 조회**: Docker Hub API 연동으로 최신 릴리즈/Nightly 버전 자동 조회
+* **인터랙티브 버전 선택**: TUI에서 Current/Official/Nightly/Dev/Custom 선택
+* **자동 이미지 정리**: 새 버전 Pull 시 미사용 이전 이미지 자동 삭제
+* **버전 추적**: 실행 중인 컨테이너의 실제 이미지 버전 및 생성일 표시
+
 ### 🚀 프로필 기반 멀티 모델 관리
 * **간단한 프로필 시스템**: `.env` 파일로 모델별 설정을 독립적으로 관리
 * **원클릭 실행**: `./run.sh {profile} up` 한 줄로 모델 서빙 시작
@@ -124,13 +135,36 @@ cd vllm-compose
 `.env.common` 파일을 생성하고 아래 내용을 입력합니다.
 
 ```bash
-VLLM_VERSION=v0.13.0                   # vLLM 이미지 버전
+VLLM_VERSION=latest                    # vLLM 이미지 버전 (latest/nightly/v0.15.0 등)
 HF_TOKEN=your_huggingface_token        # Hugging Face 토큰
 HF_CACHE_PATH=~/.cache/huggingface     # 모델 캐시 경로
 LORA_BASE_PATH=/path/to/lora/adapters  # LoRA 어댑터 경로 (선택)
 ```
 
-### 3. 사용 가능한 프로필 확인
+> **Tip**: `./run.sh version` 명령으로 사용 가능한 버전 확인 가능
+
+### 3. 버전 정보 확인 (선택)
+
+```bash
+./run.sh version
+```
+
+출력 예시:
+```
+=== vLLM Version Information ===
+
+Current Setting: vllm/vllm-openai:latest
+
+Running Containers:
+  - vlm: vllm/vllm-openai:v0.15.0 (ID: abc123, Created: 2026-01-20)
+
+Available Versions:
+  - Official Latest: v0.15.0
+  - Nightly: Updated on 2026-01-29
+  - Dev Builds: 1 local build(s)
+```
+
+### 4. 사용 가능한 프로필 확인
 
 ```bash
 ./run.sh list
@@ -144,7 +178,7 @@ Available profiles:
   - clova
 ```
 
-### 4. 모델 서빙 시작
+### 5. 모델 서빙 시작
 
 ```bash
 ./run.sh vlm up
@@ -156,25 +190,87 @@ Available profiles:
 
 ## 📖 사용 방법
 
-### run.sh 명령어
+vLLM Compose는 **TUI (인터랙티브) 모드**와 **CLI (명령어) 모드** 두 가지 방식을 지원합니다.
+
+<details open>
+<summary><strong>🖥️ TUI 모드 (인터랙티브)</strong></summary>
+
+터미널에서 메뉴 기반 인터페이스로 모든 기능을 사용할 수 있습니다.
+
+```bash
+# TUI 모드 실행
+./run.sh tui
+
+# 또는 인자 없이 실행
+./run.sh
+```
+
+> **요구사항**: `whiptail` 또는 `dialog` 설치 필요
+> ```bash
+> # Ubuntu/Debian
+> sudo apt-get install whiptail
+> ```
+
+#### TUI 메인 메뉴
+
+```
+┌──────────────── vLLM Compose ─────────────────┐
+│                                               │
+│  1. 🚀 Start Container    컨테이너 시작        │
+│  2. 🛑 Stop Container     컨테이너 중지        │
+│  3. 📋 View Logs          로그 보기           │
+│  4. 📊 Container Status   컨테이너 상태        │
+│  5. 🎮 GPU Status         GPU 상태 확인        │
+│  6. 🔨 Build vLLM         vLLM 소스 빌드       │
+│  7. 🗂️  Manage Images      이미지 관리         │
+│  8. ❌ Exit               종료                │
+│                                               │
+└───────────────────────────────────────────────┘
+```
+
+#### 주요 기능
+
+| 메뉴 | 설명 |
+|:---:|:---|
+| Start Container | 프로필 선택 → 버전 선택 (Current/Official/Nightly/Dev/Custom) → 컨테이너 시작 |
+| Stop Container | 실행 중인 컨테이너 선택 → 중지 및 삭제 |
+| View Logs | 컨테이너 선택 → 실시간 로그 표시 |
+| GPU Status | nvidia-smi 출력을 팝업으로 표시 |
+| Build vLLM | 브랜치 입력 → Fast/Official 빌드 선택 |
+| Manage Images | vllm-dev 이미지 목록 조회 및 삭제 |
+| Version Info | 현재/최신 버전 정보 및 실행 중인 컨테이너 버전 표시 |
+
+</details>
+
+<details>
+<summary><strong>⌨️ CLI 모드 (명령어)</strong></summary>
+
+터미널에서 직접 명령어를 입력하여 사용합니다.
+
+#### 명령어 목록
 
 | 명령어 | 설명 |
 |:---:|:---|
-| `./run.sh list` | 사용 가능한 프로필 목록 표시 |
+| `./run.sh list` | 사용 가능한 프로필 목록 및 상태 표시 |
+| `./run.sh version` | vLLM 버전 정보 (Current/Latest/Nightly/Dev) 조회 |
 | `./run.sh {profile} up` | 지정된 프로필로 컨테이너 시작 |
 | `./run.sh {profile} up --dev` | 소스 빌드한 vLLM 이미지로 컨테이너 시작 |
 | `./run.sh {profile} down` | 지정된 프로필의 컨테이너 중지 및 삭제 |
 | `./run.sh {profile} logs` | 컨테이너 로그 실시간 보기 |
 | `./run.sh {profile} status` | 컨테이너 상태 확인 |
 | `./run.sh build [branch]` | vLLM 소스 빌드 (기본: main 브랜치) |
+| `./run.sh images` | 빌드된 vllm-dev 이미지 목록 |
 | `./run.sh ps` | 현재 실행 중인 모든 컨테이너 목록 |
 | `./run.sh gpu` | GPU 상태 및 사용량 확인 |
 
-### 사용 예시
+#### 사용 예시
 
 ```bash
 # 프로필 목록 확인
 ./run.sh list
+
+# 버전 정보 확인 (현재/최신/Nightly)
+./run.sh version
 
 # VLM 모델 시작
 ./run.sh vlm up
@@ -189,8 +285,7 @@ Available profiles:
 ./run.sh vlm down
 ```
 
-<details>
-<summary><strong>직접 Docker Compose 명령 사용하기</strong></summary>
+#### 직접 Docker Compose 명령 사용하기
 
 run.sh 스크립트 없이 Docker Compose를 직접 사용할 수도 있습니다.
 
