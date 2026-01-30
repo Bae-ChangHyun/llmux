@@ -374,7 +374,27 @@ response = client.chat.completions.create(
 </details>
 
 <details>
-<summary><strong>🐛 문제 해결</strong></summary>
+<summary><strong>🐛 문제 해결 & FAQ</strong></summary>
+
+### vLLM 추가 인자는 어디에 설정하나요?
+
+모든 vLLM 인자는 `config/*.yaml` 파일에 추가하면 됩니다.
+
+```yaml
+# config/mymodel.yaml
+model: huggingface/model-name
+gpu-memory-utilization: 0.9
+max-model-len: 32768
+
+# 추가 vLLM 인자들
+trust-remote-code: true
+dtype: bfloat16
+max-num-seqs: 256
+enable-chunked-prefill: true
+```
+
+> vLLM의 모든 CLI 인자를 YAML 형식으로 작성 가능
+> 참고: [vLLM Engine Arguments](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#command-line-arguments-for-the-server)
 
 ### 컨테이너가 시작되지 않음
 

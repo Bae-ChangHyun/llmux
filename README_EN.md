@@ -374,7 +374,27 @@ response = client.chat.completions.create(
 </details>
 
 <details>
-<summary><strong>🐛 Troubleshooting</strong></summary>
+<summary><strong>🐛 Troubleshooting & FAQ</strong></summary>
+
+### Where do I add vLLM arguments?
+
+All vLLM arguments can be added to `config/*.yaml` files.
+
+```yaml
+# config/mymodel.yaml
+model: huggingface/model-name
+gpu-memory-utilization: 0.9
+max-model-len: 32768
+
+# Additional vLLM arguments
+trust-remote-code: true
+dtype: bfloat16
+max-num-seqs: 256
+enable-chunked-prefill: true
+```
+
+> Any vLLM CLI argument can be written in YAML format
+> Reference: [vLLM Engine Arguments](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#command-line-arguments-for-the-server)
 
 ### Container Won't Start
 
