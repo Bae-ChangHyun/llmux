@@ -213,6 +213,7 @@ When starting a container, select version:
 |:---|:---|
 | `./run.sh build` | Fast build main branch |
 | `./run.sh build [branch]` | Build specific branch |
+| `./run.sh build [branch] --repo <url>` | Build from custom repo/fork |
 | `./run.sh build --official` | Official build (all GPUs) |
 | `./run.sh build [branch] --tag TAG` | Build with custom tag |
 
@@ -299,6 +300,18 @@ Detected GPU: NVIDIA RTX 4080 (sm_8.9)
 Building for your GPU only - MUCH faster!
 ```
 
+### Custom Repository (Fork)
+
+Build from someone's fork or your own repo
+
+```bash
+# Custom repo
+./run.sh build main --repo https://github.com/username/vllm.git
+
+# Custom repo + specific branch
+./run.sh build custom-feature --repo https://github.com/username/vllm.git
+```
+
 ### Official Build
 
 All GPU architectures (3-6 hours)
@@ -306,6 +319,23 @@ All GPU architectures (3-6 hours)
 ```bash
 ./run.sh build --official
 ./run.sh build v0.15.0 --official
+```
+
+### Check Build Information
+
+View detailed info of built images (repo, branch, commit, date)
+
+```bash
+./run.sh images
+```
+
+Output:
+```
+Tag: vllm-dev:main-20260130
+  Size: 42GB | Created: 2026-01-30 15:30
+  Repository: vllm-project/vllm
+  Branch: main | Commit: abc1234
+  Built: 2026-01-30 | Type: fast
 ```
 
 ### Run with Dev Build

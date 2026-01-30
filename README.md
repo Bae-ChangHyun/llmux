@@ -213,6 +213,7 @@ vllm-compose/
 |:---|:---|
 | `./run.sh build` | main 브랜치 Fast Build |
 | `./run.sh build [branch]` | 특정 브랜치 빌드 |
+| `./run.sh build [branch] --repo <url>` | 커스텀 repo/fork에서 빌드 |
 | `./run.sh build --official` | Official Build (모든 GPU) |
 | `./run.sh build [branch] --tag TAG` | 커스텀 태그로 빌드 |
 
@@ -299,6 +300,18 @@ Detected GPU: NVIDIA RTX 4080 (sm_8.9)
 Building for your GPU only - MUCH faster!
 ```
 
+### 커스텀 Repository (Fork)
+
+다른 사람의 fork나 자신의 repo에서 빌드
+
+```bash
+# 커스텀 repo
+./run.sh build main --repo https://github.com/username/vllm.git
+
+# 커스텀 repo + 특정 브랜치
+./run.sh build custom-feature --repo https://github.com/username/vllm.git
+```
+
 ### Official Build
 
 모든 GPU 아키텍처 지원 (3-6시간)
@@ -306,6 +319,23 @@ Building for your GPU only - MUCH faster!
 ```bash
 ./run.sh build --official
 ./run.sh build v0.15.0 --official
+```
+
+### 빌드 정보 조회
+
+빌드한 이미지의 상세 정보 확인 (repo, branch, commit, 날짜)
+
+```bash
+./run.sh images
+```
+
+출력:
+```
+Tag: vllm-dev:main-20260130
+  Size: 42GB | Created: 2026-01-30 15:30
+  Repository: vllm-project/vllm
+  Branch: main | Commit: abc1234
+  Built: 2026-01-30 | Type: fast
 ```
 
 ### Dev 빌드로 실행
