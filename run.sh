@@ -971,6 +971,18 @@ build_menu() {
 
 # Build vLLM Menu
 build_vllm_menu() {
+    # Select repo
+    local repo_choice=$(tui_menu "Repository" "Select vLLM repository:" \
+        "official" "vllm-project/vllm (Official)" \
+        "custom" "Custom fork/repository")
+    [[ -z "$repo_choice" ]] && return
+
+    local repo_url="https://github.com/vllm-project/vllm.git"
+    if [[ "$repo_choice" == "custom" ]]; then
+        repo_url=$(tui_inputbox "Custom Repository" "Enter repository URL:" "https://github.com/username/vllm.git")
+        [[ -z "$repo_url" ]] && return
+    fi
+
     local branch=$(tui_inputbox "Branch" "Enter branch name:" "main")
     [[ -z "$branch" ]] && return
 
@@ -984,15 +996,18 @@ build_vllm_menu() {
         custom_tag=$(tui_inputbox "Tag" "Enter custom tag:" "")
     fi
 
-    local msg="Branch: $branch\nBuild type: $build_type"
+    # Extract repo name for display
+    local repo_name=$(echo "$repo_url" | sed 's|https://github.com/||' | sed 's|\.git||')
+
+    local msg="Repository: $repo_name\nBranch: $branch\nBuild type: $build_type"
     [[ -n "$custom_tag" ]] && msg="$msg\nTag: $custom_tag"
 
     if tui_yesno "Confirm Build" "$msg\n\nStart build? This may take a while."; then
         clear
         if [[ "$build_type" == "official" ]]; then
-            run_build_official "$branch" "$custom_tag"
+            run_build_official "$repo_url" "$branch" "$custom_tag"
         else
-            run_build_fast "$branch" "$custom_tag"
+            run_build_fast "$repo_url" "$branch" "$custom_tag"
         fi
         echo ""
         echo -e "${YELLOW}Press Enter to continue...${NC}"
@@ -1005,19 +1020,40 @@ build_list_images() {
     local tmp_file=$(mktemp)
 
     echo "vLLM Development Images" > "$tmp_file"
-    echo "========================" >> "$tmp_file"
+    echo "=======================" >> "$tmp_file"
     echo "" >> "$tmp_file"
 
     if ! docker images vllm-dev --format "{{.Tag}}" 2>/dev/null | grep -q .; then
         echo "No vllm-dev images found." >> "$tmp_file"
         echo "" >> "$tmp_file"
         echo "Build one with: ./run.sh build [branch]" >> "$tmp_file"
+        echo "           or: ./run.sh build [branch] --repo <url>" >> "$tmp_file"
     else
-        printf "%-25s %-12s %-20s\n" "TAG" "SIZE" "CREATED" >> "$tmp_file"
-        echo "-----------------------------------------------------------" >> "$tmp_file"
         docker images vllm-dev --format "{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}" | \
         while IFS=$'\t' read -r tag size created; do
-            printf "%-25s %-12s %-20s\n" "$tag" "$size" "$created" >> "$tmp_file"
+            # Get label info
+            local repo_url=$(docker inspect "vllm-dev:$tag" --format='{{index .Config.Labels "vllm.repo.url"}}' 2>/dev/null)
+            local branch=$(docker inspect "vllm-dev:$tag" --format='{{index .Config.Labels "vllm.repo.branch"}}' 2>/dev/null)
+            local commit=$(docker inspect "vllm-dev:$tag" --format='{{index .Config.Labels "vllm.commit.hash"}}' 2>/dev/null)
+            local build_date=$(docker inspect "vllm-dev:$tag" --format='{{index .Config.Labels "vllm.build.date"}}' 2>/dev/null)
+
+            echo "Tag: vllm-dev:$tag" >> "$tmp_file"
+            echo "  Size: $size | Created: $created" >> "$tmp_file"
+
+            if [[ -n "$repo_url" && "$repo_url" != "<no value>" ]]; then
+                # Extract repo name from URL
+                local repo_name=$(echo "$repo_url" | sed 's|https://github.com/||' | sed 's|\.git||')
+                echo "  Repository: $repo_name" >> "$tmp_file"
+                echo "  Branch: $branch | Commit: $commit" >> "$tmp_file"
+                if [[ -n "$build_date" && "$build_date" != "<no value>" ]]; then
+                    local build_date_short=$(echo "$build_date" | cut -d'T' -f1)
+                    echo "  Built: $build_date_short" >> "$tmp_file"
+                fi
+            else
+                echo "  (Legacy build - no metadata)" >> "$tmp_file"
+            fi
+
+            echo "---------------------------------------------------------------" >> "$tmp_file"
         done
     fi
 
@@ -1196,9 +1232,10 @@ show_help() {
     echo "  status          - Show container status"
     echo ""
     echo "Build commands:"
-    echo "  ./run.sh build [branch]            # Build with auto date tag (branch-YYYYMMDD)"
-    echo "  ./run.sh build [branch] --tag TAG  # Build with custom tag"
-    echo "  ./run.sh build --official          # Build for all GPU architectures (slow)"
+    echo "  ./run.sh build [branch]                      # Build with auto date tag"
+    echo "  ./run.sh build [branch] --tag TAG            # Build with custom tag"
+    echo "  ./run.sh build [branch] --repo <repo-url>    # Build from custom repo"
+    echo "  ./run.sh build --official                    # Build for all GPU architectures"
     echo ""
     echo "Examples:"
     echo "  ./run.sh vlm up                        # Start VLM (official image)"
@@ -1338,6 +1375,7 @@ detect_gpu_arch() {
 }
 
 run_build() {
+    local repo_url="https://github.com/vllm-project/vllm.git"
     local branch="main"
     local use_official=false
     local custom_tag=""
@@ -1345,6 +1383,10 @@ run_build() {
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case $1 in
+            --repo)
+                repo_url="$2"
+                shift 2
+                ;;
             --official)
                 use_official=true
                 shift
@@ -1361,36 +1403,53 @@ run_build() {
     done
 
     if [[ "$use_official" == "true" ]]; then
-        run_build_official "$branch" "$custom_tag"
+        run_build_official "$repo_url" "$branch" "$custom_tag"
     else
-        run_build_fast "$branch" "$custom_tag"
+        run_build_fast "$repo_url" "$branch" "$custom_tag"
     fi
 }
 
 # Clone or update vLLM repository
 clone_or_update_vllm() {
-    local branch=$1
+    local repo_url=${1:-https://github.com/vllm-project/vllm.git}
+    local branch=${2:-main}
     local vllm_src_dir="$SCRIPT_DIR/.vllm-src"
 
     if [[ -d "$vllm_src_dir/.git" ]]; then
         echo -e "${BLUE}Updating existing vLLM source...${NC}"
         cd "$vllm_src_dir"
-        git fetch origin
-        git checkout "$branch" 2>/dev/null || git checkout -b "$branch" "origin/$branch"
-        git pull origin "$branch" 2>/dev/null || true
+
+        # Check if remote URL matches
+        local current_remote=$(git remote get-url origin)
+        if [[ "$current_remote" != "$repo_url" ]]; then
+            echo -e "${YELLOW}Repository URL changed. Re-cloning...${NC}"
+            cd "$SCRIPT_DIR"
+            rm -rf "$vllm_src_dir"
+            git clone "$repo_url" "$vllm_src_dir"
+            cd "$vllm_src_dir"
+            git checkout "$branch"
+        else
+            git fetch origin
+            git checkout "$branch" 2>/dev/null || git checkout -b "$branch" "origin/$branch"
+            git pull origin "$branch" 2>/dev/null || true
+        fi
     else
         echo -e "${BLUE}Cloning vLLM repository...${NC}"
         rm -rf "$vllm_src_dir"
-        git clone https://github.com/vllm-project/vllm.git "$vllm_src_dir"
+        git clone "$repo_url" "$vllm_src_dir"
         cd "$vllm_src_dir"
         git checkout "$branch"
     fi
+
+    # Return commit hash
+    git rev-parse --short HEAD
 }
 
 # Fast local build - uses official Dockerfile with YOUR GPU only
 run_build_fast() {
-    local branch=${1:-main}
-    local custom_tag=${2:-}
+    local repo_url=${1:-https://github.com/vllm-project/vllm.git}
+    local branch=${2:-main}
+    local custom_tag=${3:-}
     local vllm_src_dir="$SCRIPT_DIR/.vllm-src"
 
     # Auto-detect GPU architecture
@@ -1407,24 +1466,32 @@ run_build_fast() {
     local date_tag="${branch}-$(date +%Y%m%d)"
     local main_tag="${custom_tag:-$date_tag}"
 
-    echo -e "${BLUE}Building vLLM from source (branch: $branch)${NC}"
+    echo -e "${BLUE}Building vLLM from source${NC}"
+    echo -e "${YELLOW}Repository: $repo_url${NC}"
+    echo -e "${YELLOW}Branch: $branch${NC}"
     echo -e "${GREEN}Detected GPU: $gpu_name (sm_$gpu_arch)${NC}"
     echo -e "${GREEN}Building for your GPU only - MUCH faster!${NC}"
     echo -e "${YELLOW}Tag: vllm-dev:$main_tag${NC}"
     echo ""
 
-    clone_or_update_vllm "$branch"
+    local commit_hash=$(clone_or_update_vllm "$repo_url" "$branch")
+    local build_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
     echo ""
     echo -e "${BLUE}Building with official Dockerfile (GPU: $gpu_arch only)...${NC}"
     echo ""
 
-    # Build using official Dockerfile with local GPU arch only
+    # Build using official Dockerfile with local GPU arch only + labels
     docker build \
         -f docker/Dockerfile \
         --build-arg torch_cuda_arch_list="$gpu_arch" \
         --build-arg RUN_WHEEL_CHECK=false \
         --target vllm-openai \
+        --label "vllm.repo.url=$repo_url" \
+        --label "vllm.repo.branch=$branch" \
+        --label "vllm.commit.hash=$commit_hash" \
+        --label "vllm.build.date=$build_date" \
+        --label "vllm.build.type=fast" \
         -t "vllm-dev:$main_tag" \
         -t "vllm-dev:$branch" \
         .
@@ -1439,6 +1506,12 @@ run_build_fast() {
         echo "Images tagged as:"
         echo "  - vllm-dev:$main_tag"
         echo "  - vllm-dev:$branch (latest for this branch)"
+        echo ""
+        echo "Build info:"
+        echo "  - Repository: $repo_url"
+        echo "  - Branch: $branch"
+        echo "  - Commit: $commit_hash"
+        echo "  - Build date: $build_date"
         echo ""
         echo "Usage:"
         echo "  ./run.sh <profile> up --dev              # Use latest ($branch)"
@@ -1452,32 +1525,41 @@ run_build_fast() {
 
 # Official build - builds for ALL GPU architectures (slow)
 run_build_official() {
-    local branch=${1:-main}
-    local custom_tag=${2:-}
+    local repo_url=${1:-https://github.com/vllm-project/vllm.git}
+    local branch=${2:-main}
+    local custom_tag=${3:-}
     local vllm_src_dir="$SCRIPT_DIR/.vllm-src"
 
     # Generate tags
     local date_tag="${branch}-$(date +%Y%m%d)"
     local main_tag="${custom_tag:-$date_tag}"
 
-    echo -e "${BLUE}Building vLLM from source (branch: $branch)...${NC}"
+    echo -e "${BLUE}Building vLLM from source${NC}"
+    echo -e "${YELLOW}Repository: $repo_url${NC}"
+    echo -e "${YELLOW}Branch: $branch${NC}"
     echo -e "${YELLOW}Using official vLLM Dockerfile (ALL architectures)${NC}"
     echo -e "${YELLOW}This may take several HOURS on first build.${NC}"
     echo -e "${YELLOW}Tag: vllm-dev:$main_tag${NC}"
     echo ""
 
-    clone_or_update_vllm "$branch"
+    local commit_hash=$(clone_or_update_vllm "$repo_url" "$branch")
+    local build_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
     echo ""
     echo -e "${BLUE}Building Docker image using official Dockerfile...${NC}"
     echo ""
 
-    # Build using official Dockerfile (all architectures)
+    # Build using official Dockerfile (all architectures) + labels
     # Skip wheel size check for official builds (builds for all GPUs are large)
     docker build \
         -f docker/Dockerfile \
         --build-arg RUN_WHEEL_CHECK=false \
         --target vllm-openai \
+        --label "vllm.repo.url=$repo_url" \
+        --label "vllm.repo.branch=$branch" \
+        --label "vllm.commit.hash=$commit_hash" \
+        --label "vllm.build.date=$build_date" \
+        --label "vllm.build.type=official" \
         -t "vllm-dev:$main_tag" \
         -t "vllm-dev:$branch" \
         .
@@ -1492,6 +1574,12 @@ run_build_official() {
         echo "Images tagged as:"
         echo "  - vllm-dev:$main_tag"
         echo "  - vllm-dev:$branch (latest for this branch)"
+        echo ""
+        echo "Build info:"
+        echo "  - Repository: $repo_url"
+        echo "  - Branch: $branch"
+        echo "  - Commit: $commit_hash"
+        echo "  - Build date: $build_date"
         echo ""
         echo "Usage:"
         echo "  ./run.sh <profile> up --dev              # Use latest ($branch)"
@@ -1645,17 +1733,40 @@ show_images() {
         echo -e "${YELLOW}No vllm-dev images found.${NC}"
         echo ""
         echo "Build one with: ./run.sh build [branch]"
+        echo "           or: ./run.sh build [branch] --repo <repo-url>"
         return 0
     fi
 
-    printf "%-30s %-15s %-20s\n" "TAG" "SIZE" "CREATED"
-    echo "---------------------------------------------------------------------"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-    docker images vllm-dev --format "{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}" | \
-    while IFS=$'\t' read -r tag size created; do
-        # Parse created date (format: 2026-01-16 17:47:23 +0900 KST)
-        created_short=$(echo "$created" | cut -d' ' -f1,2)
-        printf "%-30s %-15s %-20s\n" "$tag" "$size" "$created_short"
+    docker images vllm-dev --format "{{.Tag}}\t{{.ID}}\t{{.Size}}\t{{.CreatedAt}}" | \
+    while IFS=$'\t' read -r tag image_id size created; do
+        local created_short=$(echo "$created" | cut -d' ' -f1,2)
+
+        # Get label info
+        local repo_url=$(docker inspect "vllm-dev:$tag" --format='{{index .Config.Labels "vllm.repo.url"}}' 2>/dev/null)
+        local branch=$(docker inspect "vllm-dev:$tag" --format='{{index .Config.Labels "vllm.repo.branch"}}' 2>/dev/null)
+        local commit=$(docker inspect "vllm-dev:$tag" --format='{{index .Config.Labels "vllm.commit.hash"}}' 2>/dev/null)
+        local build_date=$(docker inspect "vllm-dev:$tag" --format='{{index .Config.Labels "vllm.build.date"}}' 2>/dev/null)
+        local build_type=$(docker inspect "vllm-dev:$tag" --format='{{index .Config.Labels "vllm.build.type"}}' 2>/dev/null)
+
+        echo -e "${GREEN}Tag:${NC} vllm-dev:$tag"
+        echo "  Size: $size | Created: $created_short"
+
+        if [[ -n "$repo_url" && "$repo_url" != "<no value>" ]]; then
+            # Extract repo name from URL
+            local repo_name=$(echo "$repo_url" | sed 's|https://github.com/||' | sed 's|\.git||')
+            echo "  Repository: $repo_name"
+            echo "  Branch: $branch | Commit: $commit"
+            if [[ -n "$build_date" && "$build_date" != "<no value>" ]]; then
+                local build_date_short=$(echo "$build_date" | cut -d'T' -f1)
+                echo "  Built: $build_date_short | Type: $build_type"
+            fi
+        else
+            echo -e "  ${YELLOW}(Legacy build - no metadata)${NC}"
+        fi
+
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     done
 
     echo ""
