@@ -17,6 +17,9 @@ NC='\033[0m' # No Color
 # TUI Tool (whiptail or dialog)
 TUI_TOOL=""
 
+# Cache for version info (valid for current execution only)
+declare -A VERSION_CACHE
+
 # Check for TUI tool availability
 check_tui_tool() {
     if command -v whiptail &> /dev/null; then
@@ -30,6 +33,183 @@ check_tui_tool() {
         echo "Install with: apt-get install whiptail"
         return 1
     fi
+}
+
+#=============================================================================
+# VERSION MANAGEMENT FUNCTIONS
+#=============================================================================
+
+# Fetch version info from Docker Hub
+fetch_docker_hub_version() {
+    local tag=$1
+    local cache_key="dockerhub_${tag}"
+
+    # Return cached value if exists
+    if [[ -n "${VERSION_CACHE[$cache_key]}" ]]; then
+        echo "${VERSION_CACHE[$cache_key]}"
+        return 0
+    fi
+
+    # Query Docker Hub API
+    local api_url="https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags/${tag}"
+    local response=$(curl -s "$api_url" 2>/dev/null)
+
+    if [[ -z "$response" ]] || echo "$response" | grep -q "not found"; then
+        echo "unknown"
+        return 1
+    fi
+
+    # Extract last updated date
+    local last_updated=$(echo "$response" | grep -o '"last_updated":"[^"]*"' | cut -d'"' -f4 | cut -d'T' -f1)
+
+    # Cache and return
+    VERSION_CACHE[$cache_key]="$last_updated"
+    echo "$last_updated"
+}
+
+# Get latest release version tag
+get_latest_release_version() {
+    local cache_key="latest_release"
+
+    if [[ -n "${VERSION_CACHE[$cache_key]}" ]]; then
+        echo "${VERSION_CACHE[$cache_key]}"
+        return 0
+    fi
+
+    # Get tags from Docker Hub
+    local api_url="https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags?page_size=100"
+    local response=$(curl -s "$api_url" 2>/dev/null)
+
+    # Extract version tags (v0.x.x format)
+    local version=$(echo "$response" | grep -o '"name":"v[0-9]\+\.[0-9]\+\.[0-9]\+"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$version" ]]; then
+        version="unknown"
+    fi
+
+    VERSION_CACHE[$cache_key]="$version"
+    echo "$version"
+}
+
+# Get current container version (detailed info)
+get_current_container_version() {
+    local container_name=$1
+
+    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${container_name}$"; then
+        echo "Not running"
+        return 1
+    fi
+
+    local image=$(docker inspect "$container_name" --format='{{.Config.Image}}' 2>/dev/null)
+    local image_id=$(docker inspect "$container_name" --format='{{.Image}}' 2>/dev/null | cut -c8-19)
+
+    # Get image creation date
+    local created=$(docker inspect "$image" --format='{{.Created}}' 2>/dev/null | cut -d'T' -f1)
+
+    echo "$image (ID: $image_id, Created: $created)"
+}
+
+# Get current profile's container version
+get_profile_container_version() {
+    local profile_path=$1
+    local container_name=$(grep "^CONTAINER_NAME=" "$profile_path" | cut -d'=' -f2)
+
+    get_current_container_version "$container_name"
+}
+
+# Cleanup unused vLLM images
+cleanup_unused_vllm_images() {
+    local image_pattern=$1  # "nightly" or "v*" for official releases
+
+    echo -e "${YELLOW}Cleaning up unused vLLM images (pattern: $image_pattern)...${NC}"
+
+    # Get all vllm images matching pattern
+    local all_images=$(docker images "vllm/vllm-openai" --format "{{.Repository}}:{{.Tag}}" | grep "$image_pattern")
+
+    # Get images in use by containers
+    local used_images=$(docker ps -a --format "{{.Image}}" | grep "vllm/vllm-openai" | grep "$image_pattern" | sort -u)
+
+    # Delete unused images
+    local deleted_count=0
+    for img in $all_images; do
+        if ! echo "$used_images" | grep -q "^${img}$"; then
+            echo "  Removing unused image: $img"
+            docker rmi "$img" 2>/dev/null && ((deleted_count++))
+        fi
+    done
+
+    if [[ $deleted_count -gt 0 ]]; then
+        echo -e "${GREEN}Cleaned up $deleted_count unused image(s)${NC}"
+    else
+        echo -e "${BLUE}No unused images to clean up${NC}"
+    fi
+}
+
+# Pull latest image and cleanup old ones
+pull_and_cleanup() {
+    local tag=$1
+    local cleanup_pattern=$2
+
+    echo -e "${BLUE}Pulling vllm/vllm-openai:$tag...${NC}"
+    docker pull "vllm/vllm-openai:$tag"
+
+    if [[ $? -eq 0 ]]; then
+        echo -e "${GREEN}Successfully pulled vllm/vllm-openai:$tag${NC}"
+        # Cleanup old images
+        cleanup_unused_vllm_images "$cleanup_pattern"
+        return 0
+    else
+        echo -e "${RED}Failed to pull image${NC}"
+        return 1
+    fi
+}
+
+# Show version information
+show_version_info() {
+    echo -e "${BLUE}=== vLLM Version Information ===${NC}"
+    echo ""
+
+    # Current version from .env.common
+    local current_version=$(grep "^VLLM_VERSION=" "$COMMON_ENV" | cut -d'=' -f2)
+    echo -e "${GREEN}Current Setting:${NC} vllm/vllm-openai:${current_version}"
+    echo ""
+
+    # Running containers and their versions
+    echo -e "${BLUE}Running Containers:${NC}"
+    local found_running=false
+    for profile in "$PROFILES_DIR"/*.env; do
+        if [[ -f "$profile" ]]; then
+            local container_name=$(grep "^CONTAINER_NAME=" "$profile" | cut -d'=' -f2)
+            if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${container_name}$"; then
+                local version=$(get_current_container_version "$container_name")
+                echo "  - $container_name: $version"
+                found_running=true
+            fi
+        fi
+    done
+    if [[ "$found_running" == "false" ]]; then
+        echo "  (No running containers)"
+    fi
+    echo ""
+
+    # Latest release
+    echo -n -e "${YELLOW}Fetching Docker Hub info...${NC}"
+    local latest_version=$(get_latest_release_version)
+    local nightly_date=$(fetch_docker_hub_version "nightly")
+    echo -e "\r                                      \r"  # Clear line
+
+    echo -e "${GREEN}Available Versions:${NC}"
+    echo "  - Official Latest: ${latest_version}"
+    echo "  - Nightly: Updated on ${nightly_date}"
+
+    # Dev builds
+    local dev_count=$(docker images vllm-dev --format "{{.Tag}}" 2>/dev/null | wc -l)
+    echo "  - Dev Builds: ${dev_count} local build(s)"
+    if [[ $dev_count -gt 0 ]]; then
+        docker images vllm-dev --format "    • {{.Tag}} ({{.Size}}, {{.CreatedSince}})" 2>/dev/null
+    fi
+
+    echo ""
 }
 
 # TUI Helper Functions
@@ -104,7 +284,11 @@ get_config_menu_items() {
 get_image_menu_items() {
     local items=""
     while IFS=$'\t' read -r tag size created; do
-        items="$items $tag \"Size:$size\""
+        # Parse created date (format: 2026-01-16 17:47:23 +0900 KST)
+        local created_date=$(echo "$created" | cut -d' ' -f1)
+        # Extract branch from tag (format: branch-YYYYMMDD or just branch)
+        local branch=$(echo "$tag" | sed 's/-[0-9]\{8\}$//')
+        items="$items $tag \"Branch:$branch Size:$size Date:$created_date\""
     done < <(docker images vllm-dev --format "{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}" 2>/dev/null)
     echo "$items"
 }
@@ -268,36 +452,107 @@ container_up_menu() {
 
     local profile_path="$PROFILES_DIR/$profile.env"
 
-    # Select mode
-    local mode=$(tui_menu "Start Mode" "Select start mode:" \
-        "official" "Use official vLLM image" \
-        "dev" "Use dev build (from source)")
-    [[ -z "$mode" ]] && return
+    # Get current running version for this profile
+    local current_running=$(get_profile_container_version "$profile_path")
+
+    # Fetch version info
+    echo "Fetching version information..."
+    local latest_release=$(get_latest_release_version)
+    local nightly_date=$(fetch_docker_hub_version "nightly")
+
+    # Build menu options
+    local menu_options=(
+        "current" "Current running: $current_running"
+        "official" "Official Latest: $latest_release"
+        "nightly" "Nightly: $nightly_date"
+        "dev" "Dev build (local source builds)"
+        "custom" "Custom tag (specify exact version)"
+    )
+
+    # Select version type
+    local version_choice=$(tui_menu "Select vLLM Version" "Profile: $profile" "${menu_options[@]}")
+    [[ -z "$version_choice" ]] && return
 
     local use_dev="false"
+    local version_tag=""
     local custom_tag=""
+    local need_pull="false"
 
-    if [[ "$mode" == "dev" ]]; then
-        use_dev="true"
-
-        # Check for available images
-        local img_items=$(get_image_menu_items)
-        if [[ -n "$img_items" ]]; then
-            local tag_choice=$(tui_menu "Select Image" "Choose dev image tag:" \
-                "latest" "Use latest branch tag" \
-                $img_items)
-
-            if [[ -n "$tag_choice" && "$tag_choice" != "latest" ]]; then
-                custom_tag="$tag_choice"
+    case "$version_choice" in
+        current)
+            # Use current .env.common setting
+            version_tag=$(grep "^VLLM_VERSION=" "$COMMON_ENV" | cut -d'=' -f2)
+            ;;
+        official)
+            version_tag="$latest_release"
+            need_pull="true"
+            if tui_yesno "Pull Official Latest" "Pull vllm/vllm-openai:$latest_release?"; then
+                clear
+                if ! pull_and_cleanup "$latest_release" "v[0-9]*"; then
+                    echo -e "${YELLOW}Press Enter to continue...${NC}"
+                    read -r
+                    return
+                fi
+                echo ""
+                echo -e "${YELLOW}Press Enter to continue...${NC}"
+                read -r
+            else
+                return
             fi
-        fi
-    fi
+            ;;
+        nightly)
+            version_tag="nightly"
+            need_pull="true"
+            if tui_yesno "Pull Nightly Build" "Pull latest nightly build ($nightly_date)?"; then
+                clear
+                if ! pull_and_cleanup "nightly" "nightly"; then
+                    echo -e "${YELLOW}Press Enter to continue...${NC}"
+                    read -r
+                    return
+                fi
+                echo ""
+                echo -e "${YELLOW}Press Enter to continue...${NC}"
+                read -r
+            else
+                return
+            fi
+            ;;
+        dev)
+            use_dev="true"
+            # Check for available dev images
+            local img_items=$(get_image_menu_items)
+            if [[ -n "$img_items" ]]; then
+                local tag_choice=$(eval "tui_menu \"Select Dev Image\" \"Choose dev image tag:\" $img_items")
+                if [[ -n "$tag_choice" ]]; then
+                    custom_tag="$tag_choice"
+                else
+                    return
+                fi
+            else
+                tui_msgbox "Error" "No dev images found. Build one first with: ./run.sh build"
+                return
+            fi
+            ;;
+        custom)
+            version_tag=$(tui_inputbox "Custom Tag" "Enter custom tag (e.g., v0.14.0):" "")
+            [[ -z "$version_tag" ]] && return
+            ;;
+    esac
 
     # Confirmation
-    local msg="Profile: $profile\nMode: $mode"
-    [[ -n "$custom_tag" ]] && msg="$msg\nTag: $custom_tag"
+    local msg="Profile: $profile\n"
+    if [[ "$use_dev" == "true" ]]; then
+        msg="${msg}Version: Dev Build (vllm-dev:$custom_tag)"
+    else
+        msg="${msg}Version: vllm/vllm-openai:$version_tag"
+    fi
 
     if tui_yesno "Confirm Start" "$msg\n\nStart this container?"; then
+        # Update .env.common if version changed (except for dev builds)
+        if [[ "$use_dev" == "false" && "$version_tag" != "" ]]; then
+            sed -i "s/^VLLM_VERSION=.*/VLLM_VERSION=$version_tag/" "$COMMON_ENV"
+        fi
+
         clear
         run_up "$profile_path" "$profile" "$use_dev" "$custom_tag"
         echo ""
@@ -794,15 +1049,55 @@ system_menu() {
             "1" "GPU Usage" \
             "2" "Running Containers" \
             "3" "All Profiles Status" \
+            "4" "Version Information" \
             "B" "Back to Main Menu")
 
         case "$choice" in
             1) system_gpu_info ;;
             2) system_containers ;;
             3) system_profiles_status ;;
+            4) system_version_info ;;
             B|"") break ;;
         esac
     done
+}
+
+# System Version Info
+system_version_info() {
+    local tmp_file=$(mktemp)
+
+    echo "vLLM Version Information" > "$tmp_file"
+    echo "========================" >> "$tmp_file"
+    echo "" >> "$tmp_file"
+
+    # Current version setting
+    local current_version=$(grep "^VLLM_VERSION=" "$COMMON_ENV" | cut -d'=' -f2)
+    echo "Current Setting: vllm/vllm-openai:$current_version" >> "$tmp_file"
+    echo "" >> "$tmp_file"
+
+    # Fetch latest release
+    echo "Fetching version information from Docker Hub..." >> "$tmp_file"
+    local latest_release=$(get_latest_release_version)
+    local nightly_date=$(fetch_docker_hub_version "nightly")
+
+    # Clear the "Fetching" message
+    sed -i '/^Fetching version information/d' "$tmp_file"
+
+    echo "Latest Release:  vllm/vllm-openai:$latest_release" >> "$tmp_file"
+    echo "Nightly Build:   Updated on $nightly_date" >> "$tmp_file"
+    echo "" >> "$tmp_file"
+
+    # Dev builds
+    local dev_count=$(docker images vllm-dev --format "{{.Tag}}" 2>/dev/null | wc -l)
+    echo "Dev Builds:      $dev_count local build(s)" >> "$tmp_file"
+    if [[ $dev_count -gt 0 ]]; then
+        echo "" >> "$tmp_file"
+        echo "Available dev images:" >> "$tmp_file"
+        docker images vllm-dev --format "  - {{.Tag}} ({{.Size}}, created {{.CreatedSince}})" >> "$tmp_file"
+    fi
+
+    tui_textbox "Version Information" "$tmp_file"
+    rm -f "$tmp_file"
 }
 
 # System GPU Info
@@ -916,6 +1211,7 @@ show_help() {
     echo ""
     echo "Other commands:"
     echo "  ./run.sh list        # List available profiles"
+    echo "  ./run.sh version     # Show version information"
     echo "  ./run.sh images      # List built vllm-dev images"
     echo "  ./run.sh ps          # Show all running vLLM containers"
     echo "  ./run.sh gpu         # Show GPU usage"
@@ -924,8 +1220,8 @@ show_help() {
 list_profiles() {
     echo -e "${BLUE}Available Profiles:${NC}"
     echo ""
-    printf "%-12s %-6s %-6s %-8s %s\n" "PROFILE" "GPU" "PORT" "LORA" "MODEL"
-    echo "--------------------------------------------------------------"
+    printf "%-15s %-8s %-6s %-6s %-8s %s\n" "PROFILE" "STATUS" "GPU" "PORT" "LORA" "MODEL"
+    echo "-------------------------------------------------------------------------------"
 
     for profile in "$PROFILES_DIR"/*.env; do
         if [[ -f "$profile" ]]; then
@@ -933,10 +1229,17 @@ list_profiles() {
             profile_name=$(basename "$profile" .env)
 
             # Read values from profile
+            container_name=$(grep "^CONTAINER_NAME=" "$profile" | cut -d'=' -f2)
             gpu_id=$(grep "^GPU_ID=" "$profile" | cut -d'=' -f2)
             port=$(grep "^VLLM_PORT=" "$profile" | cut -d'=' -f2)
             config=$(grep "^CONFIG_NAME=" "$profile" | cut -d'=' -f2)
             enable_lora=$(grep "^ENABLE_LORA=" "$profile" | cut -d'=' -f2)
+
+            # Check container status
+            local status="stopped"
+            if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${container_name}$"; then
+                status="running"
+            fi
 
             # Get actual model name from config file
             config_file="$SCRIPT_DIR/config/${config}.yaml"
@@ -952,9 +1255,15 @@ list_profiles() {
                 lora_status="-"
             fi
 
-            printf "%-15s %-6s %-6s %-8s %s\n" "$profile_name" "$gpu_id" "$port" "$lora_status" "$model_name"
+            printf "%-15s %-8s %-6s %-6s %-8s %s\n" "$profile_name" "$status" "$gpu_id" "$port" "$lora_status" "$model_name"
         fi
     done
+    echo ""
+
+    # Show current version setting
+    local current_version=$(grep "^VLLM_VERSION=" "$COMMON_ENV" | cut -d'=' -f2)
+    echo -e "${GREEN}Current vLLM version setting:${NC} $current_version"
+    echo -e "${YELLOW}Tip: Run './run.sh version' to see available versions${NC}"
     echo ""
 }
 
@@ -1234,10 +1543,13 @@ run_up() {
             fi
         fi
 
+        echo -e "${BLUE}Using image:${NC} vllm-dev:$image_tag"
         export VLLM_DEV_TAG="$image_tag"
         docker compose -f docker-compose.dev.yaml --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
     else
+        local vllm_version=$(grep "^VLLM_VERSION=" "$COMMON_ENV" | cut -d'=' -f2)
         echo -e "${GREEN}Starting $profile_name...${NC}"
+        echo -e "${BLUE}Using image:${NC} vllm/vllm-openai:$vllm_version"
         docker compose --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
     fi
 
@@ -1364,6 +1676,9 @@ case "$1" in
         ;;
     "list")
         list_profiles
+        ;;
+    "version")
+        show_version_info
         ;;
     "images")
         show_images
