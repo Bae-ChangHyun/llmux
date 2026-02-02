@@ -4,6 +4,9 @@
 # TUI Tool (whiptail or dialog)
 TUI_TOOL=""
 
+# Global array populated by build_*_items() helper functions
+declare -a MENU_ITEMS
+
 # Check for TUI tool availability
 check_tui_tool() {
     if command -v whiptail &> /dev/null; then
@@ -59,58 +62,60 @@ tui_textbox() {
     $TUI_TOOL --title "$title" --textbox "$file" 25 80
 }
 
-# Get profile list for menu
-get_profile_menu_items() {
-    local items=""
-    for profile in "$PROFILES_DIR"/*.env; do
-        if [[ -f "$profile" ]]; then
-            local name=$(basename "$profile" .env)
-            local port=$(grep "^VLLM_PORT=" "$profile" | cut -d'=' -f2)
-            local gpu=$(grep "^GPU_ID=" "$profile" | cut -d'=' -f2)
-            local config=$(grep "^CONFIG_NAME=" "$profile" | cut -d'=' -f2)
-            items="$items $name \"GPU:$gpu Port:$port Config:$config\""
+#=============================================================================
+# Menu item builder helpers
+# These populate the global MENU_ITEMS array to avoid code duplication.
+# Usage: build_all_profile_items && tui_menu "Title" "Text" "${MENU_ITEMS[@]}"
+#=============================================================================
+
+# Build menu items for ALL profiles (name + GPU/Port/Config info)
+build_all_profile_items() {
+    MENU_ITEMS=()
+    for profile_file in "$PROFILES_DIR"/*.env; do
+        if [[ -f "$profile_file" ]]; then
+            local name=$(basename "$profile_file" .env)
+            local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
+            local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
+            local config=$(grep "^CONFIG_NAME=" "$profile_file" | cut -d'=' -f2)
+            MENU_ITEMS+=("$name" "GPU:$gpu Port:$port Config:$config")
         fi
     done
-    echo "$items"
 }
 
-# Get config list for menu
-get_config_menu_items() {
-    local items=""
-    for config in "$SCRIPT_DIR/config"/*.yaml; do
-        if [[ -f "$config" ]]; then
-            local name=$(basename "$config" .yaml)
-            local model=$(grep "^model:" "$config" | cut -d':' -f2- | sed 's/^ *//')
-            items="$items $name \"$model\""
-        fi
-    done
-    echo "$items"
-}
-
-# Get image list for menu
-get_image_menu_items() {
-    local items=""
-    while IFS=$'\t' read -r tag size created; do
-        local created_date=$(echo "$created" | cut -d' ' -f1)
-        local branch=$(echo "$tag" | sed 's/-[0-9]\{8\}$//')
-        items="$items $tag \"Branch:$branch Size:$size Date:$created_date\""
-    done < <(docker images vllm-dev --format "{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}" 2>/dev/null)
-    echo "$items"
-}
-
-# Get running container list for menu
-get_running_container_menu_items() {
-    local items=""
-    for profile in "$PROFILES_DIR"/*.env; do
-        if [[ -f "$profile" ]]; then
-            local name=$(basename "$profile" .env)
-            local container=$(grep "^CONTAINER_NAME=" "$profile" | cut -d'=' -f2)
+# Build menu items for RUNNING containers only
+build_running_profile_items() {
+    MENU_ITEMS=()
+    for profile_file in "$PROFILES_DIR"/*.env; do
+        if [[ -f "$profile_file" ]]; then
+            local name=$(basename "$profile_file" .env)
+            local container=$(grep "^CONTAINER_NAME=" "$profile_file" | cut -d'=' -f2)
             if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
-                local port=$(grep "^VLLM_PORT=" "$profile" | cut -d'=' -f2)
-                local gpu=$(grep "^GPU_ID=" "$profile" | cut -d'=' -f2)
-                items="$items $name \"Running - GPU:$gpu Port:$port\""
+                local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
+                local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
+                MENU_ITEMS+=("$name" "Running - GPU:$gpu Port:$port")
             fi
         fi
     done
-    echo "$items"
+}
+
+# Build menu items for config files
+build_config_menu_items() {
+    MENU_ITEMS=()
+    for config_file in "$SCRIPT_DIR/config"/*.yaml; do
+        if [[ -f "$config_file" ]]; then
+            local name=$(basename "$config_file" .yaml)
+            local model=$(grep "^model:" "$config_file" | cut -d':' -f2- | sed 's/^ *//')
+            MENU_ITEMS+=("$name" "$model")
+        fi
+    done
+}
+
+# Build menu items for dev images
+build_dev_image_items() {
+    MENU_ITEMS=()
+    while IFS=$'\t' read -r tag size created; do
+        local created_date=$(echo "$created" | cut -d' ' -f1)
+        local branch=$(echo "$tag" | sed 's/-[0-9]\{8\}$//')
+        MENU_ITEMS+=("$tag" "Branch:$branch Size:$size Date:$created_date")
+    done < <(docker images vllm-dev --format "{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}" 2>/dev/null)
 }

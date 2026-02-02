@@ -22,7 +22,7 @@ services:
       - NVIDIA_VISIBLE_DEVICES=${GPU_ID}
       - VLLM_ENABLE_V1_MULTIPROCESSING=0
       - VLLM_WORKER_MULTIPROC_METHOD=spawn
-    ipc: host
+    shm_size: "16g"
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -33,7 +33,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 120s
     networks:
       - vllm-network
 

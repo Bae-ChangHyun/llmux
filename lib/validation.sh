@@ -15,10 +15,10 @@ validate_port() {
     return 0
 }
 
-# Validate GPU ID (single or comma-separated numbers)
+# Validate GPU ID (single or comma-separated numbers, supports multi-digit IDs)
 validate_gpu_id() {
     local gpu=$1
-    if ! [[ "$gpu" =~ ^[0-9](,[0-9])*$ ]]; then
+    if ! [[ "$gpu" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
         echo -e "${RED}Error: GPU ID must be a number or comma-separated numbers (e.g., 0 or 0,1)${NC}"
         return 1
     fi
@@ -45,9 +45,17 @@ validate_name() {
     return 0
 }
 
-# Sanitize string for sed (escape special characters)
+# Sanitize string for sed replacement (escape special characters)
 sanitize_for_sed() {
     local str=$1
-    # Escape special sed characters: / \ & newline
-    echo "$str" | sed 's/[\/&]/\\&/g'
+    local delimiter=${2:-/}
+    # Escape backslash first, then the delimiter and &
+    str=$(echo "$str" | sed 's/\\/\\\\/g')
+    if [[ "$delimiter" == "/" ]]; then
+        echo "$str" | sed 's/[/&]/\\&/g'
+    elif [[ "$delimiter" == "|" ]]; then
+        echo "$str" | sed 's/[|&]/\\&/g'
+    else
+        echo "$str" | sed "s/[${delimiter}&]/\\\\&/g"
+    fi
 }
