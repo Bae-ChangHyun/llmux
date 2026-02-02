@@ -1593,14 +1593,8 @@ run_up() {
 
         echo -e "${GREEN}Starting $profile_name...${NC}"
 
-        # Use custom compose file for qwen3-asr models
-        if [[ "$config_name" == qwen3-asr* ]]; then
-            echo -e "${BLUE}Using image:${NC} vllm/vllm-openai:qwen-asr-nightly (custom build with audio support)"
-            docker compose -f docker-compose.qwen-asr.yaml --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
-        else
-            echo -e "${BLUE}Using image:${NC} vllm/vllm-openai:$vllm_version"
-            docker compose --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
-        fi
+        echo -e "${BLUE}Using image:${NC} vllm/vllm-openai:$vllm_version"
+        docker compose --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
     fi
 
     local result=$?
@@ -1649,8 +1643,6 @@ run_down() {
     if [[ "$image" == vllm-dev:* ]]; then
         compose_file="docker-compose.dev.yaml"
         export VLLM_DEV_TAG="${image#vllm-dev:}"
-    elif [[ "$image" == *qwen-asr* ]]; then
-        compose_file="docker-compose.qwen-asr.yaml"
     fi
 
     cd "$SCRIPT_DIR"
