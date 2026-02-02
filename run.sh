@@ -7,88 +7,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROFILES_DIR="$SCRIPT_DIR/profiles"
 COMMON_ENV="$SCRIPT_DIR/.env.common"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-# TUI Tool (whiptail or dialog)
-TUI_TOOL=""
+# Load library modules
+source "$SCRIPT_DIR/lib/colors.sh"
+source "$SCRIPT_DIR/lib/validation.sh"
+source "$SCRIPT_DIR/lib/tui.sh"
 
 # Cache for version info (valid for current execution only)
 declare -A VERSION_CACHE
-
-# Check for TUI tool availability
-check_tui_tool() {
-    if command -v whiptail &> /dev/null; then
-        TUI_TOOL="whiptail"
-        return 0
-    elif command -v dialog &> /dev/null; then
-        TUI_TOOL="dialog"
-        return 0
-    else
-        echo -e "${RED}Error: Neither whiptail nor dialog is installed.${NC}"
-        echo "Install with: apt-get install whiptail"
-        return 1
-    fi
-}
-
-#=============================================================================
-# INPUT VALIDATION FUNCTIONS
-#=============================================================================
-
-# Validate port number (1024-65535)
-validate_port() {
-    local port=$1
-    if ! [[ "$port" =~ ^[0-9]+$ ]]; then
-        echo -e "${RED}Error: Port must be a number${NC}"
-        return 1
-    fi
-    if [ "$port" -lt 1024 ] || [ "$port" -gt 65535 ]; then
-        echo -e "${RED}Error: Port must be between 1024 and 65535${NC}"
-        return 1
-    fi
-    return 0
-}
-
-# Validate GPU ID (single or comma-separated numbers)
-validate_gpu_id() {
-    local gpu=$1
-    if ! [[ "$gpu" =~ ^[0-9](,[0-9])*$ ]]; then
-        echo -e "${RED}Error: GPU ID must be a number or comma-separated numbers (e.g., 0 or 0,1)${NC}"
-        return 1
-    fi
-    return 0
-}
-
-# Validate GPU memory utilization (0.0-1.0)
-validate_gpu_memory() {
-    local mem=$1
-    if ! [[ "$mem" =~ ^0?\.[0-9]+$ || "$mem" =~ ^1(\.0+)?$ ]]; then
-        echo -e "${RED}Error: GPU memory utilization must be between 0.0 and 1.0${NC}"
-        return 1
-    fi
-    return 0
-}
-
-# Validate profile/config name (alphanumeric, dash, underscore only)
-validate_name() {
-    local name=$1
-    if ! [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-        echo -e "${RED}Error: Name must contain only letters, numbers, dash, and underscore${NC}"
-        return 1
-    fi
-    return 0
-}
-
-# Sanitize string for sed (escape special characters)
-sanitize_for_sed() {
-    local str=$1
-    # Escape special sed characters: / \ & newline
-    echo "$str" | sed 's/[\/&]/\\&/g'
-}
 
 #=============================================================================
 # VERSION MANAGEMENT FUNCTIONS
@@ -265,105 +190,6 @@ show_version_info() {
     fi
 
     echo ""
-}
-
-# TUI Helper Functions
-tui_menu() {
-    local title="$1"
-    local text="$2"
-    shift 2
-    $TUI_TOOL --title "$title" --menu "$text" 20 70 12 "$@" 3>&1 1>&2 2>&3
-}
-
-tui_checklist() {
-    local title="$1"
-    local text="$2"
-    shift 2
-    $TUI_TOOL --title "$title" --checklist "$text" 20 70 12 "$@" 3>&1 1>&2 2>&3
-}
-
-tui_inputbox() {
-    local title="$1"
-    local text="$2"
-    local default="$3"
-    $TUI_TOOL --title "$title" --inputbox "$text" 10 60 "$default" 3>&1 1>&2 2>&3
-}
-
-tui_yesno() {
-    local title="$1"
-    local text="$2"
-    $TUI_TOOL --title "$title" --yesno "$text" 10 60
-}
-
-tui_msgbox() {
-    local title="$1"
-    local text="$2"
-    $TUI_TOOL --title "$title" --msgbox "$text" 15 70
-}
-
-tui_textbox() {
-    local title="$1"
-    local file="$2"
-    $TUI_TOOL --title "$title" --textbox "$file" 25 80
-}
-
-# Get profile list for menu
-get_profile_menu_items() {
-    local items=""
-    for profile in "$PROFILES_DIR"/*.env; do
-        if [[ -f "$profile" ]]; then
-            local name=$(basename "$profile" .env)
-            local port=$(grep "^VLLM_PORT=" "$profile" | cut -d'=' -f2)
-            local gpu=$(grep "^GPU_ID=" "$profile" | cut -d'=' -f2)
-            local config=$(grep "^CONFIG_NAME=" "$profile" | cut -d'=' -f2)
-            items="$items $name \"GPU:$gpu Port:$port Config:$config\""
-        fi
-    done
-    echo "$items"
-}
-
-# Get config list for menu
-get_config_menu_items() {
-    local items=""
-    for config in "$SCRIPT_DIR/config"/*.yaml; do
-        if [[ -f "$config" ]]; then
-            local name=$(basename "$config" .yaml)
-            local model=$(grep "^model:" "$config" | cut -d':' -f2- | sed 's/^ *//')
-            items="$items $name \"$model\""
-        fi
-    done
-    echo "$items"
-}
-
-# Get image list for menu
-get_image_menu_items() {
-    local items=""
-    while IFS=$'\t' read -r tag size created; do
-        # Parse created date (format: 2026-01-16 17:47:23 +0900 KST)
-        local created_date=$(echo "$created" | cut -d' ' -f1)
-        # Extract branch from tag (format: branch-YYYYMMDD or just branch)
-        local branch=$(echo "$tag" | sed 's/-[0-9]\{8\}$//')
-        items="$items $tag \"Branch:$branch Size:$size Date:$created_date\""
-    done < <(docker images vllm-dev --format "{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}" 2>/dev/null)
-    echo "$items"
-}
-
-# Get running container list for menu (matches with profiles)
-get_running_container_menu_items() {
-    local items=""
-    for profile in "$PROFILES_DIR"/*.env; do
-        if [[ -f "$profile" ]]; then
-            local name=$(basename "$profile" .env)
-            local container=$(grep "^CONTAINER_NAME=" "$profile" | cut -d'=' -f2)
-            # Check if container is running
-            if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
-                local port=$(grep "^VLLM_PORT=" "$profile" | cut -d'=' -f2)
-                local gpu=$(grep "^GPU_ID=" "$profile" | cut -d'=' -f2)
-                items="$items $name \"Running - GPU:$gpu Port:$port\""
-            fi
-        fi
-    done
-    echo "$items"
 }
 
 #=============================================================================
