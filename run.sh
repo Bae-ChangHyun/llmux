@@ -36,6 +36,61 @@ check_tui_tool() {
 }
 
 #=============================================================================
+# INPUT VALIDATION FUNCTIONS
+#=============================================================================
+
+# Validate port number (1024-65535)
+validate_port() {
+    local port=$1
+    if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Error: Port must be a number${NC}"
+        return 1
+    fi
+    if [ "$port" -lt 1024 ] || [ "$port" -gt 65535 ]; then
+        echo -e "${RED}Error: Port must be between 1024 and 65535${NC}"
+        return 1
+    fi
+    return 0
+}
+
+# Validate GPU ID (single or comma-separated numbers)
+validate_gpu_id() {
+    local gpu=$1
+    if ! [[ "$gpu" =~ ^[0-9](,[0-9])*$ ]]; then
+        echo -e "${RED}Error: GPU ID must be a number or comma-separated numbers (e.g., 0 or 0,1)${NC}"
+        return 1
+    fi
+    return 0
+}
+
+# Validate GPU memory utilization (0.0-1.0)
+validate_gpu_memory() {
+    local mem=$1
+    if ! [[ "$mem" =~ ^0?\.[0-9]+$ || "$mem" =~ ^1(\.0+)?$ ]]; then
+        echo -e "${RED}Error: GPU memory utilization must be between 0.0 and 1.0${NC}"
+        return 1
+    fi
+    return 0
+}
+
+# Validate profile/config name (alphanumeric, dash, underscore only)
+validate_name() {
+    local name=$1
+    if ! [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        echo -e "${RED}Error: Name must contain only letters, numbers, dash, and underscore${NC}"
+        return 1
+    fi
+    return 0
+}
+
+# Sanitize string for sed (escape special characters)
+sanitize_for_sed() {
+    local str=$1
+    # Escape special sed characters: / \ & newline
+    echo "$str" | sed 's/[\/&]/\\&/g'
+}
+
+#=============================================================================
 # VERSION MANAGEMENT FUNCTIONS
 #=============================================================================
 
@@ -340,14 +395,26 @@ quick_setup_menu() {
     # GPU ID
     local gpu=$(tui_inputbox "GPU" "Enter GPU ID (e.g., 0 or 0,1):" "0")
     [[ -z "$gpu" ]] && return
+    if ! validate_gpu_id "$gpu"; then
+        tui_msgbox "Invalid Input" "GPU ID must be a number or comma-separated numbers (e.g., 0 or 0,1)"
+        return
+    fi
 
     # Port
     local port=$(tui_inputbox "Port" "Enter vLLM port:" "8000")
     [[ -z "$port" ]] && return
+    if ! validate_port "$port"; then
+        tui_msgbox "Invalid Input" "Port must be between 1024 and 65535"
+        return
+    fi
 
     # GPU memory utilization
     local gpu_util=$(tui_inputbox "GPU Memory" "GPU memory utilization (0.0-1.0):" "0.9")
     [[ -z "$gpu_util" ]] && return
+    if ! validate_gpu_memory "$gpu_util"; then
+        tui_msgbox "Invalid Input" "GPU memory utilization must be between 0.0 and 1.0"
+        return
+    fi
 
     # Tensor parallel (auto-detect from GPU count)
     local gpu_count=$(echo "$gpu" | tr ',' '\n' | wc -l)
@@ -748,22 +815,32 @@ profile_edit_menu() {
             1)
                 local new_port=$(tui_inputbox "Change Port" "Enter new port:" "$current_port")
                 if [[ -n "$new_port" ]]; then
-                    sed -i "s/^VLLM_PORT=.*/VLLM_PORT=$new_port/" "$profile_path"
-                    tui_msgbox "Updated" "Port changed to $new_port"
+                    if validate_port "$new_port"; then
+                        sed -i "s/^VLLM_PORT=.*/VLLM_PORT=$new_port/" "$profile_path"
+                        tui_msgbox "Updated" "Port changed to $new_port"
+                    else
+                        tui_msgbox "Invalid Input" "Port must be between 1024 and 65535"
+                    fi
                 fi
                 ;;
             2)
                 local new_gpu=$(tui_inputbox "Change GPU" "Enter GPU ID(s):" "$current_gpu")
                 if [[ -n "$new_gpu" ]]; then
-                    sed -i "s/^GPU_ID=.*/GPU_ID=$new_gpu/" "$profile_path"
-                    tui_msgbox "Updated" "GPU ID changed to $new_gpu"
+                    if validate_gpu_id "$new_gpu"; then
+                        sed -i "s/^GPU_ID=.*/GPU_ID=$new_gpu/" "$profile_path"
+                        tui_msgbox "Updated" "GPU ID changed to $new_gpu"
+                    else
+                        tui_msgbox "Invalid Input" "GPU ID must be a number or comma-separated numbers"
+                    fi
                 fi
                 ;;
             3)
                 local new_tp=$(tui_inputbox "Tensor Parallel" "Enter tensor parallel size:" "$current_tp")
-                if [[ -n "$new_tp" ]]; then
+                if [[ -n "$new_tp" ]] && [[ "$new_tp" =~ ^[0-9]+$ ]]; then
                     sed -i "s/^TENSOR_PARALLEL_SIZE=.*/TENSOR_PARALLEL_SIZE=$new_tp/" "$profile_path"
                     tui_msgbox "Updated" "Tensor parallel changed to $new_tp"
+                elif [[ -n "$new_tp" ]]; then
+                    tui_msgbox "Invalid Input" "Tensor parallel size must be a positive integer"
                 fi
                 ;;
             4)
@@ -890,19 +967,25 @@ config_edit_menu() {
             1)
                 local new_model=$(tui_inputbox "Model" "Enter model name:" "$current_model")
                 if [[ -n "$new_model" ]]; then
-                    sed -i "s|^model:.*|model: $new_model|" "$config_path"
+                    # Sanitize model name for sed
+                    local safe_model=$(sanitize_for_sed "$new_model")
+                    sed -i "s|^model:.*|model: $safe_model|" "$config_path"
                     tui_msgbox "Updated" "Model changed"
                 fi
                 ;;
             2)
                 local new_util=$(tui_inputbox "GPU Utilization" "Enter value (0.0-1.0):" "$current_util")
                 if [[ -n "$new_util" ]]; then
-                    if grep -q "^gpu-memory-utilization:" "$config_path"; then
-                        sed -i "s|^gpu-memory-utilization:.*|gpu-memory-utilization: $new_util|" "$config_path"
+                    if validate_gpu_memory "$new_util"; then
+                        if grep -q "^gpu-memory-utilization:" "$config_path"; then
+                            sed -i "s|^gpu-memory-utilization:.*|gpu-memory-utilization: $new_util|" "$config_path"
+                        else
+                            echo "gpu-memory-utilization: $new_util" >> "$config_path"
+                        fi
+                        tui_msgbox "Updated" "GPU utilization changed"
                     else
-                        echo "gpu-memory-utilization: $new_util" >> "$config_path"
+                        tui_msgbox "Invalid Input" "Value must be between 0.0 and 1.0"
                     fi
-                    tui_msgbox "Updated" "GPU utilization changed"
                 fi
                 ;;
             3)
@@ -1636,9 +1719,18 @@ run_up() {
         docker compose -f docker-compose.dev.yaml --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
     else
         local vllm_version=$(grep "^VLLM_VERSION=" "$COMMON_ENV" | cut -d'=' -f2)
+        local config_name=$(grep "^CONFIG_NAME=" "$profile_path" | cut -d'=' -f2)
+
         echo -e "${GREEN}Starting $profile_name...${NC}"
-        echo -e "${BLUE}Using image:${NC} vllm/vllm-openai:$vllm_version"
-        docker compose --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
+
+        # Use custom compose file for qwen3-asr models
+        if [[ "$config_name" == qwen3-asr* ]]; then
+            echo -e "${BLUE}Using image:${NC} vllm/vllm-openai:qwen-asr-nightly (custom build with audio support)"
+            docker compose -f docker-compose.qwen-asr.yaml --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
+        else
+            echo -e "${BLUE}Using image:${NC} vllm/vllm-openai:$vllm_version"
+            docker compose --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
+        fi
     fi
 
     local result=$?
@@ -1680,13 +1772,16 @@ run_down() {
 
     echo -e "${YELLOW}Stopping $profile_name...${NC}"
 
-    docker stop "$container_name" >/dev/null 2>&1
-    docker rm "$container_name" >/dev/null 2>&1
+    # Stop container (ignore error if already stopped)
+    if ! docker stop "$container_name" 2>/dev/null; then
+        echo -e "${YELLOW}Warning: Container may already be stopped${NC}"
+    fi
 
-    if [[ $? -eq 0 ]]; then
+    # Remove container
+    if docker rm "$container_name" 2>/dev/null; then
         echo -e "${GREEN}$profile_name stopped successfully!${NC}"
     else
-        echo -e "${RED}Failed to stop $profile_name${NC}"
+        echo -e "${RED}Failed to remove container $container_name${NC}"
         return 1
     fi
 }
@@ -1710,7 +1805,8 @@ run_status() {
 show_ps() {
     echo -e "${BLUE}Running vLLM Containers:${NC}"
     echo ""
-    docker ps --filter "ancestor=vllm/vllm-openai:v0.13.0" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    # Show all vLLM containers (both official and dev builds)
+    docker ps --filter "name=vllm" --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
 }
 
 show_gpu() {
