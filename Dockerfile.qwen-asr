@@ -1,9 +1,0 @@
-FROM vllm/vllm-openai:nightly
-
-# Install git for potential model downloads
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
-
-# Install audio support on top of existing vLLM (no need to reinstall vLLM itself)
-RUN pip install --no-cache-dir "vllm[audio]"
-
-ENTRYPOINT ["vllm"]
