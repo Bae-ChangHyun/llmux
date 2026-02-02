@@ -333,14 +333,24 @@ container_menu() {
 
 # Container Up Menu
 container_up_menu() {
-    # Select profile
-    local items=$(get_profile_menu_items)
-    if [[ -z "$items" ]]; then
+    # Build profile menu items array
+    local items=()
+    for profile_file in "$PROFILES_DIR"/*.env; do
+        if [[ -f "$profile_file" ]]; then
+            local name=$(basename "$profile_file" .env)
+            local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
+            local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
+            local config=$(grep "^CONFIG_NAME=" "$profile_file" | cut -d'=' -f2)
+            items+=("$name" "GPU:$gpu Port:$port Config:$config")
+        fi
+    done
+
+    if [[ ${#items[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No profiles found. Create a profile first."
         return
     fi
 
-    local profile=$(eval "tui_menu \"Start Container\" \"Select profile:\" $items")
+    local profile=$(tui_menu "Start Container" "Select profile:" "${items[@]}")
     [[ -z "$profile" ]] && return
 
     local profile_path="$PROFILES_DIR/$profile.env"
@@ -412,10 +422,16 @@ container_up_menu() {
             ;;
         dev)
             use_dev="true"
-            # Check for available dev images
-            local img_items=$(get_image_menu_items)
-            if [[ -n "$img_items" ]]; then
-                local tag_choice=$(eval "tui_menu \"Select Dev Image\" \"Choose dev image tag:\" $img_items")
+            # Build dev images menu array
+            local img_items=()
+            while IFS=$'\t' read -r tag size created; do
+                local created_date=$(echo "$created" | cut -d' ' -f1)
+                local branch=$(echo "$tag" | sed 's/-[0-9]\{8\}$//')
+                img_items+=("$tag" "Branch:$branch Size:$size Date:$created_date")
+            done < <(docker images vllm-dev --format "{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}" 2>/dev/null)
+
+            if [[ ${#img_items[@]} -gt 0 ]]; then
+                local tag_choice=$(tui_menu "Select Dev Image" "Choose dev image tag:" "${img_items[@]}")
                 if [[ -n "$tag_choice" ]]; then
                     custom_tag="$tag_choice"
                 else
@@ -456,13 +472,26 @@ container_up_menu() {
 
 # Container Down Menu
 container_down_menu() {
-    local items=$(get_running_container_menu_items)
-    if [[ -z "$items" ]]; then
+    # Build running containers menu array
+    local items=()
+    for profile_file in "$PROFILES_DIR"/*.env; do
+        if [[ -f "$profile_file" ]]; then
+            local name=$(basename "$profile_file" .env)
+            local container=$(grep "^CONTAINER_NAME=" "$profile_file" | cut -d'=' -f2)
+            if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
+                local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
+                local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
+                items+=("$name" "Running - GPU:$gpu Port:$port")
+            fi
+        fi
+    done
+
+    if [[ ${#items[@]} -eq 0 ]]; then
         tui_msgbox "Info" "No running containers found."
         return
     fi
 
-    local profile=$(eval "tui_menu \"Stop Container\" \"Select container to stop:\" $items")
+    local profile=$(tui_menu "Stop Container" "Select container to stop:" "${items[@]}")
     [[ -z "$profile" ]] && return
 
     local profile_path="$PROFILES_DIR/$profile.env"
@@ -478,13 +507,26 @@ container_down_menu() {
 
 # Container Logs Menu
 container_logs_menu() {
-    local items=$(get_running_container_menu_items)
-    if [[ -z "$items" ]]; then
+    # Build running containers menu array
+    local items=()
+    for profile_file in "$PROFILES_DIR"/*.env; do
+        if [[ -f "$profile_file" ]]; then
+            local name=$(basename "$profile_file" .env)
+            local container=$(grep "^CONTAINER_NAME=" "$profile_file" | cut -d'=' -f2)
+            if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
+                local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
+                local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
+                items+=("$name" "Running - GPU:$gpu Port:$port")
+            fi
+        fi
+    done
+
+    if [[ ${#items[@]} -eq 0 ]]; then
         tui_msgbox "Info" "No running containers found."
         return
     fi
 
-    local profile=$(eval "tui_menu \"View Logs\" \"Select container:\" $items")
+    local profile=$(tui_menu "View Logs" "Select container:" "${items[@]}")
     [[ -z "$profile" ]] && return
 
     local profile_path="$PROFILES_DIR/$profile.env"
@@ -501,13 +543,24 @@ container_logs_menu() {
 
 # Container Status Menu
 container_status_menu() {
-    local items=$(get_profile_menu_items)
-    if [[ -z "$items" ]]; then
+    # Build profile menu array
+    local items=()
+    for profile_file in "$PROFILES_DIR"/*.env; do
+        if [[ -f "$profile_file" ]]; then
+            local name=$(basename "$profile_file" .env)
+            local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
+            local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
+            local config=$(grep "^CONFIG_NAME=" "$profile_file" | cut -d'=' -f2)
+            items+=("$name" "GPU:$gpu Port:$port Config:$config")
+        fi
+    done
+
+    if [[ ${#items[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No profiles found."
         return
     fi
 
-    local profile=$(eval "tui_menu \"Check Status\" \"Select profile:\" $items")
+    local profile=$(tui_menu "Check Status" "Select profile:" "${items[@]}")
     [[ -z "$profile" ]] && return
 
     local profile_path="$PROFILES_DIR/$profile.env"
@@ -570,14 +623,22 @@ profile_create_menu() {
     local tp=$(tui_inputbox "Tensor Parallel" "Enter tensor parallel size:" "1")
     [[ -z "$tp" ]] && return
 
-    # Select config
-    local config_items=$(get_config_menu_items)
-    if [[ -z "$config_items" ]]; then
+    # Build config menu array
+    local config_items=()
+    for config_file in "$SCRIPT_DIR/config"/*.yaml; do
+        if [[ -f "$config_file" ]]; then
+            local cfg_name=$(basename "$config_file" .yaml)
+            local model=$(grep "^model:" "$config_file" | cut -d':' -f2- | sed 's/^ *//')
+            config_items+=("$cfg_name" "$model")
+        fi
+    done
+
+    if [[ ${#config_items[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No configs found. Create a config first."
         return
     fi
 
-    local config=$(eval "tui_menu \"Select Config\" \"Choose model config:\" $config_items")
+    local config=$(tui_menu "Select Config" "Choose model config:" "${config_items[@]}")
     [[ -z "$config" ]] && return
 
     # LoRA settings
@@ -611,13 +672,24 @@ EOF
 
 # Profile Edit Menu
 profile_edit_menu() {
-    local items=$(get_profile_menu_items)
-    if [[ -z "$items" ]]; then
+    # Build profile menu array
+    local items=()
+    for profile_file in "$PROFILES_DIR"/*.env; do
+        if [[ -f "$profile_file" ]]; then
+            local name=$(basename "$profile_file" .env)
+            local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
+            local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
+            local cfg=$(grep "^CONFIG_NAME=" "$profile_file" | cut -d'=' -f2)
+            items+=("$name" "GPU:$gpu Port:$port Config:$cfg")
+        fi
+    done
+
+    if [[ ${#items[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No profiles found."
         return
     fi
 
-    local profile=$(eval "tui_menu \"Edit Profile\" \"Select profile to edit:\" $items")
+    local profile=$(tui_menu "Edit Profile" "Select profile to edit:" "${items[@]}")
     [[ -z "$profile" ]] && return
 
     local profile_path="$PROFILES_DIR/$profile.env"
@@ -670,8 +742,16 @@ profile_edit_menu() {
                 fi
                 ;;
             4)
-                local config_items=$(get_config_menu_items)
-                local new_config=$(eval "tui_menu \"Select Config\" \"Choose config:\" $config_items")
+                # Build config menu array
+                local config_items=()
+                for config_file in "$SCRIPT_DIR/config"/*.yaml; do
+                    if [[ -f "$config_file" ]]; then
+                        local cfg_name=$(basename "$config_file" .yaml)
+                        local model=$(grep "^model:" "$config_file" | cut -d':' -f2- | sed 's/^ *//')
+                        config_items+=("$cfg_name" "$model")
+                    fi
+                done
+                local new_config=$(tui_menu "Select Config" "Choose config:" "${config_items[@]}")
                 if [[ -n "$new_config" ]]; then
                     sed -i "s/^CONFIG_NAME=.*/CONFIG_NAME=$new_config/" "$profile_path"
                     tui_msgbox "Updated" "Config changed to $new_config"
@@ -693,13 +773,24 @@ profile_edit_menu() {
 
 # Profile Delete Menu
 profile_delete_menu() {
-    local items=$(get_profile_menu_items)
-    if [[ -z "$items" ]]; then
+    # Build profile menu array
+    local items=()
+    for profile_file in "$PROFILES_DIR"/*.env; do
+        if [[ -f "$profile_file" ]]; then
+            local name=$(basename "$profile_file" .env)
+            local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
+            local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
+            local cfg=$(grep "^CONFIG_NAME=" "$profile_file" | cut -d'=' -f2)
+            items+=("$name" "GPU:$gpu Port:$port Config:$cfg")
+        fi
+    done
+
+    if [[ ${#items[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No profiles found."
         return
     fi
 
-    local profile=$(eval "tui_menu \"Delete Profile\" \"Select profile to delete:\" $items")
+    local profile=$(tui_menu "Delete Profile" "Select profile to delete:" "${items[@]}")
     [[ -z "$profile" ]] && return
 
     if tui_yesno "Confirm Delete" "Are you sure you want to delete profile '$profile'?"; then
@@ -710,13 +801,24 @@ profile_delete_menu() {
 
 # Profile View Menu
 profile_view_menu() {
-    local items=$(get_profile_menu_items)
-    if [[ -z "$items" ]]; then
+    # Build profile menu array
+    local items=()
+    for profile_file in "$PROFILES_DIR"/*.env; do
+        if [[ -f "$profile_file" ]]; then
+            local name=$(basename "$profile_file" .env)
+            local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
+            local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
+            local cfg=$(grep "^CONFIG_NAME=" "$profile_file" | cut -d'=' -f2)
+            items+=("$name" "GPU:$gpu Port:$port Config:$cfg")
+        fi
+    done
+
+    if [[ ${#items[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No profiles found."
         return
     fi
 
-    local profile=$(eval "tui_menu \"View Profile\" \"Select profile:\" $items")
+    local profile=$(tui_menu "View Profile" "Select profile:" "${items[@]}")
     [[ -z "$profile" ]] && return
 
     tui_textbox "Profile: $profile" "$PROFILES_DIR/$profile.env"
@@ -768,13 +870,22 @@ EOF
 
 # Config Edit Menu
 config_edit_menu() {
-    local items=$(get_config_menu_items)
-    if [[ -z "$items" ]]; then
+    # Build config menu array
+    local items=()
+    for config_file in "$SCRIPT_DIR/config"/*.yaml; do
+        if [[ -f "$config_file" ]]; then
+            local name=$(basename "$config_file" .yaml)
+            local model=$(grep "^model:" "$config_file" | cut -d':' -f2- | sed 's/^ *//')
+            items+=("$name" "$model")
+        fi
+    done
+
+    if [[ ${#items[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No configs found."
         return
     fi
 
-    local config=$(eval "tui_menu \"Edit Config\" \"Select config:\" $items")
+    local config=$(tui_menu "Edit Config" "Select config:" "${items[@]}")
     [[ -z "$config" ]] && return
 
     local config_path="$SCRIPT_DIR/config/$config.yaml"
@@ -831,13 +942,22 @@ config_edit_menu() {
 
 # Config Delete Menu
 config_delete_menu() {
-    local items=$(get_config_menu_items)
-    if [[ -z "$items" ]]; then
+    # Build config menu array
+    local items=()
+    for config_file in "$SCRIPT_DIR/config"/*.yaml; do
+        if [[ -f "$config_file" ]]; then
+            local name=$(basename "$config_file" .yaml)
+            local model=$(grep "^model:" "$config_file" | cut -d':' -f2- | sed 's/^ *//')
+            items+=("$name" "$model")
+        fi
+    done
+
+    if [[ ${#items[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No configs found."
         return
     fi
 
-    local config=$(eval "tui_menu \"Delete Config\" \"Select config:\" $items")
+    local config=$(tui_menu "Delete Config" "Select config:" "${items[@]}")
     [[ -z "$config" ]] && return
 
     if tui_yesno "Confirm Delete" "Are you sure you want to delete config '$config'?"; then
@@ -848,13 +968,22 @@ config_delete_menu() {
 
 # Config View Menu
 config_view_menu() {
-    local items=$(get_config_menu_items)
-    if [[ -z "$items" ]]; then
+    # Build config menu array
+    local items=()
+    for config_file in "$SCRIPT_DIR/config"/*.yaml; do
+        if [[ -f "$config_file" ]]; then
+            local name=$(basename "$config_file" .yaml)
+            local model=$(grep "^model:" "$config_file" | cut -d':' -f2- | sed 's/^ *//')
+            items+=("$name" "$model")
+        fi
+    done
+
+    if [[ ${#items[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No configs found."
         return
     fi
 
-    local config=$(eval "tui_menu \"View Config\" \"Select config:\" $items")
+    local config=$(tui_menu "View Config" "Select config:" "${items[@]}")
     [[ -z "$config" ]] && return
 
     tui_textbox "Config: $config" "$SCRIPT_DIR/config/$config.yaml"
@@ -972,13 +1101,20 @@ build_list_images() {
 
 # Delete Image
 build_delete_image() {
-    local items=$(get_image_menu_items)
-    if [[ -z "$items" ]]; then
+    # Build dev images menu array
+    local items=()
+    while IFS=$'\t' read -r tag size created; do
+        local created_date=$(echo "$created" | cut -d' ' -f1)
+        local branch=$(echo "$tag" | sed 's/-[0-9]\{8\}$//')
+        items+=("$tag" "Branch:$branch Size:$size Date:$created_date")
+    done < <(docker images vllm-dev --format "{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}" 2>/dev/null)
+
+    if [[ ${#items[@]} -eq 0 ]]; then
         tui_msgbox "Info" "No vllm-dev images found."
         return
     fi
 
-    local tag=$(eval "tui_menu \"Delete Image\" \"Select image to delete:\" $items")
+    local tag=$(tui_menu "Delete Image" "Select image to delete:" "${items[@]}")
     [[ -z "$tag" ]] && return
 
     if tui_yesno "Confirm Delete" "Delete image 'vllm-dev:$tag'?"; then
