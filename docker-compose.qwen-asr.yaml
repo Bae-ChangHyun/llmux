@@ -22,11 +22,11 @@ services:
       - NVIDIA_VISIBLE_DEVICES=${GPU_ID}
       - VLLM_ENABLE_V1_MULTIPROCESSING=0
       - VLLM_WORKER_MULTIPROC_METHOD=spawn
-    ipc: host
+    shm_size: "16g"
     dns:
       - 8.8.8.8
       - 8.8.4.4
-    command: serve Qwen/Qwen3-ASR-1.7B --gpu-memory-utilization 0.8 --max-model-len 35000 --tensor-parallel-size=${TENSOR_PARALLEL_SIZE} ${LORA_OPTIONS}
+    command: serve --config /config/${CONFIG_NAME}.yaml --tensor-parallel-size=${TENSOR_PARALLEL_SIZE} --trust-remote-code ${LORA_OPTIONS}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
