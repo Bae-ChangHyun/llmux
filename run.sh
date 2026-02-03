@@ -116,6 +116,7 @@ get_profile_container_version() {
 # Cleanup unused vLLM images
 cleanup_unused_vllm_images() {
     local image_pattern=$1  # "nightly" or "v*" for official releases
+    local exclude_tag=$2    # Tag to exclude from cleanup (e.g., just pulled tag)
 
     echo -e "${YELLOW}Cleaning up unused vLLM images (pattern: $image_pattern)...${NC}"
 
@@ -128,6 +129,10 @@ cleanup_unused_vllm_images() {
     # Delete unused images
     local deleted_count=0
     for img in $all_images; do
+        # Skip excluded tag
+        if [[ -n "$exclude_tag" && "$img" == "vllm/vllm-openai:$exclude_tag" ]]; then
+            continue
+        fi
         if ! echo "$used_images" | grep -q "^${img}$"; then
             echo "  Removing unused image: $img"
             docker rmi "$img" 2>/dev/null && ((deleted_count++))
@@ -151,8 +156,8 @@ pull_and_cleanup() {
 
     if [[ $? -eq 0 ]]; then
         echo -e "${GREEN}Successfully pulled vllm/vllm-openai:$tag${NC}"
-        # Cleanup old images
-        cleanup_unused_vllm_images "$cleanup_pattern"
+        # Cleanup old images, excluding the just-pulled tag
+        cleanup_unused_vllm_images "$cleanup_pattern" "$tag"
         return 0
     else
         echo -e "${RED}Failed to pull image${NC}"
@@ -1560,6 +1565,14 @@ run_up() {
 
     cd "$SCRIPT_DIR"
 
+    # Check if extra packages are configured
+    local extra_packages=$(grep "^EXTRA_PIP_PACKAGES=" "$COMMON_ENV" | cut -d'=' -f2)
+    local extra_packages_opt=""
+    if [[ -n "$extra_packages" ]]; then
+        extra_packages_opt="-f docker-compose.extra-packages.yaml"
+        echo -e "${BLUE}Extra pip packages:${NC} $extra_packages"
+    fi
+
     if [[ "$use_dev" == "true" ]]; then
         echo -e "${GREEN}Starting $profile_name (dev build)...${NC}"
 
@@ -1586,15 +1599,21 @@ run_up() {
 
         echo -e "${BLUE}Using image:${NC} vllm-dev:$image_tag"
         export VLLM_DEV_TAG="$image_tag"
-        docker compose -f docker-compose.dev.yaml --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
+        docker compose -f docker-compose.dev.yaml $extra_packages_opt --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
     else
         local vllm_version=$(grep "^VLLM_VERSION=" "$COMMON_ENV" | cut -d'=' -f2)
         local config_name=$(grep "^CONFIG_NAME=" "$profile_path" | cut -d'=' -f2)
 
         echo -e "${GREEN}Starting $profile_name...${NC}"
 
+        # For nightly/latest tags, always pull to check for updates
+        local pull_opt=""
+        if [[ "$vllm_version" == "nightly" || "$vllm_version" == "latest" ]]; then
+            pull_opt="--pull always"
+        fi
+
         echo -e "${BLUE}Using image:${NC} vllm/vllm-openai:$vllm_version"
-        docker compose --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
+        docker compose -f docker-compose.yaml $extra_packages_opt --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d $pull_opt
     fi
 
     local result=$?
@@ -1647,8 +1666,15 @@ run_down() {
 
     cd "$SCRIPT_DIR"
 
+    # Check if extra packages were used (by checking container's entrypoint)
+    local entrypoint=$(docker inspect "$container_name" --format='{{json .Config.Entrypoint}}' 2>/dev/null)
+    local extra_packages_opt=""
+    if [[ "$entrypoint" == *"entrypoint-wrapper.sh"* ]]; then
+        extra_packages_opt="-f docker-compose.extra-packages.yaml"
+    fi
+
     # Use docker compose down for proper cleanup (networks, etc.)
-    if docker compose -f "$compose_file" --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" down 2>/dev/null; then
+    if docker compose -f "$compose_file" $extra_packages_opt --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" down 2>/dev/null; then
         echo -e "${GREEN}$profile_name stopped successfully!${NC}"
     else
         # Fallback to direct docker stop/rm if compose down fails
