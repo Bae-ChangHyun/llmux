@@ -814,6 +814,8 @@ config_edit_menu() {
             "1" "Change Model (current: $current_model)" \
             "2" "Change GPU Utilization (current: $current_util)" \
             "3" "Add Custom Parameter" \
+            "4" "Edit Custom Parameter" \
+            "5" "Delete Custom Parameter" \
             "B" "Back")
 
         case "$choice" in
@@ -848,6 +850,37 @@ config_edit_menu() {
                     if [[ -n "$value" ]]; then
                         echo "$param: $value" >> "$config_path"
                         tui_msgbox "Added" "Parameter '$param' added"
+                    fi
+                fi
+                ;;
+            4)
+                build_custom_param_items "$config_path"
+                if [[ ${#MENU_ITEMS[@]} -eq 0 ]]; then
+                    tui_msgbox "Info" "No custom parameters found."
+                else
+                    local param=$(tui_menu "Edit Parameter" "Select parameter to edit:" "${MENU_ITEMS[@]}")
+                    if [[ -n "$param" ]]; then
+                        local current_val=$(grep "^${param}:" "$config_path" | cut -d':' -f2- | sed 's/^ *//')
+                        local new_val=$(tui_inputbox "Edit: $param" "Enter new value for '$param':" "$current_val")
+                        if [[ -n "$new_val" ]]; then
+                            local safe_val=$(sanitize_for_sed "$new_val" "|")
+                            sed -i "s|^${param}:.*|${param}: ${safe_val}|" "$config_path"
+                            tui_msgbox "Updated" "Parameter '$param' updated"
+                        fi
+                    fi
+                fi
+                ;;
+            5)
+                build_custom_param_items "$config_path"
+                if [[ ${#MENU_ITEMS[@]} -eq 0 ]]; then
+                    tui_msgbox "Info" "No custom parameters found."
+                else
+                    local param=$(tui_menu "Delete Parameter" "Select parameter to delete:" "${MENU_ITEMS[@]}")
+                    if [[ -n "$param" ]]; then
+                        if tui_yesno "Confirm" "Delete parameter '$param'?"; then
+                            sed -i "/^${param}:/d" "$config_path"
+                            tui_msgbox "Deleted" "Parameter '$param' deleted"
+                        fi
                     fi
                 fi
                 ;;
