@@ -12,6 +12,22 @@ source "$SCRIPT_DIR/lib/colors.sh"
 source "$SCRIPT_DIR/lib/validation.sh"
 source "$SCRIPT_DIR/lib/tui.sh"
 
+# Temp file tracking for automatic cleanup on exit
+TEMP_FILES=()
+cleanup_temp_files() {
+    for f in "${TEMP_FILES[@]}"; do
+        rm -f "$f"
+    done
+}
+trap cleanup_temp_files EXIT
+
+# Create a tracked temp file (auto-cleaned on exit)
+create_temp() {
+    local tmp=$(mktemp)
+    TEMP_FILES+=("$tmp")
+    echo "$tmp"
+}
+
 # Cache for version info (valid for current execution only)
 declare -A VERSION_CACHE
 
@@ -32,7 +48,7 @@ fetch_docker_hub_version() {
 
     # Query Docker Hub API
     local api_url="https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags/${tag}"
-    local response=$(curl -s "$api_url" 2>/dev/null)
+    local response=$(curl -s --connect-timeout 5 --max-time 10 "$api_url" 2>/dev/null)
 
     if [[ -z "$response" ]] || echo "$response" | grep -q "not found"; then
         echo "unknown"
@@ -58,7 +74,7 @@ get_latest_release_version() {
 
     # Get tags from Docker Hub
     local api_url="https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags?page_size=100"
-    local response=$(curl -s "$api_url" 2>/dev/null)
+    local response=$(curl -s --connect-timeout 5 --max-time 10 "$api_url" 2>/dev/null)
 
     # Extract version tags (v0.x.x format)
     local version=$(echo "$response" | grep -o '"name":"v[0-9]\+\.[0-9]\+\.[0-9]\+"' | head -1 | cut -d'"' -f4)
@@ -100,6 +116,7 @@ get_profile_container_version() {
 # Cleanup unused vLLM images
 cleanup_unused_vllm_images() {
     local image_pattern=$1  # "nightly" or "v*" for official releases
+    local exclude_tag=$2    # Tag to exclude from cleanup (e.g., just pulled tag)
 
     echo -e "${YELLOW}Cleaning up unused vLLM images (pattern: $image_pattern)...${NC}"
 
@@ -112,6 +129,10 @@ cleanup_unused_vllm_images() {
     # Delete unused images
     local deleted_count=0
     for img in $all_images; do
+        # Skip excluded tag
+        if [[ -n "$exclude_tag" && "$img" == "vllm/vllm-openai:$exclude_tag" ]]; then
+            continue
+        fi
         if ! echo "$used_images" | grep -q "^${img}$"; then
             echo "  Removing unused image: $img"
             docker rmi "$img" 2>/dev/null && ((deleted_count++))
@@ -135,8 +156,8 @@ pull_and_cleanup() {
 
     if [[ $? -eq 0 ]]; then
         echo -e "${GREEN}Successfully pulled vllm/vllm-openai:$tag${NC}"
-        # Cleanup old images
-        cleanup_unused_vllm_images "$cleanup_pattern"
+        # Cleanup old images, excluding the just-pulled tag
+        cleanup_unused_vllm_images "$cleanup_pattern" "$tag"
         return 0
     else
         echo -e "${RED}Failed to pull image${NC}"
@@ -333,24 +354,13 @@ container_menu() {
 
 # Container Up Menu
 container_up_menu() {
-    # Build profile menu items array
-    local items=()
-    for profile_file in "$PROFILES_DIR"/*.env; do
-        if [[ -f "$profile_file" ]]; then
-            local name=$(basename "$profile_file" .env)
-            local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
-            local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
-            local config=$(grep "^CONFIG_NAME=" "$profile_file" | cut -d'=' -f2)
-            items+=("$name" "GPU:$gpu Port:$port Config:$config")
-        fi
-    done
-
-    if [[ ${#items[@]} -eq 0 ]]; then
+    build_all_profile_items
+    if [[ ${#MENU_ITEMS[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No profiles found. Create a profile first."
         return
     fi
 
-    local profile=$(tui_menu "Start Container" "Select profile:" "${items[@]}")
+    local profile=$(tui_menu "Start Container" "Select profile:" "${MENU_ITEMS[@]}")
     [[ -z "$profile" ]] && return
 
     local profile_path="$PROFILES_DIR/$profile.env"
@@ -422,16 +432,9 @@ container_up_menu() {
             ;;
         dev)
             use_dev="true"
-            # Build dev images menu array
-            local img_items=()
-            while IFS=$'\t' read -r tag size created; do
-                local created_date=$(echo "$created" | cut -d' ' -f1)
-                local branch=$(echo "$tag" | sed 's/-[0-9]\{8\}$//')
-                img_items+=("$tag" "Branch:$branch Size:$size Date:$created_date")
-            done < <(docker images vllm-dev --format "{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}" 2>/dev/null)
-
-            if [[ ${#img_items[@]} -gt 0 ]]; then
-                local tag_choice=$(tui_menu "Select Dev Image" "Choose dev image tag:" "${img_items[@]}")
+            build_dev_image_items
+            if [[ ${#MENU_ITEMS[@]} -gt 0 ]]; then
+                local tag_choice=$(tui_menu "Select Dev Image" "Choose dev image tag:" "${MENU_ITEMS[@]}")
                 if [[ -n "$tag_choice" ]]; then
                     custom_tag="$tag_choice"
                 else
@@ -445,6 +448,10 @@ container_up_menu() {
         custom)
             version_tag=$(tui_inputbox "Custom Tag" "Enter custom tag (e.g., v0.14.0):" "")
             [[ -z "$version_tag" ]] && return
+            if ! [[ "$version_tag" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+                tui_msgbox "Invalid Input" "Tag must contain only letters, numbers, dots, dashes, and underscores"
+                return
+            fi
             ;;
     esac
 
@@ -457,13 +464,8 @@ container_up_menu() {
     fi
 
     if tui_yesno "Confirm Start" "$msg\n\nStart this container?"; then
-        # Update .env.common if version changed (except for dev builds)
-        if [[ "$use_dev" == "false" && "$version_tag" != "" ]]; then
-            sed -i "s/^VLLM_VERSION=.*/VLLM_VERSION=$version_tag/" "$COMMON_ENV"
-        fi
-
         clear
-        run_up "$profile_path" "$profile" "$use_dev" "$custom_tag"
+        run_up "$profile_path" "$profile" "$use_dev" "$custom_tag" "$version_tag"
         echo ""
         echo -e "${YELLOW}Press Enter to continue...${NC}"
         read -r
@@ -472,26 +474,13 @@ container_up_menu() {
 
 # Container Down Menu
 container_down_menu() {
-    # Build running containers menu array
-    local items=()
-    for profile_file in "$PROFILES_DIR"/*.env; do
-        if [[ -f "$profile_file" ]]; then
-            local name=$(basename "$profile_file" .env)
-            local container=$(grep "^CONTAINER_NAME=" "$profile_file" | cut -d'=' -f2)
-            if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
-                local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
-                local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
-                items+=("$name" "Running - GPU:$gpu Port:$port")
-            fi
-        fi
-    done
-
-    if [[ ${#items[@]} -eq 0 ]]; then
+    build_running_profile_items
+    if [[ ${#MENU_ITEMS[@]} -eq 0 ]]; then
         tui_msgbox "Info" "No running containers found."
         return
     fi
 
-    local profile=$(tui_menu "Stop Container" "Select container to stop:" "${items[@]}")
+    local profile=$(tui_menu "Stop Container" "Select container to stop:" "${MENU_ITEMS[@]}")
     [[ -z "$profile" ]] && return
 
     local profile_path="$PROFILES_DIR/$profile.env"
@@ -507,26 +496,13 @@ container_down_menu() {
 
 # Container Logs Menu
 container_logs_menu() {
-    # Build running containers menu array
-    local items=()
-    for profile_file in "$PROFILES_DIR"/*.env; do
-        if [[ -f "$profile_file" ]]; then
-            local name=$(basename "$profile_file" .env)
-            local container=$(grep "^CONTAINER_NAME=" "$profile_file" | cut -d'=' -f2)
-            if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
-                local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
-                local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
-                items+=("$name" "Running - GPU:$gpu Port:$port")
-            fi
-        fi
-    done
-
-    if [[ ${#items[@]} -eq 0 ]]; then
+    build_running_profile_items
+    if [[ ${#MENU_ITEMS[@]} -eq 0 ]]; then
         tui_msgbox "Info" "No running containers found."
         return
     fi
 
-    local profile=$(tui_menu "View Logs" "Select container:" "${items[@]}")
+    local profile=$(tui_menu "View Logs" "Select container:" "${MENU_ITEMS[@]}")
     [[ -z "$profile" ]] && return
 
     local profile_path="$PROFILES_DIR/$profile.env"
@@ -543,24 +519,13 @@ container_logs_menu() {
 
 # Container Status Menu
 container_status_menu() {
-    # Build profile menu array
-    local items=()
-    for profile_file in "$PROFILES_DIR"/*.env; do
-        if [[ -f "$profile_file" ]]; then
-            local name=$(basename "$profile_file" .env)
-            local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
-            local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
-            local config=$(grep "^CONFIG_NAME=" "$profile_file" | cut -d'=' -f2)
-            items+=("$name" "GPU:$gpu Port:$port Config:$config")
-        fi
-    done
-
-    if [[ ${#items[@]} -eq 0 ]]; then
+    build_all_profile_items
+    if [[ ${#MENU_ITEMS[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No profiles found."
         return
     fi
 
-    local profile=$(tui_menu "Check Status" "Select profile:" "${items[@]}")
+    local profile=$(tui_menu "Check Status" "Select profile:" "${MENU_ITEMS[@]}")
     [[ -z "$profile" ]] && return
 
     local profile_path="$PROFILES_DIR/$profile.env"
@@ -601,6 +566,11 @@ profile_create_menu() {
     local name=$(tui_inputbox "Create Profile" "Enter profile name:" "")
     [[ -z "$name" ]] && return
 
+    if ! validate_name "$name"; then
+        tui_msgbox "Invalid Name" "Name must contain only letters, numbers, dash, and underscore"
+        return
+    fi
+
     # Check if exists
     if [[ -f "$PROFILES_DIR/$name.env" ]]; then
         tui_msgbox "Error" "Profile '$name' already exists."
@@ -623,22 +593,13 @@ profile_create_menu() {
     local tp=$(tui_inputbox "Tensor Parallel" "Enter tensor parallel size:" "1")
     [[ -z "$tp" ]] && return
 
-    # Build config menu array
-    local config_items=()
-    for config_file in "$SCRIPT_DIR/config"/*.yaml; do
-        if [[ -f "$config_file" ]]; then
-            local cfg_name=$(basename "$config_file" .yaml)
-            local model=$(grep "^model:" "$config_file" | cut -d':' -f2- | sed 's/^ *//')
-            config_items+=("$cfg_name" "$model")
-        fi
-    done
-
-    if [[ ${#config_items[@]} -eq 0 ]]; then
+    build_config_menu_items
+    if [[ ${#MENU_ITEMS[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No configs found. Create a config first."
         return
     fi
 
-    local config=$(tui_menu "Select Config" "Choose model config:" "${config_items[@]}")
+    local config=$(tui_menu "Select Config" "Choose model config:" "${MENU_ITEMS[@]}")
     [[ -z "$config" ]] && return
 
     # LoRA settings
@@ -672,24 +633,13 @@ EOF
 
 # Profile Edit Menu
 profile_edit_menu() {
-    # Build profile menu array
-    local items=()
-    for profile_file in "$PROFILES_DIR"/*.env; do
-        if [[ -f "$profile_file" ]]; then
-            local name=$(basename "$profile_file" .env)
-            local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
-            local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
-            local cfg=$(grep "^CONFIG_NAME=" "$profile_file" | cut -d'=' -f2)
-            items+=("$name" "GPU:$gpu Port:$port Config:$cfg")
-        fi
-    done
-
-    if [[ ${#items[@]} -eq 0 ]]; then
+    build_all_profile_items
+    if [[ ${#MENU_ITEMS[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No profiles found."
         return
     fi
 
-    local profile=$(tui_menu "Edit Profile" "Select profile to edit:" "${items[@]}")
+    local profile=$(tui_menu "Edit Profile" "Select profile to edit:" "${MENU_ITEMS[@]}")
     [[ -z "$profile" ]] && return
 
     local profile_path="$PROFILES_DIR/$profile.env"
@@ -742,16 +692,8 @@ profile_edit_menu() {
                 fi
                 ;;
             4)
-                # Build config menu array
-                local config_items=()
-                for config_file in "$SCRIPT_DIR/config"/*.yaml; do
-                    if [[ -f "$config_file" ]]; then
-                        local cfg_name=$(basename "$config_file" .yaml)
-                        local model=$(grep "^model:" "$config_file" | cut -d':' -f2- | sed 's/^ *//')
-                        config_items+=("$cfg_name" "$model")
-                    fi
-                done
-                local new_config=$(tui_menu "Select Config" "Choose config:" "${config_items[@]}")
+                build_config_menu_items
+                local new_config=$(tui_menu "Select Config" "Choose config:" "${MENU_ITEMS[@]}")
                 if [[ -n "$new_config" ]]; then
                     sed -i "s/^CONFIG_NAME=.*/CONFIG_NAME=$new_config/" "$profile_path"
                     tui_msgbox "Updated" "Config changed to $new_config"
@@ -773,24 +715,13 @@ profile_edit_menu() {
 
 # Profile Delete Menu
 profile_delete_menu() {
-    # Build profile menu array
-    local items=()
-    for profile_file in "$PROFILES_DIR"/*.env; do
-        if [[ -f "$profile_file" ]]; then
-            local name=$(basename "$profile_file" .env)
-            local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
-            local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
-            local cfg=$(grep "^CONFIG_NAME=" "$profile_file" | cut -d'=' -f2)
-            items+=("$name" "GPU:$gpu Port:$port Config:$cfg")
-        fi
-    done
-
-    if [[ ${#items[@]} -eq 0 ]]; then
+    build_all_profile_items
+    if [[ ${#MENU_ITEMS[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No profiles found."
         return
     fi
 
-    local profile=$(tui_menu "Delete Profile" "Select profile to delete:" "${items[@]}")
+    local profile=$(tui_menu "Delete Profile" "Select profile to delete:" "${MENU_ITEMS[@]}")
     [[ -z "$profile" ]] && return
 
     if tui_yesno "Confirm Delete" "Are you sure you want to delete profile '$profile'?"; then
@@ -801,24 +732,13 @@ profile_delete_menu() {
 
 # Profile View Menu
 profile_view_menu() {
-    # Build profile menu array
-    local items=()
-    for profile_file in "$PROFILES_DIR"/*.env; do
-        if [[ -f "$profile_file" ]]; then
-            local name=$(basename "$profile_file" .env)
-            local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
-            local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
-            local cfg=$(grep "^CONFIG_NAME=" "$profile_file" | cut -d'=' -f2)
-            items+=("$name" "GPU:$gpu Port:$port Config:$cfg")
-        fi
-    done
-
-    if [[ ${#items[@]} -eq 0 ]]; then
+    build_all_profile_items
+    if [[ ${#MENU_ITEMS[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No profiles found."
         return
     fi
 
-    local profile=$(tui_menu "View Profile" "Select profile:" "${items[@]}")
+    local profile=$(tui_menu "View Profile" "Select profile:" "${MENU_ITEMS[@]}")
     [[ -z "$profile" ]] && return
 
     tui_textbox "Profile: $profile" "$PROFILES_DIR/$profile.env"
@@ -849,6 +769,11 @@ config_create_menu() {
     local name=$(tui_inputbox "Create Config" "Enter config name:" "")
     [[ -z "$name" ]] && return
 
+    if ! validate_name "$name"; then
+        tui_msgbox "Invalid Name" "Name must contain only letters, numbers, dash, and underscore"
+        return
+    fi
+
     if [[ -f "$SCRIPT_DIR/config/$name.yaml" ]]; then
         tui_msgbox "Error" "Config '$name' already exists."
         return
@@ -870,22 +795,13 @@ EOF
 
 # Config Edit Menu
 config_edit_menu() {
-    # Build config menu array
-    local items=()
-    for config_file in "$SCRIPT_DIR/config"/*.yaml; do
-        if [[ -f "$config_file" ]]; then
-            local name=$(basename "$config_file" .yaml)
-            local model=$(grep "^model:" "$config_file" | cut -d':' -f2- | sed 's/^ *//')
-            items+=("$name" "$model")
-        fi
-    done
-
-    if [[ ${#items[@]} -eq 0 ]]; then
+    build_config_menu_items
+    if [[ ${#MENU_ITEMS[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No configs found."
         return
     fi
 
-    local config=$(tui_menu "Edit Config" "Select config:" "${items[@]}")
+    local config=$(tui_menu "Edit Config" "Select config:" "${MENU_ITEMS[@]}")
     [[ -z "$config" ]] && return
 
     local config_path="$SCRIPT_DIR/config/$config.yaml"
@@ -898,14 +814,16 @@ config_edit_menu() {
             "1" "Change Model (current: $current_model)" \
             "2" "Change GPU Utilization (current: $current_util)" \
             "3" "Add Custom Parameter" \
+            "4" "Edit Custom Parameter" \
+            "5" "Delete Custom Parameter" \
             "B" "Back")
 
         case "$choice" in
             1)
                 local new_model=$(tui_inputbox "Model" "Enter model name:" "$current_model")
                 if [[ -n "$new_model" ]]; then
-                    # Sanitize model name for sed
-                    local safe_model=$(sanitize_for_sed "$new_model")
+                    # Sanitize model name for sed (using | delimiter)
+                    local safe_model=$(sanitize_for_sed "$new_model" "|")
                     sed -i "s|^model:.*|model: $safe_model|" "$config_path"
                     tui_msgbox "Updated" "Model changed"
                 fi
@@ -935,6 +853,37 @@ config_edit_menu() {
                     fi
                 fi
                 ;;
+            4)
+                build_custom_param_items "$config_path"
+                if [[ ${#MENU_ITEMS[@]} -eq 0 ]]; then
+                    tui_msgbox "Info" "No custom parameters found."
+                else
+                    local param=$(tui_menu "Edit Parameter" "Select parameter to edit:" "${MENU_ITEMS[@]}")
+                    if [[ -n "$param" ]]; then
+                        local current_val=$(grep "^${param}:" "$config_path" | cut -d':' -f2- | sed 's/^ *//')
+                        local new_val=$(tui_inputbox "Edit: $param" "Enter new value for '$param':" "$current_val")
+                        if [[ -n "$new_val" ]]; then
+                            local safe_val=$(sanitize_for_sed "$new_val" "|")
+                            sed -i "s|^${param}:.*|${param}: ${safe_val}|" "$config_path"
+                            tui_msgbox "Updated" "Parameter '$param' updated"
+                        fi
+                    fi
+                fi
+                ;;
+            5)
+                build_custom_param_items "$config_path"
+                if [[ ${#MENU_ITEMS[@]} -eq 0 ]]; then
+                    tui_msgbox "Info" "No custom parameters found."
+                else
+                    local param=$(tui_menu "Delete Parameter" "Select parameter to delete:" "${MENU_ITEMS[@]}")
+                    if [[ -n "$param" ]]; then
+                        if tui_yesno "Confirm" "Delete parameter '$param'?"; then
+                            sed -i "/^${param}:/d" "$config_path"
+                            tui_msgbox "Deleted" "Parameter '$param' deleted"
+                        fi
+                    fi
+                fi
+                ;;
             B|"") break ;;
         esac
     done
@@ -942,22 +891,13 @@ config_edit_menu() {
 
 # Config Delete Menu
 config_delete_menu() {
-    # Build config menu array
-    local items=()
-    for config_file in "$SCRIPT_DIR/config"/*.yaml; do
-        if [[ -f "$config_file" ]]; then
-            local name=$(basename "$config_file" .yaml)
-            local model=$(grep "^model:" "$config_file" | cut -d':' -f2- | sed 's/^ *//')
-            items+=("$name" "$model")
-        fi
-    done
-
-    if [[ ${#items[@]} -eq 0 ]]; then
+    build_config_menu_items
+    if [[ ${#MENU_ITEMS[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No configs found."
         return
     fi
 
-    local config=$(tui_menu "Delete Config" "Select config:" "${items[@]}")
+    local config=$(tui_menu "Delete Config" "Select config:" "${MENU_ITEMS[@]}")
     [[ -z "$config" ]] && return
 
     if tui_yesno "Confirm Delete" "Are you sure you want to delete config '$config'?"; then
@@ -968,22 +908,13 @@ config_delete_menu() {
 
 # Config View Menu
 config_view_menu() {
-    # Build config menu array
-    local items=()
-    for config_file in "$SCRIPT_DIR/config"/*.yaml; do
-        if [[ -f "$config_file" ]]; then
-            local name=$(basename "$config_file" .yaml)
-            local model=$(grep "^model:" "$config_file" | cut -d':' -f2- | sed 's/^ *//')
-            items+=("$name" "$model")
-        fi
-    done
-
-    if [[ ${#items[@]} -eq 0 ]]; then
+    build_config_menu_items
+    if [[ ${#MENU_ITEMS[@]} -eq 0 ]]; then
         tui_msgbox "Error" "No configs found."
         return
     fi
 
-    local config=$(tui_menu "View Config" "Select config:" "${items[@]}")
+    local config=$(tui_menu "View Config" "Select config:" "${MENU_ITEMS[@]}")
     [[ -z "$config" ]] && return
 
     tui_textbox "Config: $config" "$SCRIPT_DIR/config/$config.yaml"
@@ -1055,7 +986,7 @@ build_vllm_menu() {
 
 # List Built Images
 build_list_images() {
-    local tmp_file=$(mktemp)
+    local tmp_file=$(create_temp)
 
     echo "vLLM Development Images" > "$tmp_file"
     echo "=======================" >> "$tmp_file"
@@ -1096,25 +1027,17 @@ build_list_images() {
     fi
 
     tui_textbox "Built Images" "$tmp_file"
-    rm -f "$tmp_file"
 }
 
 # Delete Image
 build_delete_image() {
-    # Build dev images menu array
-    local items=()
-    while IFS=$'\t' read -r tag size created; do
-        local created_date=$(echo "$created" | cut -d' ' -f1)
-        local branch=$(echo "$tag" | sed 's/-[0-9]\{8\}$//')
-        items+=("$tag" "Branch:$branch Size:$size Date:$created_date")
-    done < <(docker images vllm-dev --format "{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}" 2>/dev/null)
-
-    if [[ ${#items[@]} -eq 0 ]]; then
+    build_dev_image_items
+    if [[ ${#MENU_ITEMS[@]} -eq 0 ]]; then
         tui_msgbox "Info" "No vllm-dev images found."
         return
     fi
 
-    local tag=$(tui_menu "Delete Image" "Select image to delete:" "${items[@]}")
+    local tag=$(tui_menu "Delete Image" "Select image to delete:" "${MENU_ITEMS[@]}")
     [[ -z "$tag" ]] && return
 
     if tui_yesno "Confirm Delete" "Delete image 'vllm-dev:$tag'?"; then
@@ -1145,7 +1068,7 @@ system_menu() {
 
 # System Version Info
 system_version_info() {
-    local tmp_file=$(mktemp)
+    local tmp_file=$(create_temp)
 
     echo "vLLM Version Information" > "$tmp_file"
     echo "========================" >> "$tmp_file"
@@ -1178,12 +1101,11 @@ system_version_info() {
     fi
 
     tui_textbox "Version Information" "$tmp_file"
-    rm -f "$tmp_file"
 }
 
 # System GPU Info
 system_gpu_info() {
-    local tmp_file=$(mktemp)
+    local tmp_file=$(create_temp)
 
     echo "GPU Usage" > "$tmp_file"
     echo "=========" >> "$tmp_file"
@@ -1198,12 +1120,11 @@ system_gpu_info() {
     done
 
     tui_textbox "GPU Usage" "$tmp_file"
-    rm -f "$tmp_file"
 }
 
 # System Containers
 system_containers() {
-    local tmp_file=$(mktemp)
+    local tmp_file=$(create_temp)
 
     echo "Running vLLM Containers" > "$tmp_file"
     echo "=======================" >> "$tmp_file"
@@ -1213,12 +1134,11 @@ system_containers() {
     docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null >> "$tmp_file"
 
     tui_textbox "Running Containers" "$tmp_file"
-    rm -f "$tmp_file"
 }
 
 # System Profiles Status
 system_profiles_status() {
-    local tmp_file=$(mktemp)
+    local tmp_file=$(create_temp)
 
     echo "All Profiles Status" > "$tmp_file"
     echo "===================" >> "$tmp_file"
@@ -1244,7 +1164,6 @@ system_profiles_status() {
     done
 
     tui_textbox "Profiles Status" "$tmp_file"
-    rm -f "$tmp_file"
 }
 
 # Interactive mode entry point
@@ -1307,34 +1226,29 @@ list_profiles() {
 
     for profile in "$PROFILES_DIR"/*.env; do
         if [[ -f "$profile" ]]; then
-            # Use filename (without .env) as profile name
-            profile_name=$(basename "$profile" .env)
+            local profile_name=$(basename "$profile" .env)
+            local container_name=$(grep "^CONTAINER_NAME=" "$profile" | cut -d'=' -f2)
+            local gpu_id=$(grep "^GPU_ID=" "$profile" | cut -d'=' -f2)
+            local port=$(grep "^VLLM_PORT=" "$profile" | cut -d'=' -f2)
+            local config=$(grep "^CONFIG_NAME=" "$profile" | cut -d'=' -f2)
+            local enable_lora=$(grep "^ENABLE_LORA=" "$profile" | cut -d'=' -f2)
 
-            # Read values from profile
-            container_name=$(grep "^CONTAINER_NAME=" "$profile" | cut -d'=' -f2)
-            gpu_id=$(grep "^GPU_ID=" "$profile" | cut -d'=' -f2)
-            port=$(grep "^VLLM_PORT=" "$profile" | cut -d'=' -f2)
-            config=$(grep "^CONFIG_NAME=" "$profile" | cut -d'=' -f2)
-            enable_lora=$(grep "^ENABLE_LORA=" "$profile" | cut -d'=' -f2)
-
-            # Check container status
             local status="stopped"
             if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${container_name}$"; then
                 status="running"
             fi
 
-            # Get actual model name from config file
-            config_file="$SCRIPT_DIR/config/${config}.yaml"
+            local config_file="$SCRIPT_DIR/config/${config}.yaml"
+            local model_name=""
             if [[ -f "$config_file" ]]; then
                 model_name=$(grep "^model:" "$config_file" | cut -d':' -f2- | sed 's/^ *//')
             else
                 model_name="$config"
             fi
 
+            local lora_status="-"
             if [[ "$enable_lora" == "true" ]]; then
                 lora_status="ON"
-            else
-                lora_status="-"
             fi
 
             printf "%-15s %-8s %-6s %-6s %-8s %s\n" "$profile_name" "$status" "$gpu_id" "$port" "$lora_status" "$model_name"
@@ -1366,14 +1280,34 @@ check_conflict() {
     local profile=$1
     local gpu_id=$(grep "^GPU_ID=" "$profile" | cut -d'=' -f2)
     local port=$(grep "^VLLM_PORT=" "$profile" | cut -d'=' -f2)
+    local container_name=$(grep "^CONTAINER_NAME=" "$profile" | cut -d'=' -f2)
 
-    # Check for port conflict
-    local port_conflict=$(docker ps --format '{{.Names}}:{{.Ports}}' 2>/dev/null | grep ":$port->")
+    # Check for port conflict (exclude own container)
+    local port_conflict=$(docker ps --format '{{.Names}}:{{.Ports}}' 2>/dev/null | grep -v "^${container_name}:" | grep ":$port->")
     if [[ -n "$port_conflict" ]]; then
         local conflict_container=$(echo "$port_conflict" | cut -d':' -f1)
         echo -e "${RED}Error: Port $port is already in use by container '$conflict_container'${NC}"
         return 1
     fi
+
+    # Check for GPU conflict (warning only - models can share a GPU with lower memory)
+    for other_profile in "$PROFILES_DIR"/*.env; do
+        [[ ! -f "$other_profile" ]] && continue
+        [[ "$other_profile" == "$profile" ]] && continue
+
+        local other_container=$(grep "^CONTAINER_NAME=" "$other_profile" | cut -d'=' -f2)
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${other_container}$"; then
+            local other_gpu=$(grep "^GPU_ID=" "$other_profile" | cut -d'=' -f2)
+            local gid ogid
+            for gid in $(echo "$gpu_id" | tr ',' '\n'); do
+                for ogid in $(echo "$other_gpu" | tr ',' '\n'); do
+                    if [[ "$gid" == "$ogid" ]]; then
+                        echo -e "${YELLOW}Warning: GPU $gid is also used by running container '$other_container'${NC}"
+                    fi
+                done
+            done
+        fi
+    done
 
     return 0
 }
@@ -1440,6 +1374,11 @@ run_build() {
                 custom_tag="$2"
                 shift 2
                 ;;
+            -*)
+                echo -e "${RED}Error: Unknown option '$1'${NC}"
+                echo "Usage: ./run.sh build [branch] [--repo URL] [--official] [--tag TAG]"
+                return 1
+                ;;
             *)
                 branch="$1"
                 shift
@@ -1455,6 +1394,7 @@ run_build() {
 }
 
 # Clone or update vLLM repository
+# After calling this function, caller should cd to $SCRIPT_DIR/.vllm-src for build
 clone_or_update_vllm() {
     local repo_url=${1:-https://github.com/vllm-project/vllm.git}
     local branch=${2:-main}
@@ -1462,32 +1402,36 @@ clone_or_update_vllm() {
 
     if [[ -d "$vllm_src_dir/.git" ]]; then
         echo -e "${BLUE}Updating existing vLLM source...${NC}"
-        cd "$vllm_src_dir"
+        pushd "$vllm_src_dir" > /dev/null
 
         # Check if remote URL matches
         local current_remote=$(git remote get-url origin)
         if [[ "$current_remote" != "$repo_url" ]]; then
             echo -e "${YELLOW}Repository URL changed. Re-cloning...${NC}"
-            cd "$SCRIPT_DIR"
+            popd > /dev/null
             rm -rf "$vllm_src_dir"
             git clone "$repo_url" "$vllm_src_dir"
-            cd "$vllm_src_dir"
+            pushd "$vllm_src_dir" > /dev/null
             git checkout "$branch"
         else
             git fetch origin
             git checkout "$branch" 2>/dev/null || git checkout -b "$branch" "origin/$branch"
             git pull origin "$branch" 2>/dev/null || true
         fi
+
+        local hash=$(git rev-parse --short HEAD)
+        popd > /dev/null
     else
         echo -e "${BLUE}Cloning vLLM repository...${NC}"
         rm -rf "$vllm_src_dir"
         git clone "$repo_url" "$vllm_src_dir"
-        cd "$vllm_src_dir"
+        pushd "$vllm_src_dir" > /dev/null
         git checkout "$branch"
+        local hash=$(git rev-parse --short HEAD)
+        popd > /dev/null
     fi
 
-    # Return commit hash
-    git rev-parse --short HEAD
+    echo "$hash"
 }
 
 # Fast local build - uses official Dockerfile with YOUR GPU only
@@ -1528,7 +1472,7 @@ run_build_fast() {
 
     # Build using official Dockerfile with local GPU arch only + labels
     docker build \
-        -f docker/Dockerfile \
+        -f "$vllm_src_dir/docker/Dockerfile" \
         --build-arg torch_cuda_arch_list="$gpu_arch" \
         --build-arg RUN_WHEEL_CHECK=false \
         --target vllm-openai \
@@ -1539,11 +1483,9 @@ run_build_fast() {
         --label "vllm.build.type=fast" \
         -t "vllm-dev:$main_tag" \
         -t "vllm-dev:$branch" \
-        .
+        "$vllm_src_dir"
 
     local result=$?
-
-    cd "$SCRIPT_DIR"
 
     if [[ $result -eq 0 ]]; then
         echo ""
@@ -1597,7 +1539,7 @@ run_build_official() {
     # Build using official Dockerfile (all architectures) + labels
     # Skip wheel size check for official builds (builds for all GPUs are large)
     docker build \
-        -f docker/Dockerfile \
+        -f "$vllm_src_dir/docker/Dockerfile" \
         --build-arg RUN_WHEEL_CHECK=false \
         --target vllm-openai \
         --label "vllm.repo.url=$repo_url" \
@@ -1607,11 +1549,9 @@ run_build_official() {
         --label "vllm.build.type=official" \
         -t "vllm-dev:$main_tag" \
         -t "vllm-dev:$branch" \
-        .
+        "$vllm_src_dir"
 
     local result=$?
-
-    cd "$SCRIPT_DIR"
 
     if [[ $result -eq 0 ]]; then
         echo ""
@@ -1641,6 +1581,7 @@ run_up() {
     local profile_name=$2
     local use_dev=$3
     local custom_tag=$4
+    local version_override=${5:-}
 
     # Check for conflicts
     if ! check_conflict "$profile_path"; then
@@ -1650,7 +1591,20 @@ run_up() {
     # Build LoRA options and export as environment variable
     export LORA_OPTIONS=$(build_lora_options "$profile_path")
 
+    # Apply version override if specified (does not modify .env.common)
+    if [[ -n "$version_override" ]]; then
+        export VLLM_VERSION="$version_override"
+    fi
+
     cd "$SCRIPT_DIR"
+
+    # Check if extra packages are configured
+    local extra_packages=$(grep "^EXTRA_PIP_PACKAGES=" "$COMMON_ENV" | cut -d'=' -f2)
+    local extra_packages_opt=""
+    if [[ -n "$extra_packages" ]]; then
+        extra_packages_opt="-f docker-compose.extra-packages.yaml"
+        echo -e "${BLUE}Extra pip packages:${NC} $extra_packages"
+    fi
 
     if [[ "$use_dev" == "true" ]]; then
         echo -e "${GREEN}Starting $profile_name (dev build)...${NC}"
@@ -1678,21 +1632,21 @@ run_up() {
 
         echo -e "${BLUE}Using image:${NC} vllm-dev:$image_tag"
         export VLLM_DEV_TAG="$image_tag"
-        docker compose -f docker-compose.dev.yaml --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
+        docker compose -f docker-compose.dev.yaml $extra_packages_opt --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
     else
         local vllm_version=$(grep "^VLLM_VERSION=" "$COMMON_ENV" | cut -d'=' -f2)
         local config_name=$(grep "^CONFIG_NAME=" "$profile_path" | cut -d'=' -f2)
 
         echo -e "${GREEN}Starting $profile_name...${NC}"
 
-        # Use custom compose file for qwen3-asr models
-        if [[ "$config_name" == qwen3-asr* ]]; then
-            echo -e "${BLUE}Using image:${NC} vllm/vllm-openai:qwen-asr-nightly (custom build with audio support)"
-            docker compose -f docker-compose.qwen-asr.yaml --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
-        else
-            echo -e "${BLUE}Using image:${NC} vllm/vllm-openai:$vllm_version"
-            docker compose --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
+        # For nightly/latest tags, always pull to check for updates
+        local pull_opt=""
+        if [[ "$vllm_version" == "nightly" || "$vllm_version" == "latest" ]]; then
+            pull_opt="--pull always"
         fi
+
+        echo -e "${BLUE}Using image:${NC} vllm/vllm-openai:$vllm_version"
+        docker compose -f docker-compose.yaml $extra_packages_opt --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d $pull_opt
     fi
 
     local result=$?
@@ -1734,17 +1688,37 @@ run_down() {
 
     echo -e "${YELLOW}Stopping $profile_name...${NC}"
 
-    # Stop container (ignore error if already stopped)
-    if ! docker stop "$container_name" 2>/dev/null; then
-        echo -e "${YELLOW}Warning: Container may already be stopped${NC}"
+    # Determine which compose file was used based on container image
+    local image=$(docker inspect "$container_name" --format='{{.Config.Image}}' 2>/dev/null)
+    local compose_file="docker-compose.yaml"
+
+    if [[ "$image" == vllm-dev:* ]]; then
+        compose_file="docker-compose.dev.yaml"
+        export VLLM_DEV_TAG="${image#vllm-dev:}"
     fi
 
-    # Remove container
-    if docker rm "$container_name" 2>/dev/null; then
+    cd "$SCRIPT_DIR"
+
+    # Check if extra packages were used (by checking container's entrypoint)
+    local entrypoint=$(docker inspect "$container_name" --format='{{json .Config.Entrypoint}}' 2>/dev/null)
+    local extra_packages_opt=""
+    if [[ "$entrypoint" == *"entrypoint-wrapper.sh"* ]]; then
+        extra_packages_opt="-f docker-compose.extra-packages.yaml"
+    fi
+
+    # Use docker compose down for proper cleanup (networks, etc.)
+    if docker compose -f "$compose_file" $extra_packages_opt --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" down 2>/dev/null; then
         echo -e "${GREEN}$profile_name stopped successfully!${NC}"
     else
-        echo -e "${RED}Failed to remove container $container_name${NC}"
-        return 1
+        # Fallback to direct docker stop/rm if compose down fails
+        echo -e "${YELLOW}Compose down failed, falling back to direct stop...${NC}"
+        docker stop "$container_name" 2>/dev/null
+        if docker rm "$container_name" 2>/dev/null; then
+            echo -e "${GREEN}$profile_name stopped successfully!${NC}"
+        else
+            echo -e "${RED}Failed to remove container $container_name${NC}"
+            return 1
+        fi
     fi
 }
 
@@ -1767,8 +1741,30 @@ run_status() {
 show_ps() {
     echo -e "${BLUE}Running vLLM Containers:${NC}"
     echo ""
-    # Show all vLLM containers (both official and dev builds)
-    docker ps --filter "name=vllm" --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+    # Collect container names from all profiles
+    local found=false
+    local names=()
+    for profile in "$PROFILES_DIR"/*.env; do
+        if [[ -f "$profile" ]]; then
+            local container=$(grep "^CONTAINER_NAME=" "$profile" | cut -d'=' -f2)
+            if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
+                names+=("$container")
+                found=true
+            fi
+        fi
+    done
+
+    if [[ "$found" == "true" ]]; then
+        printf "%-20s %-40s %-20s %s\n" "NAME" "IMAGE" "STATUS" "PORTS"
+        for name in "${names[@]}"; do
+            docker ps --filter "name=^${name}$" --format "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" | \
+                while IFS=$'\t' read -r n i s p; do
+                    printf "%-20s %-40s %-20s %s\n" "$n" "$i" "$s" "$p"
+                done
+        done
+    else
+        echo "(No running containers)"
+    fi
 }
 
 show_gpu() {
