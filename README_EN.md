@@ -132,7 +132,14 @@ vllm-compose/
 ├── config/                # vLLM configs (YAML)
 │   ├── model1.yaml
 │   └── model2.yaml
+├── lib/                   # Modular library
+│   ├── colors.sh          # Color constants
+│   ├── tui.sh             # TUI helper functions
+│   └── validation.sh      # Input validation
+├── scripts/
+│   └── entrypoint-wrapper.sh  # Runtime package install
 ├── docker-compose.yaml
+├── docker-compose.extra-packages.yaml  # Extra pip packages
 ├── .env.common            # Common settings
 └── run.sh                 # Management script
 ```
@@ -163,7 +170,7 @@ vllm-compose/
 │  Q. Quick Setup         Auto-create Profile    │
 │  1. Container Mgmt      Start/Stop/Logs        │
 │  2. Profile Mgmt        Create/Edit/Delete     │
-│  3. Config Mgmt         Create/Edit            │
+│  3. Config Mgmt         Create/Edit/Delete      │
 │  4. Build Mgmt          Build/Images           │
 │  5. System Info         GPU/Version/Status     │
 │  X. Exit                                       │
@@ -425,6 +432,19 @@ enable-chunked-prefill: true
 
 > Any vLLM CLI argument can be written in YAML format
 > Reference: [vLLM Engine Arguments](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#command-line-arguments-for-the-server)
+
+In TUI, go to **Config Mgmt → Edit Config** to add/edit/delete custom parameters.
+
+### Extra pip Packages
+
+To install additional Python packages at container startup, set in `.env.common`:
+
+```bash
+# .env.common
+EXTRA_PIP_PACKAGES=transformers==4.50.0 flash-attn
+```
+
+> Packages are auto-installed at entrypoint via `docker-compose.extra-packages.yaml`.
 
 ### Container Won't Start
 
