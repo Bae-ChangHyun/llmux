@@ -110,6 +110,17 @@ build_config_menu_items() {
     done
 }
 
+# Build menu items for custom parameters in a config file
+# Excludes model and gpu-memory-utilization (managed by dedicated options)
+build_custom_param_items() {
+    local config_path="$1"
+    MENU_ITEMS=()
+    while IFS=': ' read -r key value; do
+        [[ -z "$key" ]] && continue
+        MENU_ITEMS+=("$key" "$value")
+    done < <(grep -v "^model:\|^gpu-memory-utilization:\|^#\|^$" "$config_path")
+}
+
 # Build menu items for dev images
 build_dev_image_items() {
     MENU_ITEMS=()
