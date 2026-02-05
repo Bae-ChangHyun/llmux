@@ -132,7 +132,14 @@ vllm-compose/
 ├── config/                # vLLM 설정 (YAML)
 │   ├── model1.yaml
 │   └── model2.yaml
+├── lib/                   # 모듈화된 라이브러리
+│   ├── colors.sh          # 컬러 상수
+│   ├── tui.sh             # TUI 헬퍼 함수
+│   └── validation.sh      # 입력 검증 함수
+├── scripts/
+│   └── entrypoint-wrapper.sh  # 런타임 패키지 설치
 ├── docker-compose.yaml
+├── docker-compose.extra-packages.yaml  # 추가 pip 패키지
 ├── .env.common            # 공통 설정
 └── run.sh                 # 관리 스크립트
 ```
@@ -163,7 +170,7 @@ vllm-compose/
 │  Q. Quick Setup         프로필+Config 자동생성  │
 │  1. Container Mgmt      시작/중지/로그/상태     │
 │  2. Profile Mgmt        프로필 생성/수정/삭제   │
-│  3. Config Mgmt         설정 생성/수정          │
+│  3. Config Mgmt         설정 생성/수정/삭제      │
 │  4. Build Mgmt          소스 빌드/이미지 관리   │
 │  5. System Info         GPU/버전/컨테이너 정보  │
 │  X. Exit                종료                   │
@@ -425,6 +432,19 @@ enable-chunked-prefill: true
 
 > vLLM의 모든 CLI 인자를 YAML 형식으로 작성 가능
 > 참고: [vLLM Engine Arguments](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#command-line-arguments-for-the-server)
+
+TUI에서 **Config Mgmt → Edit Config**에서 커스텀 파라미터를 추가/수정/삭제할 수 있습니다.
+
+### 추가 pip 패키지 설치
+
+컨테이너 시작 시 추가 Python 패키지를 설치하려면 `.env.common`에 설정:
+
+```bash
+# .env.common
+EXTRA_PIP_PACKAGES=transformers==4.50.0 flash-attn
+```
+
+> `docker-compose.extra-packages.yaml`을 통해 entrypoint에서 자동 설치됩니다.
 
 ### 컨테이너가 시작되지 않음
 
