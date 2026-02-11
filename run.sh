@@ -278,13 +278,17 @@ quick_setup_menu() {
         return
     fi
 
-    # Create config file
-    mkdir -p "$SCRIPT_DIR/config"
-    printf 'model: %s\ngpu-memory-utilization: %s\n' "$model" "$gpu_util" > "$SCRIPT_DIR/config/$safe_name.yaml" 2>/tmp/vllm-config-err.log
+    # Create files to temp first, then move (atomic)
+    mkdir -p "$SCRIPT_DIR/config" "$PROFILES_DIR"
 
-    # Create profile file
-    mkdir -p "$PROFILES_DIR"
-    cat > "$PROFILES_DIR/$safe_name.env" << EOF
+    local config_path="$SCRIPT_DIR/config/$safe_name.yaml"
+    local profile_path="$PROFILES_DIR/$safe_name.env"
+    local tmp_config="/tmp/vllm-$safe_name.yaml"
+    local tmp_profile="/tmp/vllm-$safe_name.env"
+
+    printf 'model: %s\ngpu-memory-utilization: %s\n' "$model" "$gpu_util" > "$tmp_config"
+
+    cat > "$tmp_profile" << EOF
 # Profile: $safe_name
 # Model: $model
 # GPU: $gpu, Port: $port
@@ -304,26 +308,22 @@ ENABLE_LORA=false
 #LORA_MODULES=adapter1=/app/lora/path1
 EOF
 
-    # Verify files were created
-    local created=""
-    local failed=""
-    if [[ -f "$SCRIPT_DIR/config/$safe_name.yaml" ]]; then
-        created="- Config: config/$safe_name.yaml\n"
-    else
-        failed="- Config: config/$safe_name.yaml\n"
-    fi
-    if [[ -f "$PROFILES_DIR/$safe_name.env" ]]; then
-        created="${created}- Profile: profiles/$safe_name.env"
-    else
-        failed="${failed}- Profile: profiles/$safe_name.env"
+    # Move both files - if either fails, clean up both
+    local err=""
+    cp "$tmp_config" "$config_path" 2>/tmp/vllm-setup-err.log || err="config"
+    if [[ -z "$err" ]]; then
+        cp "$tmp_profile" "$profile_path" 2>>/tmp/vllm-setup-err.log || err="profile"
     fi
 
-    if [[ -n "$failed" ]]; then
-        local err_detail=""
-        [[ -f /tmp/vllm-config-err.log ]] && err_detail=$(cat /tmp/vllm-config-err.log)
-        tui_msgbox "Error" "Failed to create:\n${failed}\n\nCreated:\n${created}\n\nError: ${err_detail:-unknown}\nPath: $SCRIPT_DIR/config/$safe_name.yaml"
+    rm -f "$tmp_config" "$tmp_profile"
+
+    if [[ -n "$err" ]]; then
+        # Rollback: remove both if either failed
+        rm -f "$config_path" "$profile_path"
+        local err_detail=$(cat /tmp/vllm-setup-err.log 2>/dev/null)
+        tui_msgbox "Error" "Failed to create $err file.\n\n${err_detail:-Check directory permissions.}\n\nTry: sudo chown \$USER:$USER $SCRIPT_DIR/config/"
     else
-        tui_msgbox "Success" "Created:\n${created}\n\nStart with: ./run.sh $safe_name up"
+        tui_msgbox "Success" "Created:\n- Config: config/$safe_name.yaml\n- Profile: profiles/$safe_name.env\n\nStart with: ./run.sh $safe_name up"
     fi
 }
 
