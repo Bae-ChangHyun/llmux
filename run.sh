@@ -280,10 +280,7 @@ quick_setup_menu() {
 
     # Create config file
     mkdir -p "$SCRIPT_DIR/config"
-    cat > "$SCRIPT_DIR/config/$safe_name.yaml" << EOF
-model: $model
-gpu-memory-utilization: $gpu_util
-EOF
+    printf 'model: %s\ngpu-memory-utilization: %s\n' "$model" "$gpu_util" > "$SCRIPT_DIR/config/$safe_name.yaml" 2>/tmp/vllm-config-err.log
 
     # Create profile file
     mkdir -p "$PROFILES_DIR"
@@ -322,7 +319,9 @@ EOF
     fi
 
     if [[ -n "$failed" ]]; then
-        tui_msgbox "Error" "Failed to create:\n${failed}\n\nCreated:\n${created}"
+        local err_detail=""
+        [[ -f /tmp/vllm-config-err.log ]] && err_detail=$(cat /tmp/vllm-config-err.log)
+        tui_msgbox "Error" "Failed to create:\n${failed}\n\nCreated:\n${created}\n\nError: ${err_detail:-unknown}\nPath: $SCRIPT_DIR/config/$safe_name.yaml"
     else
         tui_msgbox "Success" "Created:\n${created}\n\nStart with: ./run.sh $safe_name up"
     fi
