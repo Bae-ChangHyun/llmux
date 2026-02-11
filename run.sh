@@ -279,12 +279,14 @@ quick_setup_menu() {
     fi
 
     # Create config file
+    mkdir -p "$SCRIPT_DIR/config"
     cat > "$SCRIPT_DIR/config/$safe_name.yaml" << EOF
 model: $model
 gpu-memory-utilization: $gpu_util
 EOF
 
     # Create profile file
+    mkdir -p "$PROFILES_DIR"
     cat > "$PROFILES_DIR/$safe_name.env" << EOF
 # Profile: $safe_name
 # Model: $model
@@ -305,7 +307,25 @@ ENABLE_LORA=false
 #LORA_MODULES=adapter1=/app/lora/path1
 EOF
 
-    tui_msgbox "Success" "Created:\n- Config: config/$safe_name.yaml\n- Profile: profiles/$safe_name.env\n\nStart with: ./run.sh $safe_name up"
+    # Verify files were created
+    local created=""
+    local failed=""
+    if [[ -f "$SCRIPT_DIR/config/$safe_name.yaml" ]]; then
+        created="- Config: config/$safe_name.yaml\n"
+    else
+        failed="- Config: config/$safe_name.yaml\n"
+    fi
+    if [[ -f "$PROFILES_DIR/$safe_name.env" ]]; then
+        created="${created}- Profile: profiles/$safe_name.env"
+    else
+        failed="${failed}- Profile: profiles/$safe_name.env"
+    fi
+
+    if [[ -n "$failed" ]]; then
+        tui_msgbox "Error" "Failed to create:\n${failed}\n\nCreated:\n${created}"
+    else
+        tui_msgbox "Success" "Created:\n${created}\n\nStart with: ./run.sh $safe_name up"
+    fi
 }
 
 # Main Menu
@@ -785,6 +805,7 @@ config_create_menu() {
     local gpu_util=$(tui_inputbox "GPU Memory" "GPU memory utilization (0.0-1.0):" "0.9")
     [[ -z "$gpu_util" ]] && return
 
+    mkdir -p "$SCRIPT_DIR/config"
     cat > "$SCRIPT_DIR/config/$name.yaml" << EOF
 model: $model
 gpu-memory-utilization: $gpu_util
