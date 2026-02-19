@@ -1651,7 +1651,7 @@ run_up() {
     cd "$SCRIPT_DIR"
 
     # Check if extra packages are configured
-    local extra_packages=$(grep "^EXTRA_PIP_PACKAGES=" "$COMMON_ENV" | cut -d'=' -f2)
+    local extra_packages=$(grep "^EXTRA_PIP_PACKAGES=" "$profile_path" | cut -d'=' -f2)
     local extra_packages_opt=""
     if [[ -n "$extra_packages" ]]; then
         extra_packages_opt="-f docker-compose.extra-packages.yaml"
