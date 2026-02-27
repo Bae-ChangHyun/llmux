@@ -1650,12 +1650,19 @@ run_up() {
 
     cd "$SCRIPT_DIR"
 
-    # Check if extra packages are configured
+    # Check if overrides are needed (extra packages or container env)
     local extra_packages=$(grep "^EXTRA_PIP_PACKAGES=" "$profile_path" | cut -d'=' -f2)
-    local extra_packages_opt=""
-    if [[ -n "$extra_packages" ]]; then
-        extra_packages_opt="-f docker-compose.extra-packages.yaml"
-        echo -e "${BLUE}Extra pip packages:${NC} $extra_packages"
+    local container_env_file="${profile_path%.env}.container.env"
+    local overrides_opt=""
+    if [[ -n "$extra_packages" ]] || [[ -f "$container_env_file" ]]; then
+        overrides_opt="-f docker-compose.overrides.yaml"
+        if [[ -n "$extra_packages" ]]; then
+            echo -e "${BLUE}Extra pip packages:${NC} $extra_packages"
+        fi
+        if [[ -f "$container_env_file" ]]; then
+            export CONTAINER_ENV_FILE="$container_env_file"
+            echo -e "${BLUE}Container env file:${NC} $container_env_file"
+        fi
     fi
 
     if [[ "$use_dev" == "true" ]]; then
@@ -1684,7 +1691,7 @@ run_up() {
 
         echo -e "${BLUE}Using image:${NC} vllm-dev:$image_tag"
         export VLLM_DEV_TAG="$image_tag"
-        docker compose -f docker-compose.dev.yaml $extra_packages_opt --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
+        docker compose -f docker-compose.dev.yaml $overrides_opt --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
     else
         local vllm_version
         if [[ -n "$version_override" ]]; then
@@ -1715,7 +1722,7 @@ run_up() {
         # should_pull == "false": no pull (use local image as-is)
 
         echo -e "${BLUE}Using image:${NC} vllm/vllm-openai:$vllm_version"
-        docker compose -f docker-compose.yaml $extra_packages_opt --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d $pull_opt
+        docker compose -f docker-compose.yaml $overrides_opt --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d $pull_opt
     fi
 
     local result=$?
@@ -1768,15 +1775,19 @@ run_down() {
 
     cd "$SCRIPT_DIR"
 
-    # Check if extra packages were used (by checking container's entrypoint)
+    # Check if overrides were used (entrypoint wrapper or container env file)
     local entrypoint=$(docker inspect "$container_name" --format='{{json .Config.Entrypoint}}' 2>/dev/null)
-    local extra_packages_opt=""
-    if [[ "$entrypoint" == *"entrypoint-wrapper.sh"* ]]; then
-        extra_packages_opt="-f docker-compose.extra-packages.yaml"
+    local container_env_file="${profile_path%.env}.container.env"
+    local overrides_opt=""
+    if [[ "$entrypoint" == *"entrypoint-wrapper.sh"* ]] || [[ -f "$container_env_file" ]]; then
+        overrides_opt="-f docker-compose.overrides.yaml"
+        if [[ -f "$container_env_file" ]]; then
+            export CONTAINER_ENV_FILE="$container_env_file"
+        fi
     fi
 
     # Use docker compose down for proper cleanup (networks, etc.)
-    if docker compose -f "$compose_file" $extra_packages_opt --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" down 2>/dev/null; then
+    if docker compose -f "$compose_file" $overrides_opt --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" down 2>/dev/null; then
         echo -e "${GREEN}$profile_name stopped successfully!${NC}"
     else
         # Fallback to direct docker stop/rm if compose down fails
