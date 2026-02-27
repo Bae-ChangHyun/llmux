@@ -6,5 +6,5 @@ services:
     environment:
       - EXTRA_PIP_PACKAGES=${EXTRA_PIP_PACKAGES:-}
     env_file:
-      - path: ${CONTAINER_ENV_FILE:-/dev/null}
+      - path: ${PROFILE_PATH}
         required: false
