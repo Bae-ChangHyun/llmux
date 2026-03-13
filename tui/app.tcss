@@ -1,0 +1,116 @@
+/* vLLM Compose TUI - Global Styles */
+
+Screen {
+    background: $surface;
+}
+
+/* Dashboard */
+DashboardScreen {
+    layout: vertical;
+}
+
+#profile-table {
+    height: 1fr;
+    margin: 1 2;
+}
+
+#action-bar {
+    dock: bottom;
+    height: 3;
+    padding: 0 2;
+    layout: horizontal;
+    align: center middle;
+}
+
+#action-bar Button {
+    margin: 0 1;
+    min-width: 16;
+}
+
+/* Container Screen */
+#log-view {
+    height: 1fr;
+    margin: 1 2;
+    border: solid $primary;
+}
+
+/* Forms */
+.form-container {
+    padding: 1 2;
+    height: auto;
+    max-height: 80%;
+    width: 70;
+    align: center middle;
+}
+
+.form-container Input {
+    margin-bottom: 1;
+}
+
+.form-container Select {
+    margin-bottom: 1;
+}
+
+.form-container Label {
+    margin-bottom: 0;
+    color: $text-muted;
+}
+
+.form-buttons {
+    layout: horizontal;
+    height: 3;
+    align: center middle;
+    margin-top: 1;
+}
+
+.form-buttons Button {
+    margin: 0 1;
+}
+
+/* Status indicators */
+.status-running {
+    color: $success;
+}
+
+.status-stopped {
+    color: $text-muted;
+}
+
+/* GPU info */
+#gpu-table {
+    height: auto;
+    max-height: 12;
+    margin: 1 2;
+}
+
+#image-table {
+    height: auto;
+    max-height: 12;
+    margin: 1 2;
+}
+
+/* Modal screens */
+ModalScreen {
+    align: center middle;
+}
+
+ModalScreen > Vertical {
+    background: $surface;
+    border: thick $primary;
+    padding: 1 2;
+    width: 70;
+    max-height: 80%;
+}
+
+/* TabbedContent */
+TabbedContent {
+    height: 1fr;
+}
+
+ContentSwitcher {
+    height: 1fr;
+}
+
+TabPane {
+    padding: 1;
+}
