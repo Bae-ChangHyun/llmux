@@ -26,13 +26,13 @@ When serving models with vLLM on a server...
 
 **Too annoying.** So I built this.
 
-**Easy to start with TUI menu-based interface - no complex setup needed!**
+**Easy to start with a modern Textual TUI - no complex setup needed!**
 
 ---
 
 ## ✨ Key Features
 
-🖥️ **Interactive TUI Mode** - Menu-driven interface like a GUI
+🖥️ **Textual TUI** - Modern Python TUI with real-time updates and rich UI
 
 🔄 **Smart Version Management** - Docker Hub integration, auto-fetch Official/Nightly versions
 
@@ -54,6 +54,9 @@ When serving models with vLLM on a server...
 docker --version        # Check Docker
 docker compose version  # Check Docker Compose
 nvidia-smi             # Check NVIDIA GPU
+
+# For Textual TUI (optional, recommended)
+pip install textual
 ```
 
 ### Clone & Common Settings
@@ -126,21 +129,25 @@ EOF
 
 ```
 vllm-compose/
+├── tui/                   # Textual TUI (Python)
+│   ├── app.py             # Main app entry point
+│   ├── app.tcss           # Global styles
+│   ├── backend.py         # Docker/profile/config I/O
+│   └── screens/           # Screen modules
+│       ├── dashboard.py   # Main dashboard
+│       ├── container.py   # Start/stop/logs
+│       ├── profile.py     # Profile CRUD
+│       ├── config.py      # Config CRUD
+│       ├── system.py      # GPU/images/containers
+│       └── quick_setup.py # Quick setup wizard
 ├── profiles/              # Model profiles (.env)
-│   ├── model1.env
-│   └── model2.env
 ├── config/                # vLLM configs (YAML)
-│   ├── model1.yaml
-│   └── model2.yaml
-├── lib/                   # Modular library
-│   ├── colors.sh          # Color constants
-│   ├── tui.sh             # TUI helper functions
-│   └── validation.sh      # Input validation
+├── lib/                   # Bash utilities (fallback TUI)
 ├── scripts/
-│   └── entrypoint-wrapper.sh  # Runtime package install
+│   └── entrypoint-wrapper.sh
 ├── docker-compose.yaml
-├── docker-compose.extra-packages.yaml  # Extra pip packages
 ├── .env.common            # Common settings
+├── pyproject.toml         # Python dependencies
 └── run.sh                 # Management script
 ```
 
@@ -151,45 +158,51 @@ vllm-compose/
 <details>
 <summary><strong>🖥️ TUI Mode Details</strong></summary>
 
-### Launch TUI
+### Install & Launch
 
 ```bash
-./run.sh        # or
-./run.sh tui
+# Install Textual
+pip install textual
+
+# Launch TUI
+./run.sh
 ```
 
-> **Requirements**: `whiptail` or `dialog`
-> ```bash
-> sudo apt-get install whiptail
-> ```
+> Falls back to legacy whiptail/dialog TUI if Textual is not installed.
 
-### Main Menu
+### Keyboard Shortcuts
 
-```
-┌──────────────── vLLM Compose ─────────────────┐
-│  Q. Quick Setup         Auto-create Profile    │
-│  1. Container Mgmt      Start/Stop/Logs        │
-│  2. Profile Mgmt        Create/Edit/Delete     │
-│  3. Config Mgmt         Create/Edit/Delete      │
-│  4. Build Mgmt          Build/Images           │
-│  5. System Info         GPU/Version/Status     │
-│  X. Exit                                       │
-└───────────────────────────────────────────────┘
-```
+#### Global
 
-### Version Selection
+| Key | Action |
+|:---|:---|
+| `F1` | Dashboard |
+| `F2` | Config Management |
+| `F3` | System Info |
+| `q` | Quit |
+| `?` | Help |
 
-When starting a container, select version:
+#### Dashboard
 
-```
-1. Current running: vllm/vllm-openai:nightly (...)
-2. Official Latest: v0.15.0
-3. Nightly: 2026-01-29
-4. Dev build (local source builds)
-5. Custom tag
-```
+| Key | Action |
+|:---|:---|
+| `u` | Start selected profile |
+| `d` | Stop selected profile |
+| `l` | View real-time logs |
+| `n` | New profile |
+| `e` | Edit profile |
+| `x` | Delete profile |
+| `w` | Quick Setup (model → profile+config) |
+| `c` | Config list |
+| `s` | System info (GPU/images/containers) |
+| `r` | Refresh |
 
-- **Official/Nightly**: Auto-pull latest + cleanup unused images
+### Key Screens
+
+- **Dashboard** - Profile list + live status (auto-refresh every 5s)
+- **Container Up** - Version selection (Local/Official/Nightly/Dev/Custom)
+- **Log Viewer** - Real-time container log streaming
+- **System Info** - GPU status (3s refresh), Docker images, containers in tabs
 
 </details>
 
@@ -500,7 +513,8 @@ docker exec -it {container} ls -la /app/lora/
 - Docker, Docker Compose
 - [vLLM](https://github.com/vllm-project/vllm)
 - NVIDIA CUDA
-- Bash Shell Script
+- [Textual](https://github.com/Textualize/textual) (Python TUI)
+- Bash Shell Script (CLI + fallback TUI)
 
 ---
 
