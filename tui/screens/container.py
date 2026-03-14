@@ -55,22 +55,24 @@ class ContainerUpScreen(ModalScreen[str]):
 
     ContainerUpScreen > Vertical {
         background: $surface;
-        border: thick $primary;
+        border: round $primary;
         padding: 1 2;
-        width: 70;
+        width: 60;
         max-height: 80%;
         height: auto;
     }
 
     ContainerUpScreen #title-label {
         text-style: bold;
+        color: $primary;
         width: 100%;
-        content-align: center middle;
+        text-align: center;
         margin-bottom: 1;
     }
 
     ContainerUpScreen #profile-label {
         margin-bottom: 1;
+        color: $text-muted;
     }
 
     ContainerUpScreen #version-label {
@@ -225,23 +227,24 @@ class ContainerDownScreen(ModalScreen[str]):
 
     ContainerDownScreen > Vertical {
         background: $surface;
-        border: thick $primary;
+        border: round $error;
         padding: 1 2;
-        width: 60;
+        width: 50;
         height: auto;
     }
 
     ContainerDownScreen #title-label {
         text-style: bold;
+        color: $error;
         width: 100%;
-        content-align: center middle;
+        text-align: center;
         margin-bottom: 1;
     }
 
     ContainerDownScreen #confirm-text {
         margin-bottom: 1;
         width: 100%;
-        content-align: center middle;
+        text-align: center;
     }
 
     ContainerDownScreen .buttons {
@@ -330,18 +333,17 @@ class LogScreen(Screen):
 
     LogScreen #log-header {
         dock: top;
-        height: 3;
-        background: $primary;
-        color: $text;
-        content-align: center middle;
+        height: 1;
+        color: $text-muted;
         text-style: bold;
         padding: 0 2;
+        margin: 1 0;
     }
 
     LogScreen RichLog {
         height: 1fr;
-        margin: 0 1;
-        border: solid $primary;
+        margin: 0 1 1 1;
+        border: round $primary 40%;
     }
     """
 

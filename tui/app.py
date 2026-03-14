@@ -20,10 +20,10 @@ class VllmApp(App):
 
     BINDINGS = [
         Binding("q", "quit", "Quit", show=True, priority=True),
-        Binding("f1", "show_dashboard", "Dashboard"),
-        Binding("f2", "show_configs", "Configs"),
-        Binding("f3", "show_system", "System"),
-        Binding("question_mark", "toggle_help", "Help"),
+        Binding("f1", "show_dashboard", "Dashboard", show=False),
+        Binding("f2", "show_configs", "Configs", show=False),
+        Binding("f3", "show_system", "System", show=False),
+        Binding("question_mark", "toggle_help", "Help", show=False),
     ]
 
     SCREENS = {
@@ -50,17 +50,17 @@ class VllmApp(App):
 
     def action_toggle_help(self) -> None:
         self.notify(
-            "[b]Global Keys:[/b]\n"
-            "  F1 = Dashboard\n"
-            "  F2 = Configs\n"
-            "  F3 = System Info\n"
-            "  q  = Quit\n"
-            "\n[b]Dashboard Keys:[/b]\n"
-            "  u = Start  d = Stop  l = Logs\n"
-            "  n = New Profile  e = Edit  r = Refresh\n"
-            "  s = System Info",
-            title="Help",
-            timeout=8,
+            "[b]Dashboard[/b]\n"
+            "  Enter  Open action menu for selected profile\n"
+            "  w Quick Setup · n New Profile\n"
+            "  s System Info · c Configs · r Refresh\n"
+            "\n[b]Direct Shortcuts[/b] (power-user)\n"
+            "  u Start · d Stop · l Logs\n"
+            "  e Edit Profile · x Delete\n"
+            "\n[b]Global[/b]\n"
+            "  F1 Dashboard · F2 Configs · F3 System · q Quit",
+            title="Keyboard Shortcuts",
+            timeout=12,
         )
 
 

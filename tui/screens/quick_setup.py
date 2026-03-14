@@ -23,9 +23,9 @@ class QuickSetupScreen(ModalScreen[str]):
     }
     QuickSetupScreen > Vertical {
         background: $surface;
-        border: thick $primary;
+        border: round $primary;
         padding: 1 2;
-        width: 70;
+        width: 60;
         max-height: 90%;
     }
     QuickSetupScreen .title {

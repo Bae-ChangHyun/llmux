@@ -41,15 +41,11 @@ class SystemScreen(Screen):
     SystemScreen {
         layout: vertical;
     }
-    .section-title {
-        margin: 1 0 0 0;
-        text-style: bold;
-        color: $primary;
-    }
     #refresh-bar {
         height: auto;
         dock: bottom;
-        padding: 1;
+        padding: 0 2;
+        align: right middle;
     }
     """
 
