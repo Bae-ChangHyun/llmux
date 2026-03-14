@@ -46,10 +46,17 @@ class ProfileFormScreen(ModalScreen[str | None]):
     }
     ProfileFormScreen > Vertical {
         background: $surface;
-        border: thick $primary;
+        border: round $primary;
         padding: 1 2;
-        width: 65;
+        width: 60;
         max-height: 85%;
+    }
+    ProfileFormScreen #form-title {
+        text-style: bold;
+        color: $primary;
+        text-align: center;
+        width: 100%;
+        margin-bottom: 1;
     }
     ProfileFormScreen .form-row {
         height: auto;
@@ -58,6 +65,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
     ProfileFormScreen .form-row Label {
         width: 20;
         padding: 1 1 0 0;
+        color: $text-muted;
     }
     ProfileFormScreen .form-buttons {
         height: auto;
@@ -230,10 +238,15 @@ class ProfileDeleteScreen(ModalScreen[bool]):
     }
     ProfileDeleteScreen > Vertical {
         background: $surface;
-        border: thick $error;
+        border: round $error;
         padding: 1 2;
         width: 50;
         height: auto;
+    }
+    ProfileDeleteScreen #delete-message {
+        text-align: center;
+        width: 100%;
+        margin-bottom: 1;
     }
     ProfileDeleteScreen .form-buttons {
         height: auto;

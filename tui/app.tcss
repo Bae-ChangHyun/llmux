@@ -1,45 +1,83 @@
-/* vLLM Compose TUI - Global Styles */
+/* vLLM Compose TUI — Minimal Theme */
 
+/* ── Base ─────────────────────────────────────────────────────── */
 Screen {
     background: $surface;
 }
 
-/* Dashboard */
+/* ── Dashboard ────────────────────────────────────────────────── */
 DashboardScreen {
     layout: vertical;
 }
 
-#profile-table {
-    height: 1fr;
-    margin: 1 2;
+#dashboard-header {
+    height: auto;
+    padding: 1 2 0 2;
 }
 
-#action-bar {
-    dock: bottom;
-    height: 3;
+#dashboard-brand {
+    text-style: bold;
+    color: $primary;
+    width: 100%;
+    text-align: center;
+}
+
+#dashboard-subtitle {
+    color: $text-muted;
+    width: 100%;
+    text-align: center;
+    margin-bottom: 1;
+}
+
+#status-bar {
+    height: 1;
     padding: 0 2;
-    layout: horizontal;
+    color: $text-muted;
+    margin-bottom: 0;
+}
+
+#profile-table {
+    height: 1fr;
+    margin: 0 2 1 2;
+    border: round $primary 40%;
+}
+
+/* ── Empty State ──────────────────────────────────────────────── */
+#empty-state {
+    height: 1fr;
+    margin: 0 2 1 2;
+    border: round $primary 40%;
+    content-align: center middle;
+    text-align: center;
+    color: $text-muted;
+}
+
+/* ── Log Screen ───────────────────────────────────────────────── */
+#log-view {
+    height: 1fr;
+    margin: 0 1 1 1;
+    border: round $primary 40%;
+}
+
+/* ── Modal Screens ────────────────────────────────────────────── */
+ModalScreen {
     align: center middle;
 }
 
-#action-bar Button {
-    margin: 0 1;
-    min-width: 16;
+ModalScreen > Vertical {
+    background: $surface;
+    border: round $primary;
+    padding: 1 2;
+    width: 65;
+    max-height: 80%;
 }
 
-/* Container Screen */
-#log-view {
-    height: 1fr;
-    margin: 1 2;
-    border: solid $primary;
-}
-
-/* Forms */
+/* ── Forms ─────────────────────────────────────────────────────── */
 .form-container {
     padding: 1 2;
     height: auto;
     max-height: 80%;
-    width: 70;
+    width: 65;
     align: center middle;
 }
 
@@ -56,6 +94,17 @@ DashboardScreen {
     color: $text-muted;
 }
 
+.form-row {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.form-row Label {
+    width: 22;
+    padding: 1 1 0 0;
+    color: $text-muted;
+}
+
 .form-buttons {
     layout: horizontal;
     height: 3;
@@ -67,42 +116,41 @@ DashboardScreen {
     margin: 0 1;
 }
 
-/* Status indicators */
-.status-running {
-    color: $success;
+/* ── Config / System sub-screens ─────────────────────────────── */
+#config-title {
+    padding: 1 2;
+    text-style: bold;
+    color: $primary;
 }
 
-.status-stopped {
-    color: $text-muted;
+#config-table {
+    height: 1fr;
+    margin: 0 2 1 2;
+    border: round $primary 40%;
 }
 
-/* GPU info */
+.section-title {
+    margin: 1 2 0 2;
+    text-style: bold;
+    color: $primary;
+}
+
 #gpu-table {
     height: auto;
-    max-height: 12;
-    margin: 1 2;
+    max-height: 14;
+    margin: 0 2;
+    border: round $primary 40%;
 }
 
-#image-table {
+#official-images,
+#dev-images {
     height: auto;
-    max-height: 12;
-    margin: 1 2;
+    max-height: 10;
+    margin: 0 2;
+    border: round $primary 40%;
 }
 
-/* Modal screens */
-ModalScreen {
-    align: center middle;
-}
-
-ModalScreen > Vertical {
-    background: $surface;
-    border: thick $primary;
-    padding: 1 2;
-    width: 70;
-    max-height: 80%;
-}
-
-/* TabbedContent */
+/* ── TabbedContent ────────────────────────────────────────────── */
 TabbedContent {
     height: 1fr;
 }
@@ -112,5 +160,5 @@ ContentSwitcher {
 }
 
 TabPane {
-    padding: 1;
+    padding: 1 0;
 }

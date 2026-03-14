@@ -7,7 +7,7 @@ import re
 from textual.app import ComposeResult
 from textual.screen import Screen, ModalScreen
 from textual.widgets import Button, Static, Label, Input, DataTable, Footer, Header
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.binding import Binding
 from textual import on
 
@@ -41,10 +41,17 @@ class ConfigFormScreen(ModalScreen[str | None]):
     }
     ConfigFormScreen > Vertical {
         background: $surface;
-        border: thick $primary;
+        border: round $primary;
         padding: 1 2;
-        width: 65;
+        width: 70;
         max-height: 85%;
+    }
+    ConfigFormScreen #form-title {
+        text-style: bold;
+        color: $primary;
+        text-align: center;
+        width: 100%;
+        margin-bottom: 1;
     }
     ConfigFormScreen .form-row {
         height: auto;
@@ -53,6 +60,41 @@ class ConfigFormScreen(ModalScreen[str | None]):
     ConfigFormScreen .form-row Label {
         width: 24;
         padding: 1 1 0 0;
+        color: $text-muted;
+    }
+    ConfigFormScreen #params-title {
+        margin-top: 1;
+        text-style: bold;
+        color: $text;
+        border-top: solid $primary 40%;
+        padding-top: 1;
+    }
+    ConfigFormScreen #params-hint {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+    ConfigFormScreen .param-row {
+        height: auto;
+        margin-bottom: 0;
+    }
+    ConfigFormScreen .param-row .param-key {
+        width: 28;
+        margin-right: 1;
+    }
+    ConfigFormScreen .param-row .param-value {
+        width: 1fr;
+        margin-right: 1;
+    }
+    ConfigFormScreen .param-row .param-remove {
+        min-width: 5;
+        width: 5;
+        background: $error 20%;
+        border: none;
+        color: $error;
+    }
+    ConfigFormScreen #add-param-btn {
+        margin-top: 1;
+        width: auto;
     }
     ConfigFormScreen .form-buttons {
         height: auto;
@@ -62,12 +104,17 @@ class ConfigFormScreen(ModalScreen[str | None]):
     ConfigFormScreen .form-buttons Button {
         margin: 0 1;
     }
+    ConfigFormScreen VerticalScroll {
+        height: 1fr;
+        max-height: 100%;
+    }
     """
 
     def __init__(self, config_name: str = "") -> None:
         super().__init__()
         self._config_name = config_name
         self._edit_mode = bool(config_name)
+        self._param_counter = 0
 
     def compose(self) -> ComposeResult:
         cfg: Config | None = None
@@ -79,34 +126,73 @@ class ConfigFormScreen(ModalScreen[str | None]):
         with Vertical():
             yield Static(f"[b]{title}[/b]", id="form-title")
 
-            with Horizontal(classes="form-row"):
-                yield Label("Config Name")
-                yield Input(
-                    value=cfg.name if cfg else "",
-                    placeholder="my-config",
-                    id="name-input",
-                    disabled=self._edit_mode,
+            with VerticalScroll():
+                with Horizontal(classes="form-row"):
+                    yield Label("Config Name")
+                    yield Input(
+                        value=cfg.name if cfg else "",
+                        placeholder="my-config",
+                        id="name-input",
+                        disabled=self._edit_mode,
+                    )
+
+                with Horizontal(classes="form-row"):
+                    yield Label("Model")
+                    yield Input(
+                        value=cfg.model if cfg else "",
+                        placeholder="org/model-name",
+                        id="model-input",
+                    )
+
+                with Horizontal(classes="form-row"):
+                    yield Label("GPU Memory Utilization")
+                    yield Input(
+                        value=cfg.gpu_memory_utilization if cfg else "",
+                        placeholder="0.9",
+                        id="gpu-mem-input",
+                    )
+
+                yield Static("vLLM Parameters", id="params-title")
+                yield Static(
+                    "[dim]max-model-len, dtype, trust-remote-code, ...[/dim]",
+                    id="params-hint",
                 )
 
-            with Horizontal(classes="form-row"):
-                yield Label("Model")
-                yield Input(
-                    value=cfg.model if cfg else "",
-                    placeholder="org/model-name",
-                    id="model-input",
-                )
-
-            with Horizontal(classes="form-row"):
-                yield Label("GPU Memory Utilization")
-                yield Input(
-                    value=cfg.gpu_memory_utilization if cfg else "",
-                    placeholder="0.9",
-                    id="gpu-mem-input",
-                )
+                yield Vertical(id="params-container")
+                yield Button("+ Add Parameter", id="add-param-btn", variant="default")
 
             with Horizontal(classes="form-buttons"):
                 yield Button("Save", id="save-btn", variant="primary")
                 yield Button("Cancel", id="cancel-btn", variant="default")
+
+    def on_mount(self) -> None:
+        if self._edit_mode:
+            cfg = load_config(self._config_name)
+            for key, value in cfg.extra_params.items():
+                self._add_param_row(key, value)
+
+    def _add_param_row(self, key: str = "", value: str = "") -> None:
+        container = self.query_one("#params-container")
+        row_id = f"param-row-{self._param_counter}"
+        self._param_counter += 1
+        row = Horizontal(
+            Input(value=key, placeholder="param-name", classes="param-key"),
+            Input(value=value, placeholder="value", classes="param-value"),
+            Button("x", classes="param-remove"),
+            id=row_id,
+            classes="param-row",
+        )
+        container.mount(row)
+
+    @on(Button.Pressed, "#add-param-btn")
+    def _on_add_param(self, event: Button.Pressed) -> None:
+        self._add_param_row()
+
+    @on(Button.Pressed, ".param-remove")
+    def _on_remove_param(self, event: Button.Pressed) -> None:
+        row = event.button.parent
+        if row:
+            row.remove()
 
     @on(Button.Pressed, "#save-btn")
     def _on_save(self, event: Button.Pressed) -> None:
@@ -125,17 +211,23 @@ class ConfigFormScreen(ModalScreen[str | None]):
             )
             return
 
+        # --- Collect extra params ---
+        extra_params: dict[str, str] = {}
+        for row in self.query(".param-row"):
+            key_input = row.query_one(".param-key", Input)
+            value_input = row.query_one(".param-value", Input)
+            k = key_input.value.strip()
+            v = value_input.value.strip()
+            if k:
+                extra_params[k] = v
+
         # --- Build and save ---
-        if self._edit_mode:
-            cfg = load_config(self._config_name)
-            cfg.model = model
-            cfg.gpu_memory_utilization = gpu_mem or "0.9"
-        else:
-            cfg = Config(
-                name=name,
-                model=model,
-                gpu_memory_utilization=gpu_mem or "0.9",
-            )
+        cfg = Config(
+            name=name,
+            model=model,
+            gpu_memory_utilization=gpu_mem or "0.9",
+            extra_params=extra_params,
+        )
 
         save_config(cfg)
         self.dismiss(name)
@@ -171,7 +263,7 @@ class ConfigListScreen(Screen):
 
     def on_mount(self) -> None:
         table = self.query_one("#config-table", DataTable)
-        table.add_columns("Name", "Model", "GPU Mem")
+        table.add_columns("Name", "Model", "GPU Mem", "Params")
         self._refresh_table()
 
     def _refresh_table(self) -> None:
@@ -180,7 +272,8 @@ class ConfigListScreen(Screen):
         for name in list_config_names():
             cfg = load_config(name)
             model_short = cfg.model.split("/")[-1] if cfg.model else ""
-            table.add_row(cfg.name, model_short, cfg.gpu_memory_utilization, key=cfg.name)
+            param_count = str(len(cfg.extra_params)) if cfg.extra_params else ""
+            table.add_row(cfg.name, model_short, cfg.gpu_memory_utilization, param_count, key=cfg.name)
 
     def _get_selected_config(self) -> str | None:
         table = self.query_one("#config-table", DataTable)
