@@ -1,0 +1,11 @@
+[project]
+name = "vllm-compose-tui"
+version = "0.1.0"
+description = "Textual TUI for vLLM Container Management"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=1.0.0",
+]
+
+[project.scripts]
+vllm-tui = "tui.app:main"

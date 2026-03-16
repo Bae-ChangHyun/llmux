@@ -15,3 +15,8 @@ config/
 
 # vLLM source directory (cloned for dev build)
 .vllm-src/
+
+# Python
+__pycache__/
+*.pyc
+.venv/

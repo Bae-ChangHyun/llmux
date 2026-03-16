@@ -26,13 +26,13 @@
 
 **너무 귀찮아서** 만들었습니다.
 
-**TUI 메뉴 기반 인터페이스로 복잡한 설정 없이 쉽게 시작하세요!**
+**Textual 기반 모던 TUI로 복잡한 설정 없이 쉽게 시작하세요!**
 
 ---
 
 ## ✨ 핵심 기능
 
-🖥️ **TUI 인터랙티브 모드** - 메뉴 기반으로 모든 기능을 GUI처럼 사용
+🖥️ **Textual TUI** - Python 기반 모던 TUI로 모든 기능을 GUI처럼 사용
 
 🔄 **스마트 버전 관리** - Docker Hub 연동, Official/Nightly 자동 조회 및 정리
 
@@ -54,6 +54,9 @@
 docker --version        # Docker 설치 확인
 docker compose version  # Docker Compose 설치 확인
 nvidia-smi             # NVIDIA GPU 확인
+
+# Textual TUI 사용 시 (선택, 권장)
+pip install textual
 ```
 
 ### Clone & 공통 설정
@@ -126,21 +129,25 @@ EOF
 
 ```
 vllm-compose/
+├── tui/                   # Textual TUI (Python)
+│   ├── app.py             # 메인 앱 (진입점)
+│   ├── app.tcss           # 글로벌 스타일
+│   ├── backend.py         # Docker/프로필/설정 I/O
+│   └── screens/           # 화면 모듈
+│       ├── dashboard.py   # 메인 대시보드
+│       ├── container.py   # 시작/중지/로그
+│       ├── profile.py     # 프로필 CRUD
+│       ├── config.py      # 설정 CRUD
+│       ├── system.py      # GPU/이미지/컨테이너 정보
+│       └── quick_setup.py # 빠른 설정
 ├── profiles/              # 모델별 프로필 (.env)
-│   ├── model1.env
-│   └── model2.env
 ├── config/                # vLLM 설정 (YAML)
-│   ├── model1.yaml
-│   └── model2.yaml
-├── lib/                   # 모듈화된 라이브러리
-│   ├── colors.sh          # 컬러 상수
-│   ├── tui.sh             # TUI 헬퍼 함수
-│   └── validation.sh      # 입력 검증 함수
+├── lib/                   # Bash 유틸리티 (fallback TUI)
 ├── scripts/
-│   └── entrypoint-wrapper.sh  # 런타임 패키지 설치
+│   └── entrypoint-wrapper.sh
 ├── docker-compose.yaml
-├── docker-compose.extra-packages.yaml  # 추가 pip 패키지
 ├── .env.common            # 공통 설정
+├── pyproject.toml         # Python 의존성
 └── run.sh                 # 관리 스크립트
 ```
 
@@ -151,45 +158,60 @@ vllm-compose/
 <details>
 <summary><strong>🖥️ TUI 모드 상세</strong></summary>
 
-### TUI 실행
+### 설치 및 실행
 
 ```bash
-./run.sh        # 또는
-./run.sh tui
+# Textual 설치
+pip install textual
+
+# TUI 실행
+./run.sh
 ```
 
-> **요구사항**: `whiptail` 또는 `dialog` 필요
-> ```bash
-> sudo apt-get install whiptail
-> ```
+> Textual이 없으면 자동으로 기존 whiptail/dialog TUI로 fallback됩니다.
 
-### 메인 메뉴
+### 키보드 단축키
 
-```
-┌──────────────── vLLM Compose ─────────────────┐
-│  Q. Quick Setup         프로필+Config 자동생성  │
-│  1. Container Mgmt      시작/중지/로그/상태     │
-│  2. Profile Mgmt        프로필 생성/수정/삭제   │
-│  3. Config Mgmt         설정 생성/수정/삭제      │
-│  4. Build Mgmt          소스 빌드/이미지 관리   │
-│  5. System Info         GPU/버전/컨테이너 정보  │
-│  X. Exit                종료                   │
-└───────────────────────────────────────────────┘
-```
+#### 전역
 
-### 버전 선택 메뉴
+| 키 | 기능 |
+|:---|:---|
+| `F1` | Dashboard |
+| `F2` | Config 관리 |
+| `F3` | System 정보 |
+| `q` | 종료 |
+| `?` | 도움말 |
 
-컨테이너 시작 시 버전을 선택할 수 있습니다:
+#### Dashboard
 
-```
-1. Current running: vllm/vllm-openai:nightly (...)
-2. Official Latest: v0.15.0
-3. Nightly: 2026-01-29
-4. Dev build (local source builds)
-5. Custom tag
-```
+| 키 | 기능 |
+|:---|:---|
+| `Enter` | 선택한 프로필 액션 메뉴 (시작/중지/로그/편집/삭제) |
+| `w` | Quick Setup (모델→프로필+설정 자동생성) |
+| `n` | 새 프로필 생성 |
+| `s` | System 정보 (GPU/이미지/컨테이너) |
+| `c` | Config 목록 |
 
-- **Official/Nightly 선택 시**: 최신 버전 자동 pull + 미사용 이전 이미지 자동 정리
+<details>
+<summary>파워유저 단축키</summary>
+
+| 키 | 기능 |
+|:---|:---|
+| `u` | 선택한 프로필 시작 |
+| `d` | 선택한 프로필 중지 |
+| `l` | 실시간 로그 보기 |
+| `e` | 프로필 편집 |
+| `x` | 프로필 삭제 |
+| `r` | 새로고침 |
+
+</details>
+
+### 주요 화면
+
+- **Dashboard** - 프로필 목록 + 실행 상태 (5초마다 자동갱신)
+- **Container Up** - 버전 선택 (Latest/Official/Nightly/Dev/Custom) 후 시작
+- **Log Viewer** - 실시간 컨테이너 로그 스트리밍
+- **System Info** - GPU 상태 (3초 갱신), Docker 이미지, 컨테이너 탭 뷰
 
 </details>
 
@@ -433,7 +455,8 @@ enable-chunked-prefill: true
 > vLLM의 모든 CLI 인자를 YAML 형식으로 작성 가능
 > 참고: [vLLM Engine Arguments](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#command-line-arguments-for-the-server)
 
-TUI에서 **Config Mgmt → Edit Config**에서 커스텀 파라미터를 추가/수정/삭제할 수 있습니다.
+TUI에서 **Edit Config**으로 커스텀 파라미터를 추가/수정/삭제할 수 있습니다.
+파라미터 이름 입력 시 **Tab 자동완성**이 지원되며, 알 수 없는 파라미터는 저장 시 경고로 안내합니다.
 
 ### 추가 pip 패키지 설치
 
@@ -500,7 +523,8 @@ docker exec -it {container} ls -la /app/lora/
 - Docker, Docker Compose
 - [vLLM](https://github.com/vllm-project/vllm)
 - NVIDIA CUDA
-- Bash Shell Script
+- [Textual](https://github.com/Textualize/textual) (Python TUI)
+- Bash Shell Script (CLI + fallback TUI)
 
 ---
 

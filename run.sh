@@ -1219,6 +1219,23 @@ system_profiles_status() {
 
 # Interactive mode entry point
 run_interactive() {
+    # Try Textual TUI first (Python), fallback to whiptail/dialog
+    if command -v python3 &> /dev/null; then
+        local tui_dir="$SCRIPT_DIR/tui"
+        if [[ -f "$tui_dir/app.py" ]]; then
+            # Check if textual is available
+            if python3 -c "import textual" 2>/dev/null; then
+                PYTHONPATH="$SCRIPT_DIR" python3 -m tui.app
+                return $?
+            else
+                echo -e "${YELLOW}Textual not installed. Install with: pip install textual${NC}"
+                echo -e "${YELLOW}Falling back to whiptail/dialog TUI...${NC}"
+                echo ""
+            fi
+        fi
+    fi
+
+    # Fallback: legacy whiptail/dialog TUI
     if ! check_tui_tool; then
         exit 1
     fi
