@@ -118,8 +118,8 @@ class QuickSetupScreen(ModalScreen[str]):
                 return
 
         # Validate GPU
-        if not re.match(r"^[0-9]+(,[0-9]+)*$", gpu):
-            self.notify("Invalid GPU ID format", severity="error")
+        if not gpu or not re.match(r"^[0-9]+(,[0-9]+)*$", gpu):
+            self.notify("GPU ID is required (e.g., 0 or 0,1)", severity="error")
             return
 
         # Calculate tensor parallel from GPU count
