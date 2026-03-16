@@ -7,7 +7,7 @@ import re
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import ModalScreen
-from textual.widgets import Button, Static, Label, Input, Select, Switch
+from textual.widgets import Button, Static, Label, Input, Select, Switch, Checkbox
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual import on
 
@@ -18,6 +18,7 @@ from tui.backend import (
     delete_profile,
     list_config_names,
     validate_name as _validate_name,
+    check_port_conflict,
 )
 
 
@@ -228,6 +229,16 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 self.notify("Tensor Parallel must be a positive integer.", severity="error")
                 return
 
+        # --- Port conflict check ---
+        if port:
+            check_profile = Profile(name=name, port=port)
+            conflict = check_port_conflict(check_profile)
+            if conflict:
+                self.notify(
+                    f"Warning: Port {port} is already used by profile '{conflict}'.",
+                    severity="warning",
+                )
+
         # --- Build and save ---
         if self._edit_mode and self._profile is not None:
             profile = self._profile
@@ -306,6 +317,7 @@ class ProfileDeleteScreen(ModalScreen[bool]):
     def __init__(self, profile_name: str) -> None:
         super().__init__()
         self._profile_name = profile_name
+        self._profile = load_profile(profile_name)
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -313,14 +325,27 @@ class ProfileDeleteScreen(ModalScreen[bool]):
                 f"Delete profile [b]{self._profile_name}[/b]?",
                 id="delete-message",
             )
+            if self._profile.config_name:
+                yield Checkbox(
+                    f"Also delete config: {self._profile.config_name}",
+                    id="delete-config-checkbox",
+                )
             with Horizontal(classes="form-buttons"):
                 yield Button("Delete", id="delete-btn", variant="error")
                 yield Button("Cancel", id="cancel-btn", variant="default")
 
     @on(Button.Pressed, "#delete-btn")
     def _on_delete(self, event: Button.Pressed) -> None:
-        delete_profile(self._profile_name)
-        self.app.notify(f"Deleted profile: {self._profile_name}")
+        also_delete_config = False
+        try:
+            also_delete_config = self.query_one("#delete-config-checkbox", Checkbox).value
+        except Exception:  # No checkbox (no config linked)
+            pass
+        delete_profile(self._profile_name, delete_config=also_delete_config)
+        msg = f"Deleted profile: {self._profile_name}"
+        if also_delete_config:
+            msg += f" and config: {self._profile.config_name}"
+        self.app.notify(msg)
         self.dismiss(True)
 
     @on(Button.Pressed, "#cancel-btn")
