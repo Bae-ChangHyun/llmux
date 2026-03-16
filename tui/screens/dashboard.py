@@ -68,7 +68,7 @@ class DashboardScreen(Screen):
         self._load_statuses()
         self._refresh_timer = self.set_interval(5, self._load_statuses)
 
-    @work(exclusive=True)
+    @work(exclusive=True, group="refresh")
     async def _load_statuses(self) -> None:
         statuses = await get_container_statuses()
         self._statuses = statuses
@@ -263,12 +263,10 @@ class DashboardScreen(Screen):
         )
 
     def action_system_info(self) -> None:
-        from tui.screens.system import SystemScreen
-        self.app.push_screen(SystemScreen())
+        self.app.switch_screen("system")
 
     def action_configs(self) -> None:
-        from tui.screens.config import ConfigListScreen
-        self.app.push_screen(ConfigListScreen())
+        self.app.switch_screen("configs")
 
     def action_quick_setup(self) -> None:
         from tui.screens.quick_setup import QuickSetupScreen

@@ -40,7 +40,8 @@ class VllmApp(App):
         self.push_screen("dashboard")
 
     def action_show_dashboard(self) -> None:
-        self.switch_screen("dashboard")
+        if not isinstance(self.screen, DashboardScreen):
+            self.switch_screen("dashboard")
 
     def action_show_configs(self) -> None:
         if not isinstance(self.screen, ConfigListScreen):
