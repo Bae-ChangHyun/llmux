@@ -8,6 +8,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import yaml
+
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
 PROFILES_DIR = SCRIPT_DIR / "profiles"
 CONFIG_DIR = SCRIPT_DIR / "config"
@@ -61,6 +63,7 @@ class ContainerStatus:
     container_name: str
     running: bool = False
     status_text: str = "stopped"
+    health: str = ""
     port: str = ""
     gpu_id: str = ""
     image: str = ""
@@ -163,8 +166,15 @@ def save_profile(profile: Profile) -> None:
     profile.path.write_text("\n".join(lines))
 
 
-def delete_profile(name: str) -> None:
+def delete_profile(name: str, delete_config: bool = False) -> None:
     path = PROFILES_DIR / f"{name}.env"
+    if delete_config and path.exists():
+        data = _parse_env_file(path)
+        config_name = data.get("CONFIG_NAME", "")
+        if config_name:
+            config_path = CONFIG_DIR / f"{config_name}.yaml"
+            if config_path.exists():
+                config_path.unlink()
     if path.exists():
         path.unlink()
 
@@ -184,24 +194,12 @@ def list_profile_names() -> list[str]:
 
 def load_config(name: str) -> Config:
     path = CONFIG_DIR / f"{name}.yaml"
-    model = ""
-    gpu_mem = "0.9"
-    extra: dict[str, str] = {}
-    if path.exists():
-        for line in path.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if ":" in line:
-                key, _, value = line.partition(":")
-                key = key.strip()
-                value = value.strip()
-                if key == "model":
-                    model = value
-                elif key == "gpu-memory-utilization":
-                    gpu_mem = value
-                else:
-                    extra[key] = value
+    if not path.exists():
+        return Config(name=name)
+    data = yaml.safe_load(path.read_text()) or {}
+    model = str(data.pop("model", ""))
+    gpu_mem = str(data.pop("gpu-memory-utilization", "0.9"))
+    extra = {str(k): str(v) for k, v in data.items()}
     return Config(name=name, model=model, gpu_memory_utilization=gpu_mem, extra_params=extra)
 
 
@@ -262,16 +260,39 @@ async def is_container_running(container_name: str) -> bool:
 
 
 async def get_container_statuses() -> list[ContainerStatus]:
-    """Get status for all profiles."""
+    """Get status for all profiles, including health check status."""
     profiles = list_profile_names()
-    # Single docker ps call to get all running container names
-    rc, out = await run_command("docker", "ps", "--format", "{{.Names}}", timeout=10)
-    running_names = set(out.strip().splitlines()) if rc == 0 else set()
+    # Single docker ps call to get running container names and health status
+    rc, out = await run_command(
+        "docker", "ps", "--format", "{{.Names}}\t{{.Status}}",
+        timeout=10,
+    )
+    running_info: dict[str, str] = {}
+    if rc == 0:
+        for line in out.strip().splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) == 2:
+                running_info[parts[0]] = parts[1]
 
     statuses = []
     for name in profiles:
         p = load_profile(name)
-        running = p.container_name in running_names
+        running = p.container_name in running_info
+        health = ""
+        status_text = "stopped"
+        if running:
+            docker_status = running_info[p.container_name]
+            if "(healthy)" in docker_status:
+                health = "healthy"
+                status_text = "healthy"
+            elif "(unhealthy)" in docker_status:
+                health = "unhealthy"
+                status_text = "unhealthy"
+            elif "(health: starting)" in docker_status:
+                health = "starting"
+                status_text = "starting"
+            else:
+                status_text = "running"
         model = ""
         if p.config_name:
             c = load_config(p.config_name)
@@ -280,13 +301,25 @@ async def get_container_statuses() -> list[ContainerStatus]:
             profile_name=name,
             container_name=p.container_name,
             running=running,
-            status_text="running" if running else "stopped",
+            status_text=status_text,
+            health=health,
             port=p.port,
             gpu_id=p.gpu_id,
             model=model,
             lora=p.enable_lora == "true",
         ))
     return statuses
+
+
+def check_port_conflict(profile: Profile) -> str | None:
+    """Check if a port is already used by another profile. Returns conflicting profile name or None."""
+    for name in list_profile_names():
+        if name == profile.name:
+            continue
+        other = load_profile(name)
+        if other.port == profile.port:
+            return name
+    return None
 
 
 async def container_up(profile_name: str, use_dev: bool = False, tag: str = "") -> tuple[int, str]:
