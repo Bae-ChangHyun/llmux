@@ -105,6 +105,34 @@ get_current_container_version() {
     echo "$image (ID: $image_id, Created: $created)"
 }
 
+# Get latest locally available vllm/vllm-openai image
+# Usage: get_local_latest_image [--tag-only]
+get_local_latest_image() {
+    local tag_only="false"
+    [[ "$1" == "--tag-only" ]] && tag_only="true"
+
+    # List local images sorted by creation date (newest first)
+    local latest_line=$(docker images vllm/vllm-openai --format "{{.Tag}}\t{{.CreatedAt}}" 2>/dev/null | head -1)
+
+    if [[ -z "$latest_line" ]]; then
+        if [[ "$tag_only" == "true" ]]; then
+            echo "none"
+        else
+            echo "No local images"
+        fi
+        return 1
+    fi
+
+    local tag=$(echo "$latest_line" | cut -f1)
+    local created=$(echo "$latest_line" | cut -f2 | cut -d' ' -f1)
+
+    if [[ "$tag_only" == "true" ]]; then
+        echo "$tag"
+    else
+        echo "$tag (Created: $created)"
+    fi
+}
+
 # Get current profile's container version
 get_profile_container_version() {
     local profile_path=$1
@@ -170,9 +198,9 @@ show_version_info() {
     echo -e "${BLUE}=== vLLM Version Information ===${NC}"
     echo ""
 
-    # Current version from .env.common
-    local current_version=$(grep "^VLLM_VERSION=" "$COMMON_ENV" | cut -d'=' -f2)
-    echo -e "${GREEN}Current Setting:${NC} vllm/vllm-openai:${current_version}"
+    # Local latest image
+    local local_latest=$(get_local_latest_image)
+    echo -e "${GREEN}Local Latest:${NC} vllm/vllm-openai:${local_latest}"
     echo ""
 
     # Running containers and their versions
@@ -384,19 +412,19 @@ container_up_menu() {
 
     local profile_path="$PROFILES_DIR/$profile.env"
 
-    # Get current running version for this profile
-    local current_running=$(get_profile_container_version "$profile_path")
+    # Get local latest image info
+    local local_latest=$(get_local_latest_image)
 
-    # Fetch version info
+    # Fetch version info from Docker Hub
     echo "Fetching version information..."
     local latest_release=$(get_latest_release_version)
     local nightly_date=$(fetch_docker_hub_version "nightly")
 
     # Build menu options
     local menu_options=(
-        "current" "Current running: $current_running"
-        "official" "Official Latest: $latest_release"
-        "nightly" "Nightly: $nightly_date"
+        "local" "Local Latest: $local_latest (no pull)"
+        "official" "Official Latest: $latest_release (pull)"
+        "nightly" "Nightly: $nightly_date (pull)"
         "dev" "Dev build (local source builds)"
         "custom" "Custom tag (specify exact version)"
     )
@@ -411,13 +439,16 @@ container_up_menu() {
     local need_pull="false"
 
     case "$version_choice" in
-        current)
-            # Use current .env.common setting
-            version_tag=$(grep "^VLLM_VERSION=" "$COMMON_ENV" | cut -d'=' -f2)
+        local)
+            local local_tag=$(get_local_latest_image --tag-only)
+            if [[ "$local_tag" == "none" ]]; then
+                tui_msgbox "Error" "No local vllm/vllm-openai images found.\nSelect Official or Nightly to pull an image first."
+                return
+            fi
+            version_tag="$local_tag"
             ;;
         official)
             version_tag="$latest_release"
-            need_pull="true"
             if tui_yesno "Pull Official Latest" "Pull vllm/vllm-openai:$latest_release?"; then
                 clear
                 if ! pull_and_cleanup "$latest_release" "v[0-9]*"; then
@@ -434,7 +465,6 @@ container_up_menu() {
             ;;
         nightly)
             version_tag="nightly"
-            need_pull="true"
             if tui_yesno "Pull Nightly Build" "Pull latest nightly build ($nightly_date)?"; then
                 clear
                 if ! pull_and_cleanup "nightly" "nightly"; then
@@ -471,6 +501,7 @@ container_up_menu() {
                 tui_msgbox "Invalid Input" "Tag must contain only letters, numbers, dots, dashes, and underscores"
                 return
             fi
+            need_pull="auto"
             ;;
     esac
 
@@ -484,7 +515,7 @@ container_up_menu() {
 
     if tui_yesno "Confirm Start" "$msg\n\nStart this container?"; then
         clear
-        run_up "$profile_path" "$profile" "$use_dev" "$custom_tag" "$version_tag"
+        run_up "$profile_path" "$profile" "$use_dev" "$custom_tag" "$version_tag" "$need_pull"
         echo ""
         echo -e "${YELLOW}Press Enter to continue...${NC}"
         read -r
@@ -1094,9 +1125,9 @@ system_version_info() {
     echo "========================" >> "$tmp_file"
     echo "" >> "$tmp_file"
 
-    # Current version setting
-    local current_version=$(grep "^VLLM_VERSION=" "$COMMON_ENV" | cut -d'=' -f2)
-    echo "Current Setting: vllm/vllm-openai:$current_version" >> "$tmp_file"
+    # Local latest image
+    local local_latest=$(get_local_latest_image)
+    echo "Local Latest: vllm/vllm-openai:$local_latest" >> "$tmp_file"
     echo "" >> "$tmp_file"
 
     # Fetch latest release
@@ -1276,9 +1307,9 @@ list_profiles() {
     done
     echo ""
 
-    # Show current version setting
-    local current_version=$(grep "^VLLM_VERSION=" "$COMMON_ENV" | cut -d'=' -f2)
-    echo -e "${GREEN}Current vLLM version setting:${NC} $current_version"
+    # Show local latest image
+    local local_latest=$(get_local_latest_image)
+    echo -e "${GREEN}Local latest vLLM image:${NC} $local_latest"
     echo -e "${YELLOW}Tip: Run './run.sh version' to see available versions${NC}"
     echo ""
 }
@@ -1602,6 +1633,7 @@ run_up() {
     local use_dev=$3
     local custom_tag=$4
     local version_override=${5:-}
+    local should_pull=${6:-"auto"}
 
     # Check for conflicts
     if ! check_conflict "$profile_path"; then
@@ -1618,11 +1650,11 @@ run_up() {
 
     cd "$SCRIPT_DIR"
 
-    # Check if extra packages are configured
-    local extra_packages=$(grep "^EXTRA_PIP_PACKAGES=" "$COMMON_ENV" | cut -d'=' -f2)
-    local extra_packages_opt=""
+    # Export profile path for container env injection via overrides
+    export PROFILE_PATH="$profile_path"
+
+    local extra_packages=$(grep "^EXTRA_PIP_PACKAGES=" "$profile_path" | cut -d'=' -f2)
     if [[ -n "$extra_packages" ]]; then
-        extra_packages_opt="-f docker-compose.extra-packages.yaml"
         echo -e "${BLUE}Extra pip packages:${NC} $extra_packages"
     fi
 
@@ -1652,21 +1684,38 @@ run_up() {
 
         echo -e "${BLUE}Using image:${NC} vllm-dev:$image_tag"
         export VLLM_DEV_TAG="$image_tag"
-        docker compose -f docker-compose.dev.yaml $extra_packages_opt --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
+        docker compose -f docker-compose.dev.yaml -f docker-compose.overrides.yaml --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
     else
-        local vllm_version=$(grep "^VLLM_VERSION=" "$COMMON_ENV" | cut -d'=' -f2)
+        local vllm_version
+        if [[ -n "$version_override" ]]; then
+            vllm_version="$version_override"
+        else
+            # Fallback: use latest local image
+            vllm_version=$(get_local_latest_image --tag-only)
+            if [[ "$vllm_version" == "none" ]]; then
+                echo -e "${RED}Error: No local vllm/vllm-openai images found.${NC}"
+                echo -e "${YELLOW}Pull an image first: docker pull vllm/vllm-openai:latest${NC}"
+                return 1
+            fi
+        fi
         local config_name=$(grep "^CONFIG_NAME=" "$profile_path" | cut -d'=' -f2)
 
         echo -e "${GREEN}Starting $profile_name...${NC}"
 
-        # For nightly/latest tags, always pull to check for updates
+        # Determine pull behavior
         local pull_opt=""
-        if [[ "$vllm_version" == "nightly" || "$vllm_version" == "latest" ]]; then
+        if [[ "$should_pull" == "true" ]]; then
             pull_opt="--pull always"
+        elif [[ "$should_pull" == "auto" ]]; then
+            # Fallback for CLI/direct calls: pull if nightly or latest
+            if [[ "$vllm_version" == "nightly" || "$vllm_version" == "latest" ]]; then
+                pull_opt="--pull always"
+            fi
         fi
+        # should_pull == "false": no pull (use local image as-is)
 
         echo -e "${BLUE}Using image:${NC} vllm/vllm-openai:$vllm_version"
-        docker compose -f docker-compose.yaml $extra_packages_opt --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d $pull_opt
+        docker compose -f docker-compose.yaml -f docker-compose.overrides.yaml --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d $pull_opt
     fi
 
     local result=$?
@@ -1719,15 +1768,10 @@ run_down() {
 
     cd "$SCRIPT_DIR"
 
-    # Check if extra packages were used (by checking container's entrypoint)
-    local entrypoint=$(docker inspect "$container_name" --format='{{json .Config.Entrypoint}}' 2>/dev/null)
-    local extra_packages_opt=""
-    if [[ "$entrypoint" == *"entrypoint-wrapper.sh"* ]]; then
-        extra_packages_opt="-f docker-compose.extra-packages.yaml"
-    fi
+    export PROFILE_PATH="$profile_path"
 
     # Use docker compose down for proper cleanup (networks, etc.)
-    if docker compose -f "$compose_file" $extra_packages_opt --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" down 2>/dev/null; then
+    if docker compose -f "$compose_file" -f docker-compose.overrides.yaml --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" down 2>/dev/null; then
         echo -e "${GREEN}$profile_name stopped successfully!${NC}"
     else
         # Fallback to direct docker stop/rm if compose down fails
