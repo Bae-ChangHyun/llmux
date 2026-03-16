@@ -74,6 +74,7 @@ build_all_profile_items() {
     for profile_file in "$PROFILES_DIR"/*.env; do
         if [[ -f "$profile_file" ]]; then
             local name=$(basename "$profile_file" .env)
+            [[ "$name" == "example" ]] && continue
             local port=$(grep "^VLLM_PORT=" "$profile_file" | cut -d'=' -f2)
             local gpu=$(grep "^GPU_ID=" "$profile_file" | cut -d'=' -f2)
             local config=$(grep "^CONFIG_NAME=" "$profile_file" | cut -d'=' -f2)
