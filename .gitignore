@@ -15,3 +15,11 @@ config/
 
 # vLLM source directory (cloned for dev build)
 .vllm-src/
+
+# Claude Code settings
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+.venv/

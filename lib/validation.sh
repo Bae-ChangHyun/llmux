@@ -29,7 +29,7 @@ validate_gpu_id() {
 validate_gpu_memory() {
     local mem=$1
     if ! [[ "$mem" =~ ^0?\.[0-9]+$ || "$mem" =~ ^1(\.0+)?$ ]]; then
-        echo -e "${RED}Error: GPU memory utilization must be between 0.0 and 1.0${NC}"
+        echo -e "${RED}Error: GPU memory utilization must be between 0.1 and 1.0${NC}"
         return 1
     fi
     return 0

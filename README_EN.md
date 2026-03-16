@@ -1,518 +1,197 @@
 <div align="center">
 
-<img src="assets/vllm-compose.png" alt="vLLM Compose Logo" width="280"/>
+<img src="assets/vllm-compose.png" alt="vLLM Compose" width="240"/>
 
 # vLLM Compose
 
-**Docker Compose based vLLM Multi-Model Serving Manager**
+**여러 LLM을 올렸다 내렸다, 터미널 하나로 관리하세요.**
 
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)](https://docs.docker.com/compose/)
 [![vLLM](https://img.shields.io/badge/vLLM-Latest-green?style=flat-square)](https://github.com/vllm-project/vllm)
 [![NVIDIA](https://img.shields.io/badge/NVIDIA-GPU-76B900?style=flat-square&logo=nvidia)](https://www.nvidia.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
-English | [한국어](README.md)
+[English](README.md) | **한국어**
+
+---
+
+Qwen 테스트하다가 Llama로 바꾸고, DeepSeek 잠깐 띄웠다가 다시 내리고...
+<br/>
+**모델마다 설정 파일 따로, 컨테이너 따로, 전부 기억하고 있어야 하죠.**
+<br/><br/>
+vLLM Compose는 모델별 설정을 프로필로 저장하고,
+<br/>
+**TUI에서 선택만 하면 바로 올리고 내릴 수 있습니다.**
 
 </div>
 
----
+<br/>
 
-## 💡 Why?
-
-When serving models with vLLM on a server...
-
-- Start this model to test, stop it, start another model...
-- Which GPU was it? What port? What settings?
-
-**Too annoying.** So I built this.
-
-**Easy to start with TUI menu-based interface - no complex setup needed!**
-
----
-
-## ✨ Key Features
-
-🖥️ **Interactive TUI Mode** - Menu-driven interface like a GUI
-
-🔄 **Smart Version Management** - Docker Hub integration, auto-fetch Official/Nightly versions
-
-🚀 **Profile-Based Management** - Independent model configs with `.env` files
-
-⚡ **Auto GPU Mapping** - Automatic port allocation per GPU, conflict prevention
-
-🔨 **Source Build** - Auto GPU detection for fast builds (10-30 min)
-
-🔗 **LoRA Support** - Multi-adapter loading with automatic path mapping
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
+## 30초 안에 시작하기
 
 ```bash
-docker --version        # Check Docker
-docker compose version  # Check Docker Compose
-nvidia-smi             # Check NVIDIA GPU
-```
+git clone https://github.com/Bae-ChangHyun/vllm-compose.git && cd vllm-compose
 
-### Clone & Common Settings
-
-```bash
-git clone https://github.com/Bae-ChangHyun/vllm-compose.git
-cd vllm-compose
-
-# Create .env.common
-cat > .env.common << EOF
-VLLM_VERSION=latest
-HF_TOKEN=your_huggingface_token
+# HuggingFace 토큰 설정
+cat > .env.common << 'EOF'
+HF_TOKEN=your_token_here
 HF_CACHE_PATH=~/.cache/huggingface
 EOF
+
+# 실행 (의존성 자동 설치)
+uv run vllm-compose    # 또는 ./run.sh
 ```
+
+> Quick Setup에서 모델명만 입력하면 프로필 + 설정이 자동 생성됩니다.
+
+<br/>
+
+## 왜 vLLM Compose인가?
+
+| | 직접 관리 | vLLM Compose |
+|:---|:---|:---|
+| **모델 전환** | docker 명령어 반복, 설정 다시 입력 | 프로필 선택 후 Enter |
+| **설정 관리** | 긴 CLI 인자를 매번 기억 | 모델별 YAML + Tab 자동완성 |
+| **멀티 모델** | compose 파일 수동 편집 | 프로필별 독립 관리, 동시 실행 |
+| **상태 확인** | docker ps, nvidia-smi 반복 | 대시보드에서 실시간 확인 |
+| **버전 선택** | 이미지 태그 직접 관리 | Latest / Official / Nightly 선택 |
+
+<br/>
+
+## 핵심 기능
+
+**TUI** &mdash; 모델 시작/중지/로그/설정을 한 화면에서 관리
+
+**프로필** &mdash; 모델별 설정을 독립 저장, 언제든 한 번에 전환
+
+**Config** &mdash; vLLM 파라미터를 YAML로 관리, 51개 파라미터 Tab 자동완성
+
+**소스 빌드** &mdash; GPU 자동 감지 Fast Build (10-30분), Fork 빌드 지원
+
+**LoRA** &mdash; 멀티 어댑터 동시 로드, 경로 자동 매핑
+
+<br/>
 
 ---
-
-### Method 1: Using TUI (Recommended)
-
-**All tasks made easy with menu-based interface**
-
-```bash
-./run.sh
-```
-
-1. Select **Quick Setup**
-2. Enter model name (e.g., `Qwen/Qwen3-VL-30B`)
-3. Enter GPU ID, port
-4. Profile + config auto-generated
-5. Start container directly from menu!
-
-> TUI menu provides profile creation/edit/delete, container management, version selection, etc.
-
----
-
-### Method 2: Using CLI
-
-**Direct control with terminal commands**
-
-#### 1) Create Profile
-
-```bash
-# config/mymodel.yaml
-cat > config/mymodel.yaml << EOF
-model: huggingface/model-name
-gpu-memory-utilization: 0.9
-EOF
-
-# profiles/mymodel.env
-cat > profiles/mymodel.env << EOF
-CONTAINER_NAME=mymodel
-VLLM_PORT=8000
-CONFIG_NAME=mymodel
-GPU_ID=0
-TENSOR_PARALLEL_SIZE=1
-ENABLE_LORA=false
-EOF
-```
-
-#### 2) Run
-
-```bash
-./run.sh mymodel up
-```
-
----
-
-## 🎨 Project Structure
-
-```
-vllm-compose/
-├── profiles/              # Model profiles (.env)
-│   ├── model1.env
-│   └── model2.env
-├── config/                # vLLM configs (YAML)
-│   ├── model1.yaml
-│   └── model2.yaml
-├── lib/                   # Modular library
-│   ├── colors.sh          # Color constants
-│   ├── tui.sh             # TUI helper functions
-│   └── validation.sh      # Input validation
-├── scripts/
-│   └── entrypoint-wrapper.sh  # Runtime package install
-├── docker-compose.yaml
-├── docker-compose.extra-packages.yaml  # Extra pip packages
-├── .env.common            # Common settings
-└── run.sh                 # Management script
-```
-
----
-
-## 📚 Detailed Guides
 
 <details>
-<summary><strong>🖥️ TUI Mode Details</strong></summary>
+<summary><b>TUI 키보드 단축키</b></summary>
 
-### Launch TUI
+<br/>
 
-```bash
-./run.sh        # or
-./run.sh tui
-```
-
-> **Requirements**: `whiptail` or `dialog`
-> ```bash
-> sudo apt-get install whiptail
-> ```
-
-### Main Menu
-
-```
-┌──────────────── vLLM Compose ─────────────────┐
-│  Q. Quick Setup         Auto-create Profile    │
-│  1. Container Mgmt      Start/Stop/Logs        │
-│  2. Profile Mgmt        Create/Edit/Delete     │
-│  3. Config Mgmt         Create/Edit/Delete      │
-│  4. Build Mgmt          Build/Images           │
-│  5. System Info         GPU/Version/Status     │
-│  X. Exit                                       │
-└───────────────────────────────────────────────┘
-```
-
-### Version Selection
-
-When starting a container, select version:
-
-```
-1. Current running: vllm/vllm-openai:nightly (...)
-2. Official Latest: v0.15.0
-3. Nightly: 2026-01-29
-4. Dev build (local source builds)
-5. Custom tag
-```
-
-- **Official/Nightly**: Auto-pull latest + cleanup unused images
+| 키 | 기능 |
+|:---|:---|
+| `Enter` | 프로필 액션 메뉴 (시작/중지/로그/편집/삭제) |
+| `w` | Quick Setup |
+| `n` | 새 프로필 |
+| `F1` `F2` `F3` | Dashboard / Configs / System |
+| `?` | 전체 단축키 도움말 |
 
 </details>
 
 <details>
-<summary><strong>⌨️ Full CLI Commands</strong></summary>
+<summary><b>CLI 사용법</b></summary>
 
-### Profile Management
+<br/>
 
-| Command | Description |
-|:---|:---|
-| `./run.sh list` | List profiles and status |
-| `./run.sh {profile} up` | Start container |
-| `./run.sh {profile} up --dev` | Start with dev build |
-| `./run.sh {profile} down` | Stop container |
-| `./run.sh {profile} logs` | View logs (real-time) |
-| `./run.sh {profile} status` | Check status |
-
-### Version & Images
-
-| Command | Description |
-|:---|:---|
-| `./run.sh version` | Show version info |
-| `./run.sh images` | List dev build images |
-
-### Build
-
-| Command | Description |
-|:---|:---|
-| `./run.sh build` | Fast build main branch |
-| `./run.sh build [branch]` | Build specific branch |
-| `./run.sh build [branch] --repo <url>` | Build from custom repo/fork |
-| `./run.sh build --official` | Official build (all GPUs) |
-| `./run.sh build [branch] --tag TAG` | Build with custom tag |
-
-### System
-
-| Command | Description |
-|:---|:---|
-| `./run.sh ps` | Running containers |
-| `./run.sh gpu` | GPU status |
+```bash
+./run.sh list                    # 프로필 목록
+./run.sh {profile} up            # 시작
+./run.sh {profile} down          # 중지
+./run.sh {profile} logs          # 로그
+./run.sh build                   # 소스 빌드
+./run.sh build --repo <url>      # Fork 빌드
+```
 
 </details>
 
 <details>
-<summary><strong>🔧 Add New Model Profile</strong></summary>
+<summary><b>프로필 & Config 구조</b></summary>
 
-### Method 1: Quick Setup (TUI)
-
-```bash
-./run.sh
-# → Select "Quick Setup"
-# → Enter model name, GPU, port
-# → Auto-generated
-```
-
-### Method 2: Manual Creation
-
-#### 1) Create Config
+<br/>
 
 ```yaml
-# config/mymodel.yaml
-model: huggingface/model-name
+# config/my-model.yaml — vLLM 서빙 설정
+model: Qwen/Qwen3-30B
 gpu-memory-utilization: 0.9
 max-model-len: 32768
+trust-remote-code: true
 ```
 
-#### 2) Create Profile
-
 ```bash
-# profiles/mymodel.env
-CONTAINER_NAME=mymodel
-VLLM_PORT=8003
-CONFIG_NAME=mymodel
-
+# profiles/my-model.env — 컨테이너 설정
+CONTAINER_NAME=my-model
+VLLM_PORT=8000
+CONFIG_NAME=my-model
 GPU_ID=0
 TENSOR_PARALLEL_SIZE=1
-
 ENABLE_LORA=false
 ```
 
-#### 3) Run
-
-```bash
-./run.sh mymodel up
-```
-
-### Key Settings
-
-| Setting | Description | Example |
-|:---|:---|:---|
-| `CONTAINER_NAME` | Container name | `mymodel` |
-| `VLLM_PORT` | API serving port | `8000` |
-| `CONFIG_NAME` | Config filename (no ext) | `mymodel` |
-| `GPU_ID` | GPU number | `0` or `0,1` |
-| `TENSOR_PARALLEL_SIZE` | TP size | `1`, `2`, `4` |
-
 </details>
 
 <details>
-<summary><strong>🔨 vLLM Source Build</strong></summary>
+<summary><b>소스 빌드</b></summary>
 
-### Fast Build (Recommended)
-
-Detects current GPU only for fast build (10-30 min)
+<br/>
 
 ```bash
-./run.sh build              # main branch
-./run.sh build v0.15.0      # specific version
-./run.sh build my-branch    # specific branch
-```
+# Fast Build — 현재 GPU만 대상, 10-30분
+./run.sh build                              # main
+./run.sh build v0.15.0                      # 특정 버전
+./run.sh build main --repo <fork-url>       # Fork
 
-Output:
-```
-Detected GPU: NVIDIA RTX 4080 (sm_8.9)
-Building for your GPU only - MUCH faster!
-```
-
-### Custom Repository (Fork)
-
-Build from someone's fork or your own repo
-
-```bash
-# Custom repo
-./run.sh build main --repo https://github.com/username/vllm.git
-
-# Custom repo + specific branch
-./run.sh build custom-feature --repo https://github.com/username/vllm.git
-```
-
-### Official Build
-
-All GPU architectures (3-6 hours)
-
-```bash
+# Official Build — 모든 GPU, 3-6시간
 ./run.sh build --official
-./run.sh build v0.15.0 --official
-```
 
-### Check Build Information
-
-View detailed info of built images (repo, branch, commit, date)
-
-```bash
-./run.sh images
-```
-
-Output:
-```
-Tag: vllm-dev:main-20260130
-  Size: 42GB | Created: 2026-01-30 15:30
-  Repository: vllm-project/vllm
-  Branch: main | Commit: abc1234
-  Built: 2026-01-30 | Type: fast
-```
-
-### Run with Dev Build
-
-```bash
+# Dev 이미지로 실행
 ./run.sh mymodel up --dev
-./run.sh mymodel up --dev --tag main-20260130
 ```
 
 </details>
 
 <details>
-<summary><strong>🔗 LoRA Adapter</strong></summary>
+<summary><b>LoRA 어댑터</b></summary>
 
-### 1. Set Base Path
+<br/>
 
 ```bash
 # .env.common
 LORA_BASE_PATH=/home/user/lora-adapters
-```
 
-### 2. Configure Profile
-
-```bash
 # profiles/mymodel.env
 ENABLE_LORA=true
 MAX_LORAS=2
-MAX_LORA_RANK=16
-LORA_MODULES=adapter1=/app/lora/my_adapter_v1
-```
-
-### 3. Path Mapping
-
-```
-Local: /home/user/lora-adapters/my_adapter_v1
-  ↓ Auto mount
-Container: /app/lora/my_adapter_v1
-```
-
-⚠️ LORA_MODULES must start with `/app/lora/`
-
-### 4. Multiple Adapters
-
-```bash
 LORA_MODULES=ko=/app/lora/ko_adapter,en=/app/lora/en_adapter
 ```
 
-### 5. API Usage
-
 ```python
-# Use specific adapter
 response = client.chat.completions.create(
-    model="ko",  # Name from LORA_MODULES
+    model="ko",  # LoRA 어댑터명
     messages=[...]
 )
 ```
 
-### Supported Models
-
-| Model | LoRA Support |
-|:---|:---:|
-| Qwen2-VL, Qwen3-VL | ✅ |
-| LLaVA | ✅ |
-| DeepSeek-OCR | ✅ (v0.13.0+) |
-
 </details>
 
 <details>
-<summary><strong>🐛 Troubleshooting & FAQ</strong></summary>
+<summary><b>문제 해결</b></summary>
 
-### Where do I add vLLM arguments?
+<br/>
 
-All vLLM arguments can be added to `config/*.yaml` files.
-
-```yaml
-# config/mymodel.yaml
-model: huggingface/model-name
-gpu-memory-utilization: 0.9
-max-model-len: 32768
-
-# Additional vLLM arguments
-trust-remote-code: true
-dtype: bfloat16
-max-num-seqs: 256
-enable-chunked-prefill: true
-```
-
-> Any vLLM CLI argument can be written in YAML format
-> Reference: [vLLM Engine Arguments](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#command-line-arguments-for-the-server)
-
-In TUI, go to **Config Mgmt → Edit Config** to add/edit/delete custom parameters.
-
-### Extra pip Packages
-
-To install additional Python packages at container startup, set in `.env.common`:
-
-```bash
-# .env.common
-EXTRA_PIP_PACKAGES=transformers==4.50.0 flash-attn
-```
-
-> Packages are auto-installed at entrypoint via `docker-compose.extra-packages.yaml`.
-
-### Container Won't Start
-
-```bash
-./run.sh {profile} logs     # Check logs
-./run.sh gpu                # GPU status
-./run.sh {profile} status   # Container status
-```
-
-### GPU OOM
-
-```yaml
-# config/mymodel.yaml
-gpu-memory-utilization: 0.7  # Lower
-```
-
-Or use TP:
-```bash
-# profiles/mymodel.env
-TENSOR_PARALLEL_SIZE=2
-```
-
-### Port Conflict
-
-```bash
-# profiles/mymodel.env
-VLLM_PORT=8001  # Change
-```
-
-Check:
-```bash
-sudo lsof -i :8000
-./run.sh ps
-```
-
-### LoRA Path Error
-
-1. Check `LORA_BASE_PATH` in `.env.common`
-2. Verify `LORA_MODULES` starts with `/app/lora/`
-3. Confirm files exist locally
-
-```bash
-ls -la /home/user/lora-adapters/
-docker exec -it {container} ls -la /app/lora/
-```
+| 문제 | 해결 |
+|:---|:---|
+| 컨테이너 미시작 | `./run.sh {profile} logs` 로 로그 확인 |
+| GPU OOM | `gpu-memory-utilization: 0.7` 또는 `TENSOR_PARALLEL_SIZE=2` |
+| 포트 충돌 | `VLLM_PORT` 변경 후 `./run.sh ps` 확인 |
+| vLLM 인자 추가 | `config/*.yaml`에 아무 CLI 인자나 YAML로 작성 |
 
 </details>
-
----
-
-## 💻 Tech Stack
-
-- Docker, Docker Compose
-- [vLLM](https://github.com/vllm-project/vllm)
-- NVIDIA CUDA
-- Bash Shell Script
-
----
-
-## 📄 License
-
-MIT License
 
 ---
 
 <div align="center">
 
-**vLLM Compose**
-Made with ❤️ for AI Developers
+**MIT License** · Made for AI Developers
 
 </div>
