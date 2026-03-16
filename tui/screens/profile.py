@@ -8,7 +8,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static, Label, Input, Select, Switch
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual import on
 
 from tui.backend import (
@@ -17,12 +17,8 @@ from tui.backend import (
     save_profile,
     delete_profile,
     list_config_names,
+    validate_name as _validate_name,
 )
-
-
-def _validate_name(name: str) -> bool:
-    """Check that name contains only alphanumeric, dash, and underscore."""
-    return bool(re.match(r"^[a-zA-Z0-9_-]+$", name))
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +62,20 @@ class ProfileFormScreen(ModalScreen[str | None]):
         width: 20;
         padding: 1 1 0 0;
         color: $text-muted;
+    }
+    ProfileFormScreen #env-vars-section {
+        margin-top: 1;
+        border-top: solid $primary 40%;
+        padding-top: 1;
+    }
+    ProfileFormScreen #env-vars-title {
+        text-style: bold;
+        color: $text;
+    }
+    ProfileFormScreen .env-var-line {
+        color: $text-muted;
+        height: auto;
+        margin-left: 2;
     }
     ProfileFormScreen .form-buttons {
         height: auto;
@@ -150,6 +160,16 @@ class ProfileFormScreen(ModalScreen[str | None]):
                     value=(p.enable_lora == "true") if p else False,
                     id="lora-switch",
                 )
+
+            # Show env_vars if editing and they exist
+            if self._edit_mode and p and p.env_vars:
+                with Vertical(id="env-vars-section"):
+                    yield Static(
+                        f"Extra Environment Variables ({len(p.env_vars)})",
+                        id="env-vars-title",
+                    )
+                    for k, v in p.env_vars.items():
+                        yield Static(f"[dim]{k}={v}[/dim]", classes="env-var-line")
 
             with Horizontal(classes="form-buttons"):
                 yield Button("Save", id="save-btn", variant="primary")
@@ -283,6 +303,7 @@ class ProfileDeleteScreen(ModalScreen[bool]):
     @on(Button.Pressed, "#delete-btn")
     def _on_delete(self, event: Button.Pressed) -> None:
         delete_profile(self._profile_name)
+        self.app.notify(f"Deleted profile: {self._profile_name}")
         self.dismiss(True)
 
     @on(Button.Pressed, "#cancel-btn")

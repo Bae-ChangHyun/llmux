@@ -14,6 +14,12 @@ CONFIG_DIR = SCRIPT_DIR / "config"
 RUN_SH = SCRIPT_DIR / "run.sh"
 
 
+def validate_name(name: str) -> bool:
+    """Check that name contains only alphanumeric, dash, and underscore.
+    Also prevents argument injection (names starting with -)."""
+    return bool(re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$", name))
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------

@@ -124,6 +124,10 @@ class QuickSetupScreen(ModalScreen[str]):
             self.notify(f"Profile '{safe_name}' already exists", severity="error")
             return
 
+        if safe_name in list_config_names():
+            self.notify(f"Config '{safe_name}' already exists", severity="error")
+            return
+
         # Save config
         config = Config(
             name=safe_name,

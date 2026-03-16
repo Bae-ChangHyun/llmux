@@ -79,6 +79,15 @@ class DashboardScreen(Screen):
         empty_state = self.query_one("#empty-state")
         status_bar = self.query_one("#status-bar", Static)
 
+        # Preserve cursor position
+        selected_key: str | None = None
+        if table.row_count > 0:
+            try:
+                row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
+                selected_key = str(row_key)
+            except (KeyError, IndexError):
+                pass
+
         table.clear()
 
         if not statuses:
@@ -113,6 +122,13 @@ class DashboardScreen(Screen):
                 key=s.profile_name,
             )
 
+        # Restore cursor position
+        if selected_key:
+            for idx, s in enumerate(statuses):
+                if s.profile_name == selected_key:
+                    table.move_cursor(row=idx)
+                    break
+
     def _get_selected_profile(self) -> str | None:
         table = self.query_one("#profile-table", DataTable)
         if table.row_count == 0:
@@ -120,7 +136,7 @@ class DashboardScreen(Screen):
         try:
             row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
             return str(row_key)
-        except Exception:
+        except (KeyError, IndexError):
             return None
 
     # ----- Enter (DataTable row selected): Action Menu -----

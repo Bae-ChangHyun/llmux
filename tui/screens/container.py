@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, Center
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen, ModalScreen
 from textual.widgets import (
     Button,
@@ -21,9 +21,7 @@ from textual import work, on
 
 from tui.backend import (
     container_up,
-    container_down,
     stream_container_logs,
-    load_profile,
 )
 
 
@@ -211,114 +209,6 @@ class ContainerUpScreen(ModalScreen[str]):
 
 
 # ---------------------------------------------------------------------------
-# ContainerDownScreen
-# ---------------------------------------------------------------------------
-
-
-class ContainerDownScreen(ModalScreen[str]):
-    """Confirmation modal to stop a container."""
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
-
-    DEFAULT_CSS = """
-    ContainerDownScreen {
-        align: center middle;
-    }
-
-    ContainerDownScreen > Vertical {
-        background: $surface;
-        border: round $error;
-        padding: 1 2;
-        width: 50;
-        height: auto;
-    }
-
-    ContainerDownScreen #title-label {
-        text-style: bold;
-        color: $error;
-        width: 100%;
-        text-align: center;
-        margin-bottom: 1;
-    }
-
-    ContainerDownScreen #confirm-text {
-        margin-bottom: 1;
-        width: 100%;
-        text-align: center;
-    }
-
-    ContainerDownScreen .buttons {
-        layout: horizontal;
-        height: 3;
-        align: center middle;
-        margin-top: 1;
-    }
-
-    ContainerDownScreen .buttons Button {
-        margin: 0 1;
-    }
-
-    ContainerDownScreen #loading-area {
-        height: auto;
-        align: center middle;
-        display: none;
-    }
-
-    ContainerDownScreen #loading-area LoadingIndicator {
-        height: 3;
-    }
-    """
-
-    def __init__(self, profile_name: str) -> None:
-        super().__init__()
-        self.profile_name = profile_name
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="modal-dialog"):
-            yield Static("Stop Container", id="title-label")
-            yield Static(
-                f"Stop container [b]{self.profile_name}[/b]?",
-                id="confirm-text",
-            )
-            with Vertical(id="loading-area"):
-                yield LoadingIndicator()
-                yield Static("Stopping container...", id="loading-text")
-            with Horizontal(classes="buttons"):
-                yield Button("Stop", variant="error", id="stop-btn")
-                yield Button("Cancel", variant="default", id="cancel-btn")
-
-    @on(Button.Pressed, "#cancel-btn")
-    def _on_cancel(self) -> None:
-        self.dismiss("")
-
-    def action_cancel(self) -> None:
-        self.dismiss("")
-
-    @on(Button.Pressed, "#stop-btn")
-    def _on_stop(self) -> None:
-        self._do_stop()
-
-    @work(exclusive=True)
-    async def _do_stop(self) -> None:
-        """Stop the container in a background worker."""
-        self.query_one("#loading-area").styles.display = "block"
-        self.query_one(".buttons").styles.display = "none"
-
-        rc, output = await container_down(self.profile_name)
-
-        if rc == 0:
-            self.dismiss(f"Container '{self.profile_name}' stopped.")
-        else:
-            self.query_one("#loading-area").styles.display = "none"
-            self.query_one(".buttons").styles.display = "block"
-            self.app.notify(
-                f"Failed to stop container (rc={rc}):\n{output[:200]}",
-                severity="error",
-                timeout=8,
-            )
-
-
-# ---------------------------------------------------------------------------
 # LogScreen
 # ---------------------------------------------------------------------------
 
@@ -378,4 +268,5 @@ class LogScreen(Screen):
             log_widget.write(f"\n[red]Log stream error: {exc}[/red]")
 
     def action_go_back(self) -> None:
+        self.workers.cancel_all()
         self.app.pop_screen()
