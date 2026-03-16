@@ -68,6 +68,15 @@ class DashboardScreen(Screen):
         self._load_statuses()
         self._refresh_timer = self.set_interval(5, self._load_statuses)
 
+    def on_screen_suspend(self) -> None:
+        if self._refresh_timer is not None:
+            self._refresh_timer.pause()
+
+    def on_screen_resume(self) -> None:
+        self._load_statuses()
+        if self._refresh_timer is not None:
+            self._refresh_timer.resume()
+
     @work(exclusive=True, group="refresh")
     async def _load_statuses(self) -> None:
         statuses = await get_container_statuses()
@@ -161,7 +170,7 @@ class DashboardScreen(Screen):
     def _handle_action(self, action: str, profile_name: str) -> None:
         if action == "start":
             from tui.screens.container import ContainerUpScreen
-            self.app.push_screen(ContainerUpScreen(profile_name))
+            self.app.push_screen(ContainerUpScreen(profile_name), callback=self._on_profile_saved)
         elif action == "stop":
             self._confirm_stop(profile_name)
         elif action == "logs":
@@ -183,6 +192,12 @@ class DashboardScreen(Screen):
             else:
                 self.notify("No config linked to this profile.", severity="warning")
         elif action == "delete":
+            is_running = any(
+                s.running for s in self._statuses if s.profile_name == profile_name
+            )
+            if is_running:
+                self.notify("Cannot delete: container is running. Stop it first.", severity="error")
+                return
             from tui.screens.profile import ProfileDeleteScreen
             self.app.push_screen(
                 ProfileDeleteScreen(profile_name), callback=self._on_profile_saved
@@ -256,6 +271,12 @@ class DashboardScreen(Screen):
         profile = self._get_selected_profile()
         if profile is None:
             self.notify("No profile selected.", severity="warning")
+            return
+        is_running = any(
+            s.running for s in self._statuses if s.profile_name == profile
+        )
+        if is_running:
+            self.notify("Cannot delete: container is running. Stop it first.", severity="error")
             return
         from tui.screens.profile import ProfileDeleteScreen
         self.app.push_screen(

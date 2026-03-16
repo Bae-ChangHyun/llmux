@@ -92,6 +92,15 @@ class SystemScreen(Screen):
         # Auto-refresh GPU every 3 seconds
         self._gpu_timer = self.set_interval(3, self._refresh_gpu)
 
+    def on_screen_suspend(self) -> None:
+        if self._gpu_timer is not None:
+            self._gpu_timer.pause()
+
+    def on_screen_resume(self) -> None:
+        self._refresh_gpu()
+        if self._gpu_timer is not None:
+            self._gpu_timer.resume()
+
     # ----- GPU Tab -----
 
     @work(exclusive=True, group="gpu")
@@ -184,7 +193,7 @@ class SystemScreen(Screen):
     # ----- Actions -----
 
     def action_go_back(self) -> None:
-        self.app.pop_screen()
+        self.app.switch_screen("dashboard")
 
     def action_refresh_all(self) -> None:
         self._refresh_gpu()

@@ -199,6 +199,13 @@ class ProfileFormScreen(ModalScreen[str | None]):
             )
             return
 
+        if container and not _validate_name(container):
+            self.notify(
+                "Container name must contain only letters, digits, dashes, or underscores.",
+                severity="error",
+            )
+            return
+
         if port:
             try:
                 port_int = int(port)

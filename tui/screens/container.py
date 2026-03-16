@@ -203,7 +203,11 @@ class ContainerUpScreen(ModalScreen[str]):
 
         try:
             if rc == 0:
-                self.dismiss(f"Container '{self.profile_name}' started successfully.")
+                self.app.notify(
+                    f"Container '{self.profile_name}' started successfully.",
+                    severity="information",
+                )
+                self.dismiss("")
             else:
                 self.query_one("#loading-area").styles.display = "none"
                 self.query_one(".buttons").styles.display = "block"
