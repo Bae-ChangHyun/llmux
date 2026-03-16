@@ -17,6 +17,8 @@ from tui.backend import (
     save_config,
     delete_config,
     list_config_names,
+    list_profile_names,
+    load_profile,
 )
 
 
@@ -115,11 +117,12 @@ class ConfigFormScreen(ModalScreen[str | None]):
         self._config_name = config_name
         self._edit_mode = bool(config_name)
         self._param_counter = 0
+        self._initial_config: Config | None = None
 
     def compose(self) -> ComposeResult:
-        cfg: Config | None = None
         if self._edit_mode:
-            cfg = load_config(self._config_name)
+            self._initial_config = load_config(self._config_name)
+        cfg = self._initial_config
 
         title = f"Edit Config: {self._config_name}" if self._edit_mode else "New Config"
 
@@ -166,9 +169,8 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 yield Button("Cancel", id="cancel-btn", variant="default")
 
     def on_mount(self) -> None:
-        if self._edit_mode:
-            cfg = load_config(self._config_name)
-            for key, value in cfg.extra_params.items():
+        if self._edit_mode and self._initial_config:
+            for key, value in self._initial_config.extra_params.items():
                 self._add_param_row(key, value)
 
     def _add_param_row(self, key: str = "", value: str = "") -> None:
@@ -190,9 +192,12 @@ class ConfigFormScreen(ModalScreen[str | None]):
 
     @on(Button.Pressed, ".param-remove")
     def _on_remove_param(self, event: Button.Pressed) -> None:
-        row = event.button.parent
-        if row:
-            row.remove()
+        widget = event.button.parent
+        while widget is not None:
+            if hasattr(widget, "classes") and "param-row" in widget.classes:
+                widget.remove()
+                return
+            widget = widget.parent
 
     @on(Button.Pressed, "#save-btn")
     def _on_save(self, event: Button.Pressed) -> None:
@@ -213,12 +218,17 @@ class ConfigFormScreen(ModalScreen[str | None]):
 
         # --- Collect extra params ---
         extra_params: dict[str, str] = {}
+        seen_keys: set[str] = set()
         for row in self.query(".param-row"):
             key_input = row.query_one(".param-key", Input)
             value_input = row.query_one(".param-value", Input)
             k = key_input.value.strip()
             v = value_input.value.strip()
             if k:
+                if k in seen_keys:
+                    self.notify(f"Duplicate parameter: {k}", severity="error")
+                    return
+                seen_keys.add(k)
                 extra_params[k] = v
 
         # --- Build and save ---
@@ -238,6 +248,88 @@ class ConfigFormScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+# ---------------------------------------------------------------------------
+# ConfirmDeleteConfigScreen
+# ---------------------------------------------------------------------------
+
+
+class ConfirmDeleteConfigScreen(ModalScreen[bool]):
+    """Confirmation modal before deleting a config."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    DEFAULT_CSS = """
+    ConfirmDeleteConfigScreen {
+        align: center middle;
+    }
+    ConfirmDeleteConfigScreen > Vertical {
+        background: $surface;
+        border: round $error;
+        padding: 1 2;
+        width: 50;
+        height: auto;
+    }
+    ConfirmDeleteConfigScreen #confirm-title {
+        text-style: bold;
+        color: $error;
+        text-align: center;
+        width: 100%;
+        margin-bottom: 1;
+    }
+    ConfirmDeleteConfigScreen #confirm-msg {
+        text-align: center;
+        margin-bottom: 1;
+    }
+    ConfirmDeleteConfigScreen #confirm-warn {
+        color: $warning;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    ConfirmDeleteConfigScreen .confirm-buttons {
+        height: auto;
+        align: center middle;
+    }
+    ConfirmDeleteConfigScreen .confirm-buttons Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, config_name: str, referencing_profiles: list[str]) -> None:
+        super().__init__()
+        self._config_name = config_name
+        self._referencing = referencing_profiles
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static("Delete Config", id="confirm-title")
+            yield Static(
+                f"Are you sure you want to delete [b]{self._config_name}[/b]?",
+                id="confirm-msg",
+            )
+            if self._referencing:
+                names = ", ".join(self._referencing)
+                yield Static(
+                    f"[b]Warning:[/b] Used by profiles: {names}",
+                    id="confirm-warn",
+                )
+            with Horizontal(classes="confirm-buttons"):
+                yield Button("Delete", id="confirm-yes", variant="error")
+                yield Button("Cancel", id="confirm-no", variant="default")
+
+    @on(Button.Pressed, "#confirm-yes")
+    def _on_yes(self, event: Button.Pressed) -> None:
+        delete_config(self._config_name)
+        self.app.notify(f"Deleted config: {self._config_name}")
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#confirm-no")
+    def _on_no(self, event: Button.Pressed) -> None:
+        self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
 
 
 # ---------------------------------------------------------------------------
@@ -302,9 +394,19 @@ class ConfigListScreen(Screen):
         if name is None:
             self.notify("No config selected.", severity="warning")
             return
-        delete_config(name)
-        self.notify(f"Deleted config: {name}")
-        self._refresh_table()
+        # Check if any profile references this config
+        referencing = [
+            p for p in list_profile_names()
+            if load_profile(p).config_name == name
+        ]
+        self.app.push_screen(
+            ConfirmDeleteConfigScreen(name, referencing),
+            callback=self._on_delete_confirmed,
+        )
+
+    def _on_delete_confirmed(self, result: bool) -> None:
+        if result:
+            self._refresh_table()
 
     def action_go_back(self) -> None:
         self.app.pop_screen()

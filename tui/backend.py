@@ -254,10 +254,14 @@ async def is_container_running(container_name: str) -> bool:
 async def get_container_statuses() -> list[ContainerStatus]:
     """Get status for all profiles."""
     profiles = list_profile_names()
+    # Single docker ps call to get all running container names
+    rc, out = await run_command("docker", "ps", "--format", "{{.Names}}", timeout=10)
+    running_names = set(out.strip().splitlines()) if rc == 0 else set()
+
     statuses = []
     for name in profiles:
         p = load_profile(name)
-        running = await is_container_running(p.container_name)
+        running = p.container_name in running_names
         model = ""
         if p.config_name:
             c = load_config(p.config_name)
