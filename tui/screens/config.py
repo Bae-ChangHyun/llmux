@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-
 from textual.app import ComposeResult
 from textual.screen import Screen, ModalScreen
 from textual.widgets import Button, Static, Label, Input, DataTable, Footer, Header
@@ -20,12 +18,8 @@ from tui.backend import (
     list_config_names,
     list_profile_names,
     load_profile,
+    validate_name as _validate_name,
 )
-
-
-def _validate_name(name: str) -> bool:
-    """Check that name contains only alphanumeric, dash, and underscore."""
-    return bool(re.match(r"^[a-zA-Z0-9_-]+$", name))
 
 
 # Well-known vLLM serve parameters (covers most versions)
@@ -260,6 +254,17 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 severity="error",
             )
             return
+        if gpu_mem:
+            try:
+                gpu_mem_val = float(gpu_mem)
+                if not (0.0 < gpu_mem_val <= 1.0):
+                    raise ValueError
+            except ValueError:
+                self.notify(
+                    "GPU Memory Utilization must be between 0.0 and 1.0",
+                    severity="error",
+                )
+                return
 
         # --- Collect extra params ---
         extra_params: dict[str, str] = {}

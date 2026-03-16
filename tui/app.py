@@ -19,7 +19,7 @@ class VllmApp(App):
     CSS_PATH = "app.tcss"
 
     BINDINGS = [
-        Binding("q", "quit", "Quit", show=True, priority=True),
+        Binding("q", "quit", "Quit", show=True),
         Binding("f1", "show_dashboard", "Dashboard", show=False),
         Binding("f2", "show_configs", "Configs", show=False),
         Binding("f3", "show_system", "System", show=False),
@@ -43,10 +43,12 @@ class VllmApp(App):
         self.switch_screen("dashboard")
 
     def action_show_configs(self) -> None:
-        self.push_screen("configs")
+        if not isinstance(self.screen, ConfigListScreen):
+            self.push_screen("configs")
 
     def action_show_system(self) -> None:
-        self.push_screen("system")
+        if not isinstance(self.screen, SystemScreen):
+            self.push_screen("system")
 
     def action_toggle_help(self) -> None:
         self.notify(
