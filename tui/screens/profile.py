@@ -219,6 +219,15 @@ class ProfileFormScreen(ModalScreen[str | None]):
             self.notify("GPU ID must contain only digits and commas.", severity="error")
             return
 
+        if tp:
+            try:
+                tp_int = int(tp)
+                if tp_int < 1:
+                    raise ValueError
+            except ValueError:
+                self.notify("Tensor Parallel must be a positive integer.", severity="error")
+                return
+
         # --- Build and save ---
         if self._edit_mode and self._profile is not None:
             profile = self._profile

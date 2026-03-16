@@ -214,7 +214,7 @@ class DashboardScreen(Screen):
             self.notify("No profile selected.", severity="warning")
             return
         from tui.screens.container import ContainerUpScreen
-        self.app.push_screen(ContainerUpScreen(profile))
+        self.app.push_screen(ContainerUpScreen(profile), callback=self._on_profile_saved)
 
     def action_stop_container(self) -> None:
         profile = self._get_selected_profile()
