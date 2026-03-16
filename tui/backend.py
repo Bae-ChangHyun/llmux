@@ -101,7 +101,10 @@ def _parse_env_file(path: Path) -> dict[str, str]:
             continue
         if "=" in line:
             key, _, value = line.partition("=")
-            data[key.strip()] = value.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+            data[key.strip()] = value
     return data
 
 
@@ -291,7 +294,7 @@ async def container_up(profile_name: str, use_dev: bool = False, tag: str = "") 
         args.append("--dev")
     if tag:
         args.extend(["--tag", tag])
-    return await run_sh(*args, timeout=120)
+    return await run_sh(*args, timeout=600)
 
 
 async def container_down(profile_name: str) -> tuple[int, str]:
@@ -312,7 +315,10 @@ async def stream_container_logs(container_name: str):
                 break
             yield line.decode(errors="replace").rstrip("\n")
     finally:
-        proc.kill()
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
         await proc.wait()
 
 

@@ -152,6 +152,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
         self._edit_mode = bool(config_name)
         self._param_counter = 0
         self._initial_config: Config | None = None
+        self._saved_name: str | None = None
 
     def compose(self) -> ComposeResult:
         if self._edit_mode:
@@ -311,10 +312,10 @@ class ConfigFormScreen(ModalScreen[str | None]):
 
     @on(Button.Pressed, "#cancel-btn")
     def _on_close(self, event: Button.Pressed) -> None:
-        self.dismiss(getattr(self, "_saved_name", None))
+        self.dismiss(self._saved_name)
 
     def action_cancel(self) -> None:
-        self.dismiss(getattr(self, "_saved_name", None))
+        self.dismiss(self._saved_name)
 
 
 # ---------------------------------------------------------------------------

@@ -44,11 +44,11 @@ class VllmApp(App):
 
     def action_show_configs(self) -> None:
         if not isinstance(self.screen, ConfigListScreen):
-            self.push_screen("configs")
+            self.switch_screen("configs")
 
     def action_show_system(self) -> None:
         if not isinstance(self.screen, SystemScreen):
-            self.push_screen("system")
+            self.switch_screen("system")
 
     def action_toggle_help(self) -> None:
         self.notify(

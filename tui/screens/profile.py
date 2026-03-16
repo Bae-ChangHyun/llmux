@@ -91,6 +91,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
         super().__init__()
         self._profile = profile
         self._edit_mode = profile is not None
+        self._saved_name: str | None = None
 
     def compose(self) -> ComposeResult:
         p = self._profile
@@ -244,10 +245,10 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
     @on(Button.Pressed, "#cancel-btn")
     def _on_close(self, event: Button.Pressed) -> None:
-        self.dismiss(getattr(self, "_saved_name", None))
+        self.dismiss(self._saved_name)
 
     def action_cancel(self) -> None:
-        self.dismiss(getattr(self, "_saved_name", None))
+        self.dismiss(self._saved_name)
 
 
 # ---------------------------------------------------------------------------

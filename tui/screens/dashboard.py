@@ -217,7 +217,7 @@ class DashboardScreen(Screen):
             ConfirmStopScreen(profile_name), callback=on_confirm
         )
 
-    @work(exclusive=True, group="stop")
+    @work(exclusive=False)
     async def _do_stop(self, profile_name: str) -> None:
         self.notify(f"Stopping {profile_name}...")
         rc, output = await container_down(profile_name)
