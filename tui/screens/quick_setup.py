@@ -107,6 +107,16 @@ class QuickSetupScreen(ModalScreen[str]):
             self.notify("Port must be between 1024 and 65535", severity="error")
             return
 
+        # Validate GPU Memory Utilization
+        if gpu_mem:
+            try:
+                gpu_mem_val = float(gpu_mem)
+                if not (0.0 < gpu_mem_val <= 1.0):
+                    raise ValueError
+            except ValueError:
+                self.notify("GPU Memory Utilization must be between 0.0 and 1.0", severity="error")
+                return
+
         # Validate GPU
         if not re.match(r"^[0-9]+(,[0-9]+)*$", gpu):
             self.notify("Invalid GPU ID format", severity="error")
