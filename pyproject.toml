@@ -5,6 +5,7 @@ description = "Textual TUI for vLLM Container Management"
 requires-python = ">=3.10"
 dependencies = [
     "textual>=1.0.0",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
