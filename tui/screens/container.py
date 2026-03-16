@@ -31,10 +31,10 @@ from tui.backend import (
 # Version option constants
 # ---------------------------------------------------------------------------
 
-VERSION_LOCAL_LATEST = "Local Latest"
-VERSION_OFFICIAL = "Official"
-VERSION_NIGHTLY = "Nightly"
-VERSION_DEV_BUILD = "Dev Build"
+VERSION_LATEST = "Latest"
+VERSION_OFFICIAL = "Official  (vllm/vllm-openai:latest)"
+VERSION_NIGHTLY = "Nightly  (vllm/vllm-openai:nightly)"
+VERSION_DEV_BUILD = "Dev Build  (vllm-dev)"
 VERSION_CUSTOM_TAG = "Custom Tag"
 
 
@@ -122,7 +122,7 @@ class ContainerUpScreen(ModalScreen[str]):
             yield Static(f"Profile: [b]{self.profile_name}[/b]", id="profile-label")
             yield Label("Version", id="version-label")
             with RadioSet(id="version-radio"):
-                yield RadioButton(VERSION_LOCAL_LATEST, value=True)
+                yield RadioButton(VERSION_LATEST, value=True)
                 yield RadioButton(VERSION_OFFICIAL)
                 yield RadioButton(VERSION_NIGHTLY)
                 yield RadioButton(VERSION_DEV_BUILD)
@@ -166,18 +166,18 @@ class ContainerUpScreen(ModalScreen[str]):
         radio_set = self.query_one("#version-radio", RadioSet)
         pressed_index = radio_set.pressed_index
         labels = [
-            VERSION_LOCAL_LATEST,
+            VERSION_LATEST,
             VERSION_OFFICIAL,
             VERSION_NIGHTLY,
             VERSION_DEV_BUILD,
             VERSION_CUSTOM_TAG,
         ]
-        selected = labels[pressed_index] if 0 <= pressed_index < len(labels) else VERSION_LOCAL_LATEST
+        selected = labels[pressed_index] if 0 <= pressed_index < len(labels) else VERSION_LATEST
 
         use_dev = False
         tag = ""
 
-        if selected == VERSION_LOCAL_LATEST:
+        if selected == VERSION_LATEST:
             # No extra args - uses local latest image
             pass
         elif selected == VERSION_OFFICIAL:

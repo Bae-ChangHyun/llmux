@@ -9,6 +9,7 @@ from textual.screen import Screen, ModalScreen
 from textual.widgets import Button, Static, Label, Input, DataTable, Footer, Header
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.binding import Binding
+from textual.suggester import SuggestFromList
 from textual import on
 
 from tui.backend import (
@@ -25,6 +26,45 @@ from tui.backend import (
 def _validate_name(name: str) -> bool:
     """Check that name contains only alphanumeric, dash, and underscore."""
     return bool(re.match(r"^[a-zA-Z0-9_-]+$", name))
+
+
+# Well-known vLLM serve parameters (covers most versions)
+KNOWN_VLLM_PARAMS: set[str] = {
+    # Model & loading
+    "max-model-len", "dtype", "quantization", "load-format",
+    "trust-remote-code", "download-dir", "tokenizer", "tokenizer-mode",
+    "revision", "code-revision", "tokenizer-revision",
+    "served-model-name", "chat-template",
+    # Scheduling & batching
+    "max-num-seqs", "max-num-batched-tokens", "max-paddings",
+    "scheduling-policy", "preemption-mode",
+    "num-scheduler-steps", "multi-step-stream-outputs",
+    # Memory & cache
+    "swap-space", "kv-cache-dtype", "block-size",
+    "enable-prefix-caching", "disable-sliding-window",
+    # Performance
+    "enforce-eager", "enable-chunked-prefill",
+    "disable-async-output-proc", "max-parallel-loading-workers",
+    "distributed-executor-backend",
+    # LoRA (advanced)
+    "max-loras", "max-lora-rank", "lora-extra-vocab-size",
+    "long-lora-scaling-factors",
+    # Speculative decoding
+    "speculative-model", "num-speculative-tokens",
+    "speculative-max-model-len",
+    # Logging & debug
+    "disable-log-requests", "disable-log-stats",
+    "uvicorn-log-level",
+    # Misc
+    "seed", "max-logprobs", "response-role",
+    "enable-auto-tool-choice", "tool-call-parser",
+    "disable-frontend-multiprocessing",
+    "otlp-traces-endpoint", "collect-detailed-traces",
+    "rope-scaling", "rope-theta",
+    "pipeline-parallel-size",
+}
+
+_PARAM_SUGGESTER = SuggestFromList(sorted(KNOWN_VLLM_PARAMS), case_sensitive=False)
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +206,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
 
             with Horizontal(classes="form-buttons"):
                 yield Button("Save", id="save-btn", variant="primary")
-                yield Button("Cancel", id="cancel-btn", variant="default")
+                yield Button("Close", id="cancel-btn", variant="default")
 
     def on_mount(self) -> None:
         if self._edit_mode and self._initial_config:
@@ -178,7 +218,12 @@ class ConfigFormScreen(ModalScreen[str | None]):
         row_id = f"param-row-{self._param_counter}"
         self._param_counter += 1
         row = Horizontal(
-            Input(value=key, placeholder="param-name", classes="param-key"),
+            Input(
+                value=key,
+                placeholder="param-name (Tab: autocomplete)",
+                suggester=_PARAM_SUGGESTER,
+                classes="param-key",
+            ),
             Input(value=value, placeholder="value", classes="param-value"),
             Button("x", classes="param-remove"),
             id=row_id,
@@ -231,6 +276,15 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 seen_keys.add(k)
                 extra_params[k] = v
 
+        # --- Warn about unknown params ---
+        unknown = [k for k in extra_params if k not in KNOWN_VLLM_PARAMS]
+        if unknown:
+            self.notify(
+                f"Unknown params (may be valid for your vLLM version): {', '.join(unknown)}",
+                severity="warning",
+                timeout=6,
+            )
+
         # --- Build and save ---
         cfg = Config(
             name=name,
@@ -240,14 +294,22 @@ class ConfigFormScreen(ModalScreen[str | None]):
         )
 
         save_config(cfg)
-        self.dismiss(name)
+        self.notify(f"Saved: {name}", severity="information")
+        self._saved_name = name
+
+        # New config → switch to edit mode after first save
+        if not self._edit_mode:
+            self._edit_mode = True
+            self._config_name = name
+            self.query_one("#name-input", Input).disabled = True
+            self.query_one("#form-title", Static).update(f"[b]Edit Config: {name}[/b]")
 
     @on(Button.Pressed, "#cancel-btn")
-    def _on_cancel(self, event: Button.Pressed) -> None:
-        self.dismiss(None)
+    def _on_close(self, event: Button.Pressed) -> None:
+        self.dismiss(getattr(self, "_saved_name", None))
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        self.dismiss(getattr(self, "_saved_name", None))
 
 
 # ---------------------------------------------------------------------------
