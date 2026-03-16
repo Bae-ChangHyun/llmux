@@ -186,21 +186,30 @@ pip install textual
 
 | 키 | 기능 |
 |:---|:---|
+| `Enter` | 선택한 프로필 액션 메뉴 (시작/중지/로그/편집/삭제) |
+| `w` | Quick Setup (모델→프로필+설정 자동생성) |
+| `n` | 새 프로필 생성 |
+| `s` | System 정보 (GPU/이미지/컨테이너) |
+| `c` | Config 목록 |
+
+<details>
+<summary>파워유저 단축키</summary>
+
+| 키 | 기능 |
+|:---|:---|
 | `u` | 선택한 프로필 시작 |
 | `d` | 선택한 프로필 중지 |
 | `l` | 실시간 로그 보기 |
-| `n` | 새 프로필 생성 |
 | `e` | 프로필 편집 |
 | `x` | 프로필 삭제 |
-| `w` | Quick Setup (모델→프로필+설정 자동생성) |
-| `c` | Config 목록 |
-| `s` | System 정보 (GPU/이미지/컨테이너) |
 | `r` | 새로고침 |
+
+</details>
 
 ### 주요 화면
 
 - **Dashboard** - 프로필 목록 + 실행 상태 (5초마다 자동갱신)
-- **Container Up** - 버전 선택 (Local/Official/Nightly/Dev/Custom) 후 시작
+- **Container Up** - 버전 선택 (Latest/Official/Nightly/Dev/Custom) 후 시작
 - **Log Viewer** - 실시간 컨테이너 로그 스트리밍
 - **System Info** - GPU 상태 (3초 갱신), Docker 이미지, 컨테이너 탭 뷰
 
@@ -446,7 +455,8 @@ enable-chunked-prefill: true
 > vLLM의 모든 CLI 인자를 YAML 형식으로 작성 가능
 > 참고: [vLLM Engine Arguments](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#command-line-arguments-for-the-server)
 
-TUI에서 **Config Mgmt → Edit Config**에서 커스텀 파라미터를 추가/수정/삭제할 수 있습니다.
+TUI에서 **Edit Config**으로 커스텀 파라미터를 추가/수정/삭제할 수 있습니다.
+파라미터 이름 입력 시 **Tab 자동완성**이 지원되며, 알 수 없는 파라미터는 저장 시 경고로 안내합니다.
 
 ### 추가 pip 패키지 설치
 
