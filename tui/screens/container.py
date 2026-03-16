@@ -148,9 +148,11 @@ class ContainerUpScreen(ModalScreen[str]):
 
     @on(Button.Pressed, "#cancel-btn")
     def _on_cancel(self) -> None:
+        self.workers.cancel_all()
         self.dismiss("")
 
     def action_cancel(self) -> None:
+        self.workers.cancel_all()
         self.dismiss("")
 
     @on(Button.Pressed, "#start-btn")
@@ -191,21 +193,27 @@ class ContainerUpScreen(ModalScreen[str]):
                 return
 
         # Show loading state
-        self.query_one("#loading-area").styles.display = "block"
-        self.query_one(".buttons").styles.display = "none"
+        try:
+            self.query_one("#loading-area").styles.display = "block"
+            self.query_one(".buttons").styles.display = "none"
+        except Exception:
+            return
 
         rc, output = await container_up(self.profile_name, use_dev=use_dev, tag=tag)
 
-        if rc == 0:
-            self.dismiss(f"Container '{self.profile_name}' started successfully.")
-        else:
-            self.query_one("#loading-area").styles.display = "none"
-            self.query_one(".buttons").styles.display = "block"
-            self.app.notify(
-                f"Failed to start container (rc={rc}):\n{output[:200]}",
-                severity="error",
-                timeout=8,
-            )
+        try:
+            if rc == 0:
+                self.dismiss(f"Container '{self.profile_name}' started successfully.")
+            else:
+                self.query_one("#loading-area").styles.display = "none"
+                self.query_one(".buttons").styles.display = "block"
+                self.app.notify(
+                    f"Failed to start container (rc={rc}):\n{output[:200]}",
+                    severity="error",
+                    timeout=8,
+                )
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

@@ -244,6 +244,7 @@ async def run_command(*args: str, timeout: float = 30) -> tuple[int, str]:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
+        await proc.wait()
         return -1, "Command timed out"
     return proc.returncode or 0, (stdout or b"").decode(errors="replace")
 
@@ -319,7 +320,10 @@ async def stream_container_logs(container_name: str):
             proc.kill()
         except ProcessLookupError:
             pass
-        await proc.wait()
+        try:
+            await proc.wait()
+        except asyncio.CancelledError:
+            pass
 
 
 # ---------------------------------------------------------------------------

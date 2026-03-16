@@ -142,7 +142,7 @@ class QuickSetupScreen(ModalScreen[str]):
         config = Config(
             name=safe_name,
             model=model,
-            gpu_memory_utilization=gpu_mem,
+            gpu_memory_utilization=gpu_mem or "0.9",
         )
         save_config(config)
 
