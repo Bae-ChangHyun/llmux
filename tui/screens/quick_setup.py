@@ -130,13 +130,14 @@ class QuickSetupScreen(ModalScreen[str]):
             list_profile_names, list_config_names,
         )
 
-        if safe_name in list_profile_names():
-            self.notify(f"Profile '{safe_name}' already exists", severity="error")
-            return
-
-        if safe_name in list_config_names():
-            self.notify(f"Config '{safe_name}' already exists", severity="error")
-            return
+        # Auto-resolve name collision by appending suffix
+        existing_profiles = list_profile_names()
+        existing_configs = list_config_names()
+        original_name = safe_name
+        suffix = 1
+        while safe_name in existing_profiles or safe_name in existing_configs:
+            suffix += 1
+            safe_name = f"{original_name}-{suffix}"
 
         # Save config
         config = Config(

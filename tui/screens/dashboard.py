@@ -115,10 +115,16 @@ class DashboardScreen(Screen):
         )
 
         for s in statuses:
-            if s.running:
-                status_cell = "[green]● running[/]"
-            else:
+            if not s.running:
                 status_cell = "[dim]○ stopped[/]"
+            elif s.health == "healthy":
+                status_cell = "[green]● healthy[/]"
+            elif s.health == "unhealthy":
+                status_cell = "[red]● unhealthy[/]"
+            elif s.health == "starting":
+                status_cell = "[yellow]● starting[/]"
+            else:
+                status_cell = "[green]● running[/]"
             lora_cell = "✓" if s.lora else ""
             model_short = s.model.split("/")[-1] if s.model else ""
             table.add_row(

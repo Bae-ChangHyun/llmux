@@ -21,6 +21,7 @@ from textual import work, on
 
 from tui.backend import (
     container_up,
+    load_profile,
     stream_container_logs,
 )
 
@@ -113,8 +114,21 @@ class ContainerUpScreen(ModalScreen[str]):
     def __init__(self, profile_name: str) -> None:
         super().__init__()
         self.profile_name = profile_name
+        self._profile = load_profile(profile_name)
 
     def compose(self) -> ComposeResult:
+        # UX: Guard - config must be set before starting
+        if not self._profile.config_name:
+            with Vertical(id="modal-dialog"):
+                yield Static("Start Container", id="title-label")
+                yield Static(
+                    f"Profile [b]{self.profile_name}[/b] has no config linked.\n"
+                    "Please edit the profile and select a config first.",
+                    id="profile-label",
+                )
+                with Horizontal(classes="buttons"):
+                    yield Button("Close", variant="default", id="cancel-btn")
+            return
         with Vertical(id="modal-dialog"):
             yield Static("Start Container", id="title-label")
             yield Static(f"Profile: [b]{self.profile_name}[/b]", id="profile-label")
@@ -196,7 +210,7 @@ class ContainerUpScreen(ModalScreen[str]):
         try:
             self.query_one("#loading-area").styles.display = "block"
             self.query_one(".buttons").styles.display = "none"
-        except Exception:
+        except Exception:  # Screen may already be dismissed
             return
 
         rc, output = await container_up(self.profile_name, use_dev=use_dev, tag=tag)
@@ -211,12 +225,14 @@ class ContainerUpScreen(ModalScreen[str]):
             else:
                 self.query_one("#loading-area").styles.display = "none"
                 self.query_one(".buttons").styles.display = "block"
+                # Show tail of output - vLLM errors are usually at the end
+                error_snippet = output[-500:] if len(output) > 500 else output
                 self.app.notify(
-                    f"Failed to start container (rc={rc}):\n{output[:200]}",
+                    f"Failed to start container (rc={rc}):\n{error_snippet}",
                     severity="error",
                     timeout=8,
                 )
-        except Exception:
+        except Exception:  # Screen may already be dismissed
             pass
 
 

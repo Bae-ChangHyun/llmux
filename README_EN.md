@@ -4,7 +4,7 @@
 
 # vLLM Compose
 
-**Multi-model vLLM serving, simplified.**
+**Juggling multiple LLMs? Manage them all from one terminal.**
 
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)](https://docs.docker.com/compose/)
 [![vLLM](https://img.shields.io/badge/vLLM-Latest-green?style=flat-square)](https://github.com/vllm-project/vllm)
@@ -15,9 +15,13 @@
 
 ---
 
-**Spin up models, swap GPUs, juggle ports, remember configs...**
+Testing Qwen, switching to Llama, spinning up DeepSeek, tearing it down...
 <br/>
-**Stop repeating yourself. Manage it all from one screen.**
+**Each model needs its own config, its own container, and you have to remember it all.**
+<br/><br/>
+vLLM Compose saves per-model settings as profiles.
+<br/>
+**Just pick one in the TUI and hit Enter to spin it up or down.**
 
 </div>
 
@@ -28,9 +32,8 @@
 ```bash
 git clone https://github.com/Bae-ChangHyun/vllm-compose.git && cd vllm-compose
 
-# Common settings (HuggingFace token, cache path)
+# Set HuggingFace token
 cat > .env.common << 'EOF'
-VLLM_VERSION=latest
 HF_TOKEN=your_token_here
 HF_CACHE_PATH=~/.cache/huggingface
 EOF
@@ -47,21 +50,21 @@ pip install textual && ./run.sh
 
 | | Manual | vLLM Compose |
 |:---|:---|:---|
-| **Switch models** | Repeat docker commands | One press in TUI |
-| **Manage configs** | Long CLI args by hand | YAML files + Tab autocomplete |
-| **GPU allocation** | Check nvidia-smi manually | Live GPU monitoring |
-| **Multi-model** | Edit compose files directly | Independent per-profile management |
-| **Versioning** | Track image tags manually | Latest/Official/Nightly selector |
+| **Switch models** | Repeat docker commands, re-enter configs | Select profile, press Enter |
+| **Manage configs** | Remember long CLI args every time | Per-model YAML + Tab autocomplete |
+| **Multi-model** | Edit compose files by hand | Independent profiles, run simultaneously |
+| **Monitor status** | Repeat docker ps, nvidia-smi | Real-time dashboard |
+| **Version selection** | Track image tags manually | Latest / Official / Nightly picker |
 
 <br/>
 
 ## Core Features
 
-**TUI** &mdash; Modern terminal UI for managing everything in one place
+**TUI** &mdash; Start, stop, view logs, edit configs — all from one screen
 
-**Profiles** &mdash; Per-model settings as `.env` files, instant switching
+**Profiles** &mdash; Save per-model settings independently, switch instantly
 
-**Config** &mdash; vLLM params as YAML, Tab autocomplete for 51 known parameters
+**Config** &mdash; Manage vLLM params as YAML, Tab autocomplete for 51 known parameters
 
 **Source Build** &mdash; Auto GPU detection Fast Build (10-30 min), fork support
 
