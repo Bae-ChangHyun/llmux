@@ -1660,11 +1660,6 @@ run_up() {
     # Build LoRA options and export as environment variable
     export LORA_OPTIONS=$(build_lora_options "$profile_path")
 
-    # Apply version override if specified (does not modify .env.common)
-    if [[ -n "$version_override" ]]; then
-        export VLLM_VERSION="$version_override"
-    fi
-
     cd "$SCRIPT_DIR"
 
     # Export profile path for container env injection via overrides
@@ -1732,6 +1727,7 @@ run_up() {
         # should_pull == "false": no pull (use local image as-is)
 
         echo -e "${BLUE}Using image:${NC} vllm/vllm-openai:$vllm_version"
+        export VLLM_VERSION="$vllm_version"
         docker compose -f docker-compose.yaml -f docker-compose.overrides.yaml --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d $pull_opt
     fi
 

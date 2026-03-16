@@ -4,7 +4,7 @@
 
 # vLLM Compose
 
-**vLLM 멀티 모델 서빙, 더 이상 복잡하지 않습니다.**
+**여러 LLM을 올렸다 내렸다, 터미널 하나로 관리하세요.**
 
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)](https://docs.docker.com/compose/)
 [![vLLM](https://img.shields.io/badge/vLLM-Latest-green?style=flat-square)](https://github.com/vllm-project/vllm)
@@ -15,9 +15,13 @@
 
 ---
 
-**모델 올리고, 내리고, GPU 번호 찾고, 포트 확인하고...**
+Qwen 테스트하다가 Llama로 바꾸고, DeepSeek 잠깐 띄웠다가 다시 내리고...
 <br/>
-**그 반복 작업, 이제 한 화면에서 끝내세요.**
+**모델마다 설정 파일 따로, 컨테이너 따로, 전부 기억하고 있어야 하죠.**
+<br/><br/>
+vLLM Compose는 모델별 설정을 프로필로 저장하고,
+<br/>
+**TUI에서 선택만 하면 바로 올리고 내릴 수 있습니다.**
 
 </div>
 
@@ -28,9 +32,8 @@
 ```bash
 git clone https://github.com/Bae-ChangHyun/vllm-compose.git && cd vllm-compose
 
-# 공통 설정 (HuggingFace 토큰, 캐시 경로)
+# HuggingFace 토큰 설정
 cat > .env.common << 'EOF'
-VLLM_VERSION=latest
 HF_TOKEN=your_token_here
 HF_CACHE_PATH=~/.cache/huggingface
 EOF
@@ -47,19 +50,19 @@ pip install textual && ./run.sh
 
 | | 직접 관리 | vLLM Compose |
 |:---|:---|:---|
-| **모델 전환** | docker 명령어 반복 입력 | TUI에서 Enter 한 번 |
-| **설정 관리** | 긴 CLI 인자 수동 입력 | YAML 파일 + Tab 자동완성 |
-| **GPU 할당** | nvidia-smi로 확인 후 수동 지정 | 실시간 GPU 모니터링 |
-| **멀티 모델** | compose 파일 직접 수정 | 프로필별 독립 관리 |
-| **버전 관리** | 이미지 태그 직접 관리 | Latest/Official/Nightly 선택 |
+| **모델 전환** | docker 명령어 반복, 설정 다시 입력 | 프로필 선택 후 Enter |
+| **설정 관리** | 긴 CLI 인자를 매번 기억 | 모델별 YAML + Tab 자동완성 |
+| **멀티 모델** | compose 파일 수동 편집 | 프로필별 독립 관리, 동시 실행 |
+| **상태 확인** | docker ps, nvidia-smi 반복 | 대시보드에서 실시간 확인 |
+| **버전 선택** | 이미지 태그 직접 관리 | Latest / Official / Nightly 선택 |
 
 <br/>
 
 ## 핵심 기능
 
-**TUI** &mdash; 모던 터미널 UI로 모든 작업을 한 화면에서
+**TUI** &mdash; 모델 시작/중지/로그/설정을 한 화면에서 관리
 
-**프로필** &mdash; 모델별 설정을 `.env` 파일로 독립 관리, 전환이 즉시
+**프로필** &mdash; 모델별 설정을 독립 저장, 언제든 한 번에 전환
 
 **Config** &mdash; vLLM 파라미터를 YAML로 관리, 51개 파라미터 Tab 자동완성
 
