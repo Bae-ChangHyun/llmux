@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "vllm-compose-tui"
 version = "0.1.0"
@@ -8,5 +12,8 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["tui"]
+
 [project.scripts]
-vllm-tui = "tui.app:main"
+vllm-compose = "tui.app:main"
