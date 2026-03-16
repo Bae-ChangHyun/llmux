@@ -153,7 +153,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
             with Horizontal(classes="form-buttons"):
                 yield Button("Save", id="save-btn", variant="primary")
-                yield Button("Cancel", id="cancel-btn", variant="default")
+                yield Button("Close", id="cancel-btn", variant="default")
 
     @on(Button.Pressed, "#save-btn")
     def _on_save(self, event: Button.Pressed) -> None:
@@ -212,14 +212,22 @@ class ProfileFormScreen(ModalScreen[str | None]):
             )
 
         save_profile(profile)
-        self.dismiss(name)
+        self.notify(f"Saved: {name}", severity="information")
+        self._saved_name = name
+
+        # New profile → switch to edit mode after first save
+        if not self._edit_mode:
+            self._edit_mode = True
+            self._profile = profile
+            self.query_one("#name-input", Input).disabled = True
+            self.query_one("#form-title", Static).update(f"[b]Edit Profile: {name}[/b]")
 
     @on(Button.Pressed, "#cancel-btn")
-    def _on_cancel(self, event: Button.Pressed) -> None:
-        self.dismiss(None)
+    def _on_close(self, event: Button.Pressed) -> None:
+        self.dismiss(getattr(self, "_saved_name", None))
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        self.dismiss(getattr(self, "_saved_name", None))
 
 
 # ---------------------------------------------------------------------------
