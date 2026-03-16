@@ -388,6 +388,11 @@ class ConfirmDeleteConfigScreen(ModalScreen[bool]):
 
     @on(Button.Pressed, "#confirm-yes")
     def _on_yes(self, event: Button.Pressed) -> None:
+        from tui.backend import save_profile
+        for profile_name in self._referencing:
+            p = load_profile(profile_name)
+            p.config_name = ""
+            save_profile(p)
         delete_config(self._config_name)
         self.app.notify(f"Deleted config: {self._config_name}")
         self.dismiss(True)
@@ -477,7 +482,7 @@ class ConfigListScreen(Screen):
             self._refresh_table()
 
     def action_go_back(self) -> None:
-        self.app.pop_screen()
+        self.app.switch_screen("dashboard")
 
     def _on_form_closed(self, result: str | None = None) -> None:
         self._refresh_table()
