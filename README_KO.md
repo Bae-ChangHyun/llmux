@@ -23,6 +23,10 @@ vLLM Compose는 모델별 설정을 프로필로 저장하고,
 <br/>
 **TUI에서 선택만 하면 바로 올리고 내릴 수 있습니다.**
 
+<br/>
+
+<img src="assets/demo.gif" alt="vLLM Compose Demo" width="700"/>
+
 </div>
 
 <br/>

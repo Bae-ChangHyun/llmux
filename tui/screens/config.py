@@ -128,10 +128,6 @@ class ConfigFormScreen(ModalScreen[str | None]):
         border: none;
         color: $error;
     }
-    ConfigFormScreen #add-param-btn {
-        margin-top: 1;
-        width: auto;
-    }
     ConfigFormScreen .form-buttons {
         height: 1;
         margin-top: 1;
