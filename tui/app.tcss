@@ -69,7 +69,11 @@ ModalScreen > Vertical {
     border: round $primary;
     padding: 1 2;
     width: 65;
-    max-height: 80%;
+    max-height: 90%;
+}
+
+ModalScreen VerticalScroll {
+    height: 1fr;
 }
 
 /* ── Forms ─────────────────────────────────────────────────────── */
@@ -112,29 +116,48 @@ ModalScreen > Vertical {
     margin-top: 1;
 }
 
-.form-buttons Button {
+/* ── Compact Buttons ──────────────────────────────────────────── */
+
+/* Base: all buttons gray */
+.form-buttons Button,
+.buttons Button {
     margin: 0 1;
     min-width: 14;
     height: 1;
     border: none;
+    background: $surface-lighten-1;
+    color: $text-muted;
+}
+
+/* Hover/focus: color by variant */
+.form-buttons Button.-primary:hover,
+.form-buttons Button.-primary:focus,
+.buttons Button.-primary:hover,
+.buttons Button.-primary:focus {
     background: $primary;
     color: $text;
     text-style: bold;
 }
 
-.form-buttons Button:hover {
-    background: $primary-lighten-1;
-}
-
-.form-buttons Button.-error-variant {
+.form-buttons Button.-error:hover,
+.form-buttons Button.-error:focus,
+.buttons Button.-error:hover,
+.buttons Button.-error:focus {
     background: $error;
+    color: $text;
+    text-style: bold;
 }
 
-.form-buttons Button.-default-variant {
-    background: $surface-lighten-1;
+/* Default variant hover — just brighten */
+.form-buttons Button:hover,
+.form-buttons Button:focus,
+.buttons Button:hover,
+.buttons Button:focus {
+    background: $surface-lighten-3;
+    color: $text;
 }
 
-/* Generic .buttons (used in modals) */
+/* Generic .buttons container */
 .buttons {
     layout: horizontal;
     height: 1;
@@ -142,26 +165,19 @@ ModalScreen > Vertical {
     margin-top: 1;
 }
 
-.buttons Button {
-    margin: 0 1;
-    min-width: 14;
+/* Add Parameter button (config screen) */
+#add-param-btn {
     height: 1;
     border: none;
+    background: $surface-lighten-2;
+    color: $text-muted;
+    width: auto;
+    margin-top: 1;
+}
+#add-param-btn:hover,
+#add-param-btn:focus {
     background: $primary;
     color: $text;
-    text-style: bold;
-}
-
-.buttons Button:hover {
-    background: $primary-lighten-1;
-}
-
-.buttons Button.-error-variant {
-    background: $error;
-}
-
-.buttons Button.-default-variant {
-    background: $surface-lighten-1;
 }
 
 /* ── Config / System sub-screens ─────────────────────────────── */
