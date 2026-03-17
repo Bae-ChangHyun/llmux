@@ -18,7 +18,6 @@ from tui.backend import (
     delete_profile,
     list_config_names,
     validate_name as _validate_name,
-    check_port_conflict,
 )
 
 
@@ -85,6 +84,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
     }
     ProfileFormScreen .form-buttons Button {
         margin: 0 1;
+        min-width: 16;
     }
     """
 
@@ -229,16 +229,6 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 self.notify("Tensor Parallel must be a positive integer.", severity="error")
                 return
 
-        # --- Port conflict check ---
-        if port:
-            check_profile = Profile(name=name, port=port)
-            conflict = check_port_conflict(check_profile)
-            if conflict:
-                self.notify(
-                    f"Warning: Port {port} is already used by profile '{conflict}'.",
-                    severity="warning",
-                )
-
         # --- Build and save ---
         if self._edit_mode and self._profile is not None:
             profile = self._profile
@@ -311,6 +301,7 @@ class ProfileDeleteScreen(ModalScreen[bool]):
     }
     ProfileDeleteScreen .form-buttons Button {
         margin: 0 1;
+        min-width: 16;
     }
     """
 
