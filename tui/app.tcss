@@ -107,13 +107,61 @@ ModalScreen > Vertical {
 
 .form-buttons {
     layout: horizontal;
-    height: 3;
+    height: 1;
     align: center middle;
     margin-top: 1;
 }
 
 .form-buttons Button {
     margin: 0 1;
+    min-width: 14;
+    height: 1;
+    border: none;
+    background: $primary;
+    color: $text;
+    text-style: bold;
+}
+
+.form-buttons Button:hover {
+    background: $primary-lighten-1;
+}
+
+.form-buttons Button.-error-variant {
+    background: $error;
+}
+
+.form-buttons Button.-default-variant {
+    background: $surface-lighten-1;
+}
+
+/* Generic .buttons (used in modals) */
+.buttons {
+    layout: horizontal;
+    height: 1;
+    align: center middle;
+    margin-top: 1;
+}
+
+.buttons Button {
+    margin: 0 1;
+    min-width: 14;
+    height: 1;
+    border: none;
+    background: $primary;
+    color: $text;
+    text-style: bold;
+}
+
+.buttons Button:hover {
+    background: $primary-lighten-1;
+}
+
+.buttons Button.-error-variant {
+    background: $error;
+}
+
+.buttons Button.-default-variant {
+    background: $surface-lighten-1;
 }
 
 /* ── Config / System sub-screens ─────────────────────────────── */
