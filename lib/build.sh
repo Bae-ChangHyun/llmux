@@ -18,6 +18,12 @@ clone_or_update_vllm() {
     local branch=${2:-main}
     local vllm_src_dir="$SCRIPT_DIR/.vllm-src"
 
+    # Guard against empty path in rm -rf
+    if [[ -z "$vllm_src_dir" || "$vllm_src_dir" == "/" ]]; then
+        echo -e "${RED}Error: Invalid vLLM source directory${NC}"
+        return 1
+    fi
+
     if [[ -d "$vllm_src_dir/.git" ]]; then
         echo -e "${BLUE}Updating existing vLLM source...${NC}"
 
