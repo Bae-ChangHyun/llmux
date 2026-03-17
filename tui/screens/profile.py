@@ -7,7 +7,7 @@ import re
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import ModalScreen
-from textual.widgets import Button, Static, Label, Input, Select, Switch, Checkbox
+from textual.widgets import Button, Static, Label, Input, Select, Switch
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual import on
 
@@ -100,74 +100,74 @@ class ProfileFormScreen(ModalScreen[str | None]):
         with Vertical():
             yield Static(f"[b]{title}[/b]", id="form-title")
 
-            with Horizontal(classes="form-row"):
-                yield Label("Profile Name")
-                yield Input(
-                    value=p.name if p else "",
-                    placeholder="my-profile",
-                    id="name-input",
-                    disabled=self._edit_mode,
-                )
-
-            with Horizontal(classes="form-row"):
-                yield Label("Container Name")
-                yield Input(
-                    value=p.container_name if p else "",
-                    placeholder="container-name",
-                    id="container-input",
-                )
-
-            with Horizontal(classes="form-row"):
-                yield Label("Port")
-                yield Input(
-                    value=p.port if p else "",
-                    placeholder="8000",
-                    id="port-input",
-                )
-
-            with Horizontal(classes="form-row"):
-                yield Label("GPU ID")
-                yield Input(
-                    value=p.gpu_id if p else "",
-                    placeholder="0",
-                    id="gpu-input",
-                )
-
-            with Horizontal(classes="form-row"):
-                yield Label("Tensor Parallel")
-                yield Input(
-                    value=p.tensor_parallel if p else "",
-                    placeholder="1",
-                    id="tp-input",
-                )
-
-            with Horizontal(classes="form-row"):
-                yield Label("Config")
-                select_kwargs: dict = dict(
-                    prompt="Select config",
-                    allow_blank=True,
-                    id="config-select",
-                )
-                if p and p.config_name and p.config_name in configs:
-                    select_kwargs["value"] = p.config_name
-                yield Select(config_options, **select_kwargs)
-
-            with Horizontal(classes="form-row"):
-                yield Label("Enable LoRA")
-                yield Switch(
-                    value=(p.enable_lora == "true") if p else False,
-                    id="lora-switch",
-                )
-
-            # Show env_vars if editing and they exist
-            if self._edit_mode and p and p.env_vars:
-                with Vertical(id="env-vars-section"):
-                    yield Static(
-                        f"Extra Environment Variables ({len(p.env_vars)})",
-                        id="env-vars-title",
+            with VerticalScroll():
+                with Horizontal(classes="form-row"):
+                    yield Label("Profile Name")
+                    yield Input(
+                        value=p.name if p else "",
+                        placeholder="my-profile",
+                        id="name-input",
+                        disabled=self._edit_mode,
                     )
-                    for k, v in p.env_vars.items():
-                        yield Static(f"[dim]{k}={v}[/dim]", classes="env-var-line")
+
+                with Horizontal(classes="form-row"):
+                    yield Label("Container Name")
+                    yield Input(
+                        value=p.container_name if p else "",
+                        placeholder="container-name",
+                        id="container-input",
+                    )
+
+                with Horizontal(classes="form-row"):
+                    yield Label("Port")
+                    yield Input(
+                        value=p.port if p else "",
+                        placeholder="8000",
+                        id="port-input",
+                    )
+
+                with Horizontal(classes="form-row"):
+                    yield Label("GPU ID")
+                    yield Input(
+                        value=p.gpu_id if p else "",
+                        placeholder="0",
+                        id="gpu-input",
+                    )
+
+                with Horizontal(classes="form-row"):
+                    yield Label("Tensor Parallel")
+                    yield Input(
+                        value=p.tensor_parallel if p else "",
+                        placeholder="1",
+                        id="tp-input",
+                    )
+
+                with Horizontal(classes="form-row"):
+                    yield Label("Config")
+                    select_kwargs: dict = dict(
+                        prompt="Select config",
+                        allow_blank=True,
+                        id="config-select",
+                    )
+                    if p and p.config_name and p.config_name in configs:
+                        select_kwargs["value"] = p.config_name
+                    yield Select(config_options, **select_kwargs)
+
+                with Horizontal(classes="form-row"):
+                    yield Label("Enable LoRA")
+                    yield Switch(
+                        value=(p.enable_lora == "true") if p else False,
+                        id="lora-switch",
+                    )
+
+                with Horizontal(classes="form-row"):
+                    yield Label("Extra Pip Packages")
+                    extra_pkgs = (p.env_vars.get("EXTRA_PIP_PACKAGES", "") if p else "")
+                    yield Input(
+                        value=extra_pkgs,
+                        placeholder="e.g. flash-attn bitsandbytes",
+                        id="extra-pip-input",
+                    )
 
             with Horizontal(classes="form-buttons"):
                 yield Button("Save", id="save-btn", variant="primary")
@@ -225,6 +225,8 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 self.notify("Tensor Parallel must be a positive integer.", severity="error")
                 return
 
+        extra_pip = self.query_one("#extra-pip-input", Input).value.strip()
+
         # --- Build and save ---
         if self._edit_mode and self._profile is not None:
             profile = self._profile
@@ -244,6 +246,12 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 config_name=config_name,
                 enable_lora="true" if lora else "false",
             )
+
+        # Handle EXTRA_PIP_PACKAGES
+        if extra_pip:
+            profile.env_vars["EXTRA_PIP_PACKAGES"] = extra_pip
+        else:
+            profile.env_vars.pop("EXTRA_PIP_PACKAGES", None)
 
         save_profile(profile)
         self.notify(f"Saved: {name}", severity="information")
@@ -304,14 +312,16 @@ class ProfileDeleteScreen(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static(
-                f"Delete profile [b]{self._profile_name}[/b]?",
-                id="delete-message",
-            )
             if self._profile.config_name:
-                yield Checkbox(
-                    f"Also delete config: {self._profile.config_name}",
-                    id="delete-config-checkbox",
+                yield Static(
+                    f"Delete [b]{self._profile_name}[/b]?\n"
+                    f"(profile + config: {self._profile.config_name})",
+                    id="delete-message",
+                )
+            else:
+                yield Static(
+                    f"Delete profile [b]{self._profile_name}[/b]?",
+                    id="delete-message",
                 )
             with Horizontal(classes="form-buttons"):
                 yield Button("Delete", id="delete-btn", variant="error")
@@ -319,16 +329,12 @@ class ProfileDeleteScreen(ModalScreen[bool]):
 
     @on(Button.Pressed, "#delete-btn")
     def _on_delete(self, event: Button.Pressed) -> None:
-        also_delete_config = False
-        try:
-            also_delete_config = self.query_one("#delete-config-checkbox", Checkbox).value
-        except Exception:  # No checkbox (no config linked)
-            pass
-        delete_profile(self._profile_name, delete_config=also_delete_config)
-        msg = f"Deleted profile: {self._profile_name}"
-        if also_delete_config:
-            msg += f" and config: {self._profile.config_name}"
-        self.app.notify(msg)
+        has_config = bool(self._profile.config_name)
+        delete_profile(self._profile_name, delete_config=has_config)
+        if has_config:
+            self.app.notify(f"Deleted: {self._profile_name} + config: {self._profile.config_name}")
+        else:
+            self.app.notify(f"Deleted profile: {self._profile_name}")
         self.dismiss(True)
 
     @on(Button.Pressed, "#cancel-btn")

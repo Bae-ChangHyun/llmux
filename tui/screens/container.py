@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen, ModalScreen
 from textual.widgets import (
     Button,
@@ -20,22 +20,25 @@ from textual.widgets import (
 from textual import work, on
 
 from tui.backend import (
-    container_up,
     check_port_conflict,
     load_profile,
+    stream_container_up,
     stream_container_logs,
+    get_local_latest_tag,
+    get_dockerhub_release_version,
+    get_dockerhub_nightly_date,
 )
 
 
 # ---------------------------------------------------------------------------
-# Version option constants
+# Version option IDs (stable keys for logic, labels updated dynamically)
 # ---------------------------------------------------------------------------
 
-VERSION_LATEST = "Latest"
-VERSION_OFFICIAL = "Official  (vllm/vllm-openai:latest)"
-VERSION_NIGHTLY = "Nightly  (vllm/vllm-openai:nightly)"
-VERSION_DEV_BUILD = "Dev Build  (vllm-dev)"
-VERSION_CUSTOM_TAG = "Custom Tag"
+VER_LOCAL = "local_latest"
+VER_OFFICIAL = "official"
+VER_NIGHTLY = "nightly"
+VER_DEV = "dev_build"
+VER_CUSTOM = "custom_tag"
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +49,10 @@ VERSION_CUSTOM_TAG = "Custom Tag"
 class ContainerUpScreen(ModalScreen[str]):
     """Modal dialog to start a container with version selection."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("q", "cancel", "Quit", show=False),
+    ]
 
     DEFAULT_CSS = """
     ContainerUpScreen {
@@ -57,9 +63,8 @@ class ContainerUpScreen(ModalScreen[str]):
         background: $surface;
         border: round $primary;
         padding: 1 2;
-        width: 60;
-        max-height: 80%;
-        height: auto;
+        width: 65;
+        max-height: 90%;
     }
 
     ContainerUpScreen #title-label {
@@ -67,11 +72,9 @@ class ContainerUpScreen(ModalScreen[str]):
         color: $primary;
         width: 100%;
         text-align: center;
-        margin-bottom: 1;
     }
 
     ContainerUpScreen #profile-label {
-        margin-bottom: 1;
         color: $text-muted;
     }
 
@@ -81,7 +84,6 @@ class ContainerUpScreen(ModalScreen[str]):
     }
 
     ContainerUpScreen RadioSet {
-        margin-bottom: 1;
         height: auto;
     }
 
@@ -96,14 +98,19 @@ class ContainerUpScreen(ModalScreen[str]):
         margin-top: 1;
     }
 
-    ContainerUpScreen #loading-area {
-        height: auto;
-        align: center middle;
+    ContainerUpScreen #startup-area {
         display: none;
+        height: 1fr;
     }
 
-    ContainerUpScreen #loading-area LoadingIndicator {
-        height: 3;
+    ContainerUpScreen #startup-status {
+        height: 1;
+        margin-bottom: 0;
+    }
+
+    ContainerUpScreen #startup-log {
+        height: 1fr;
+        border: round $primary 40%;
     }
     """
 
@@ -128,29 +135,70 @@ class ContainerUpScreen(ModalScreen[str]):
         with Vertical(id="modal-dialog"):
             yield Static("Start Container", id="title-label")
             yield Static(f"Profile: [b]{self.profile_name}[/b]", id="profile-label")
-            yield Label("Version", id="version-label")
-            with RadioSet(id="version-radio"):
-                yield RadioButton(VERSION_LATEST, value=True)
-                yield RadioButton(VERSION_OFFICIAL)
-                yield RadioButton(VERSION_NIGHTLY)
-                yield RadioButton(VERSION_DEV_BUILD)
-                yield RadioButton(VERSION_CUSTOM_TAG)
-            yield Input(
-                placeholder="Enter custom image tag...",
-                id="custom-tag-input",
-            )
-            with Vertical(id="loading-area"):
-                yield LoadingIndicator()
-                yield Static("Starting container...", id="loading-text")
+            with VerticalScroll(id="version-scroll"):
+                yield Label("Version", id="version-label")
+                with RadioSet(id="version-radio"):
+                    yield RadioButton("Local Latest  (loading...)", id=VER_LOCAL, value=True)
+                    yield RadioButton("Official Release  (loading...)", id=VER_OFFICIAL)
+                    yield RadioButton("Nightly  (loading...)", id=VER_NIGHTLY)
+                    yield RadioButton("Dev Build  (vllm-dev)", id=VER_DEV)
+                    yield RadioButton("Custom Tag", id=VER_CUSTOM)
+                yield Input(
+                    placeholder="Enter custom image tag...",
+                    id="custom-tag-input",
+                )
+            with Vertical(id="startup-area"):
+                yield Static("", id="startup-status")
+                yield RichLog(highlight=True, auto_scroll=True, id="startup-log")
             with Horizontal(classes="buttons"):
                 yield Button("Start", variant="primary", id="start-btn")
                 yield Button("Cancel", variant="default", id="cancel-btn")
+
+    def on_mount(self) -> None:
+        if self._profile.config_name:
+            self._fetch_version_info()
+
+    @work(exclusive=False)
+    async def _fetch_version_info(self) -> None:
+        """Fetch version info and update radio button labels."""
+        try:
+            radio_set = self.query_one("#version-radio", RadioSet)
+        except Exception:
+            return
+
+        # Local latest
+        local_tag = await get_local_latest_tag()
+        try:
+            btn = radio_set.query_one(f"#{VER_LOCAL}", RadioButton)
+            if local_tag == "none":
+                btn.label = "Local Latest  (no images)"
+            else:
+                btn.label = f"Local Latest  ({local_tag})"
+        except Exception:
+            pass
+
+        # Official release
+        release_ver = await get_dockerhub_release_version()
+        try:
+            btn = radio_set.query_one(f"#{VER_OFFICIAL}", RadioButton)
+            btn.label = f"Official Release  ({release_ver})"
+        except Exception:
+            pass
+
+        # Nightly
+        nightly_date = await get_dockerhub_nightly_date()
+        try:
+            btn = radio_set.query_one(f"#{VER_NIGHTLY}", RadioButton)
+            btn.label = f"Nightly  ({nightly_date})"
+        except Exception:
+            pass
 
     @on(RadioSet.Changed, "#version-radio")
     def _on_version_changed(self, event: RadioSet.Changed) -> None:
         """Show/hide custom tag input based on radio selection."""
         custom_input = self.query_one("#custom-tag-input", Input)
-        if event.pressed.label.plain == VERSION_CUSTOM_TAG:
+        pressed = event.pressed
+        if pressed and pressed.id == VER_CUSTOM:
             custom_input.styles.display = "block"
             custom_input.focus()
         else:
@@ -172,31 +220,23 @@ class ContainerUpScreen(ModalScreen[str]):
     @work(exclusive=True)
     async def _do_start(self) -> None:
         """Start the container in a background worker."""
-        # Determine version parameters from radio selection
+        # Determine version from radio selection
         radio_set = self.query_one("#version-radio", RadioSet)
-        pressed_index = radio_set.pressed_index
-        labels = [
-            VERSION_LATEST,
-            VERSION_OFFICIAL,
-            VERSION_NIGHTLY,
-            VERSION_DEV_BUILD,
-            VERSION_CUSTOM_TAG,
-        ]
-        selected = labels[pressed_index] if 0 <= pressed_index < len(labels) else VERSION_LATEST
+        pressed = radio_set.pressed_button
+        selected_id = pressed.id if pressed else VER_LOCAL
 
         use_dev = False
         tag = ""
 
-        if selected == VERSION_LATEST:
-            # No extra args - uses local latest image
+        if selected_id == VER_LOCAL:
             pass
-        elif selected == VERSION_OFFICIAL:
+        elif selected_id == VER_OFFICIAL:
             tag = "latest"
-        elif selected == VERSION_NIGHTLY:
+        elif selected_id == VER_NIGHTLY:
             tag = "nightly"
-        elif selected == VERSION_DEV_BUILD:
+        elif selected_id == VER_DEV:
             use_dev = True
-        elif selected == VERSION_CUSTOM_TAG:
+        elif selected_id == VER_CUSTOM:
             tag = self.query_one("#custom-tag-input", Input).value.strip()
             if not tag:
                 self.app.notify("Please enter a custom tag.", severity="error")
@@ -212,32 +252,41 @@ class ContainerUpScreen(ModalScreen[str]):
             )
             return
 
-        # Show loading state
+        # Switch to startup log view
         try:
-            self.query_one("#loading-area").styles.display = "block"
+            self.query_one("#startup-area").styles.display = "block"
+            self.query_one("#version-scroll").styles.display = "none"
             self.query_one(".buttons").styles.display = "none"
+            status = self.query_one("#startup-status", Static)
+            log_widget = self.query_one("#startup-log", RichLog)
+            status.update("[bold]Starting container...[/bold]")
         except Exception:  # Screen may already be dismissed
             return
 
-        rc, output = await container_up(self.profile_name, use_dev=use_dev, tag=tag)
+        # Stream run.sh output in real-time
+        rc = -1
+        async for msg_type, data in stream_container_up(self.profile_name, use_dev=use_dev, tag=tag):
+            if msg_type == "log":
+                try:
+                    log_widget.write(data)
+                except Exception:
+                    pass
+            elif msg_type == "rc":
+                rc = data
 
         try:
+            # Show close button for both success and failure
+            self.query_one("#start-btn").styles.display = "none"
+            self.query_one(".buttons").styles.display = "block"
             if rc == 0:
-                self.app.notify(
-                    f"Container '{self.profile_name}' started successfully.",
-                    severity="information",
-                )
-                self.dismiss("")
+                status.update("[green bold]Container started. Logs: (Esc/q to close)[/green bold]")
+                try:
+                    async for line in stream_container_logs(self._profile.container_name):
+                        log_widget.write(line)
+                except Exception:
+                    pass
             else:
-                self.query_one("#loading-area").styles.display = "none"
-                self.query_one(".buttons").styles.display = "block"
-                # Show tail of output - vLLM errors are usually at the end
-                error_snippet = output[-500:] if len(output) > 500 else output
-                self.app.notify(
-                    f"Failed to start container (rc={rc}):\n{error_snippet}",
-                    severity="error",
-                    timeout=8,
-                )
+                status.update(f"[red bold]Failed to start (rc={rc})[/red bold]")
         except Exception:  # Screen may already be dismissed
             pass
 
