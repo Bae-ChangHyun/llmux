@@ -43,14 +43,9 @@ class QuickSetupScreen(ModalScreen[str]):
         margin-bottom: 0;
     }
     QuickSetupScreen .buttons {
-        layout: horizontal;
-        height: 3;
+        height: 1;
         align: center middle;
         margin-top: 1;
-    }
-    QuickSetupScreen .buttons Button {
-        margin: 0 1;
-        min-width: 16;
     }
     """
 

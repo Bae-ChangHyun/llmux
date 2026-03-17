@@ -78,13 +78,9 @@ class ProfileFormScreen(ModalScreen[str | None]):
         margin-left: 2;
     }
     ProfileFormScreen .form-buttons {
-        height: auto;
+        height: 1;
         margin-top: 1;
         align: center middle;
-    }
-    ProfileFormScreen .form-buttons Button {
-        margin: 0 1;
-        min-width: 16;
     }
     """
 
@@ -295,13 +291,9 @@ class ProfileDeleteScreen(ModalScreen[bool]):
         margin-bottom: 1;
     }
     ProfileDeleteScreen .form-buttons {
-        height: auto;
+        height: 1;
         margin-top: 1;
         align: center middle;
-    }
-    ProfileDeleteScreen .form-buttons Button {
-        margin: 0 1;
-        min-width: 16;
     }
     """
 
