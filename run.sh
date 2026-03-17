@@ -211,7 +211,14 @@ case "$1" in
         ;;
     *)
         PROFILE_NAME=$1
-        ACTION=$2
+        ACTION=${2:-}
+
+        if [[ -z "$ACTION" ]]; then
+            echo -e "${RED}Error: No action specified${NC}"
+            echo "Usage: ./run.sh <profile> <up|down|logs|status>"
+            exit 1
+        fi
+
         shift 2
 
         PROFILE_PATH=$(find_profile "$PROFILE_NAME")
