@@ -21,6 +21,7 @@ from textual import work, on
 
 from tui.backend import (
     container_up,
+    check_port_conflict,
     load_profile,
     stream_container_logs,
 )
@@ -98,6 +99,7 @@ class ContainerUpScreen(ModalScreen[str]):
 
     ContainerUpScreen .buttons Button {
         margin: 0 1;
+        min-width: 16;
     }
 
     ContainerUpScreen #loading-area {
@@ -205,6 +207,16 @@ class ContainerUpScreen(ModalScreen[str]):
             if not tag:
                 self.app.notify("Please enter a custom tag.", severity="error")
                 return
+
+        # Check port conflict before starting
+        conflict = check_port_conflict(self._profile)
+        if conflict:
+            self.app.notify(
+                f"Port {self._profile.port} is already used by profile '{conflict}'.",
+                severity="error",
+                timeout=5,
+            )
+            return
 
         # Show loading state
         try:
