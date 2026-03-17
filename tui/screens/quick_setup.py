@@ -50,6 +50,7 @@ class QuickSetupScreen(ModalScreen[str]):
     }
     QuickSetupScreen .buttons Button {
         margin: 0 1;
+        min-width: 16;
     }
     """
 
