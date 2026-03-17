@@ -23,6 +23,10 @@ vLLM Compose saves per-model settings as profiles.
 <br/>
 **Just pick one in the TUI and hit Enter to spin it up or down.**
 
+<br/>
+
+<img src="assets/demo.gif" alt="vLLM Compose Demo" width="700"/>
+
 </div>
 
 <br/>

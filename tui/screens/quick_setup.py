@@ -7,7 +7,7 @@ import re
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, Horizontal
+from textual.containers import Vertical, Horizontal, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static, Switch
 
@@ -52,17 +52,18 @@ class QuickSetupScreen(ModalScreen[str]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static("Quick Setup", classes="title")
-            yield Label("HuggingFace Model (e.g., meta-llama/Llama-3-8B)")
-            yield Input(placeholder="org/model-name", id="model-input")
-            yield Label("GPU ID")
-            yield Input(placeholder="0", value="0", id="gpu-input")
-            yield Label("Port")
-            yield Input(placeholder="8000", value="8000", id="port-input")
-            yield Label("GPU Memory Utilization")
-            yield Input(placeholder="0.9", value="0.9", id="gpu-mem-input")
-            with Horizontal():
-                yield Label("Enable LoRA")
-                yield Switch(id="lora-switch")
+            with VerticalScroll():
+                yield Label("HuggingFace Model (e.g., meta-llama/Llama-3-8B)")
+                yield Input(placeholder="org/model-name", id="model-input")
+                yield Label("GPU ID")
+                yield Input(placeholder="0", value="0", id="gpu-input")
+                yield Label("Port")
+                yield Input(placeholder="8000", value="8000", id="port-input")
+                yield Label("GPU Memory Utilization")
+                yield Input(placeholder="0.9", value="0.9", id="gpu-mem-input")
+                with Horizontal():
+                    yield Label("Enable LoRA")
+                    yield Switch(id="lora-switch")
             with Horizontal(classes="buttons"):
                 yield Button("Create", variant="primary", id="create-btn")
                 yield Button("Cancel", id="cancel-btn")

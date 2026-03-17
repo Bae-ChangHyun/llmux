@@ -331,6 +331,32 @@ async def container_up(profile_name: str, use_dev: bool = False, tag: str = "") 
     return await run_sh(*args, timeout=600)
 
 
+async def stream_container_up(profile_name: str, use_dev: bool = False, tag: str = ""):
+    """Async generator that streams run.sh output line by line, then yields return code."""
+    args = [str(RUN_SH), profile_name, "up"]
+    if use_dev:
+        args.append("--dev")
+    if tag:
+        args.extend(["--tag", tag])
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            yield ("log", line.decode(errors="replace").rstrip("\n"))
+        await proc.wait()
+        yield ("rc", proc.returncode or 0)
+    except asyncio.CancelledError:
+        proc.kill()
+        await proc.wait()
+        raise
+
+
 async def container_down(profile_name: str) -> tuple[int, str]:
     return await run_sh(profile_name, "down", timeout=30)
 
@@ -405,3 +431,64 @@ async def get_docker_images(repo: str = "vllm/vllm-openai") -> list[DockerImage]
 
 async def get_dev_images() -> list[DockerImage]:
     return await get_docker_images("vllm-dev")
+
+
+# ---------------------------------------------------------------------------
+# Version info for container start screen
+# ---------------------------------------------------------------------------
+
+async def get_local_latest_tag() -> str:
+    """Get the latest local vllm/vllm-openai image tag (excluding nightly)."""
+    rc, out = await run_command(
+        "docker", "images", "vllm/vllm-openai",
+        "--format", "{{.Tag}}",
+        timeout=10,
+    )
+    if rc != 0 or not out.strip():
+        return "none"
+    for tag in out.strip().splitlines():
+        tag = tag.strip()
+        if tag and tag != "<none>":
+            return tag
+    return "none"
+
+
+async def get_dockerhub_release_version() -> str:
+    """Get latest release version from Docker Hub (v0.x.x format)."""
+    import json
+    rc, out = await run_command(
+        "curl", "-s", "--connect-timeout", "5", "--max-time", "10",
+        "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags?page_size=100",
+        timeout=15,
+    )
+    if rc != 0 or not out.strip():
+        return "unknown"
+    try:
+        data = json.loads(out)
+        for result in data.get("results", []):
+            name = result.get("name", "")
+            if re.match(r"^v\d+\.\d+\.\d+", name):
+                return name
+    except (json.JSONDecodeError, KeyError):
+        pass
+    return "unknown"
+
+
+async def get_dockerhub_nightly_date() -> str:
+    """Get last updated date of the nightly tag from Docker Hub."""
+    import json
+    rc, out = await run_command(
+        "curl", "-s", "--connect-timeout", "5", "--max-time", "10",
+        "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags/nightly",
+        timeout=15,
+    )
+    if rc != 0 or not out.strip():
+        return "unknown"
+    try:
+        data = json.loads(out)
+        last_updated = data.get("last_updated", "")
+        if last_updated:
+            return last_updated.split("T")[0]
+    except (json.JSONDecodeError, KeyError):
+        pass
+    return "unknown"
