@@ -18,7 +18,7 @@ services:
       - "${VLLM_PORT}:8000"
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
-      - TZ=Asia/Seoul
+      - TZ=${TZ:-UTC}
       - NVIDIA_VISIBLE_DEVICES=${GPU_ID}
       - VLLM_ENABLE_V1_MULTIPROCESSING=0
       - VLLM_WORKER_MULTIPROC_METHOD=spawn
