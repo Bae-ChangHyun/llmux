@@ -11,7 +11,7 @@
 [![NVIDIA](https://img.shields.io/badge/NVIDIA-GPU-76B900?style=flat-square&logo=nvidia)](https://www.nvidia.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
-**English** | [한국어](README_EN.md)
+**English** | [한국어](README_KO.md)
 
 ---
 
@@ -35,7 +35,7 @@ git clone https://github.com/Bae-ChangHyun/vllm-compose.git && cd vllm-compose
 # Set HuggingFace token
 cat > .env.common << 'EOF'
 HF_TOKEN=your_token_here
-HF_CACHE_PATH=~/.cache/huggingface
+HF_CACHE_PATH=/home/your-username/.cache/huggingface  # absolute path required
 EOF
 
 # Launch (auto-installs dependencies)

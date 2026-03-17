@@ -35,7 +35,7 @@ git clone https://github.com/Bae-ChangHyun/vllm-compose.git && cd vllm-compose
 # HuggingFace 토큰 설정
 cat > .env.common << 'EOF'
 HF_TOKEN=your_token_here
-HF_CACHE_PATH=~/.cache/huggingface
+HF_CACHE_PATH=/home/your-username/.cache/huggingface  # 절대 경로 필수
 EOF
 
 # 실행 (의존성 자동 설치)
