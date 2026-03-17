@@ -133,12 +133,9 @@ class ConfigFormScreen(ModalScreen[str | None]):
         width: auto;
     }
     ConfigFormScreen .form-buttons {
-        height: auto;
+        height: 1;
         margin-top: 1;
         align: center middle;
-    }
-    ConfigFormScreen .form-buttons Button {
-        margin: 0 1;
     }
     ConfigFormScreen VerticalScroll {
         height: 1fr;
