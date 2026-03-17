@@ -94,15 +94,16 @@ EOF
 
     # Move both files - if either fails, clean up both
     local err=""
-    cp "$tmp_config" "$config_path" 2>/tmp/vllm-setup-err.log || err="config"
+    local err_log=$(create_temp)
+    cp "$tmp_config" "$config_path" 2>"$err_log" || err="config"
     if [[ -z "$err" ]]; then
-        cp "$tmp_profile" "$profile_path" 2>>/tmp/vllm-setup-err.log || err="profile"
+        cp "$tmp_profile" "$profile_path" 2>>"$err_log" || err="profile"
     fi
 
     if [[ -n "$err" ]]; then
         # Rollback: remove both if either failed
         rm -f "$config_path" "$profile_path"
-        local err_detail=$(cat /tmp/vllm-setup-err.log 2>/dev/null)
+        local err_detail=$(cat "$err_log" 2>/dev/null)
         tui_msgbox "Error" "Failed to create $err file.\n\n${err_detail:-Check directory permissions.}\n\nTry: sudo chown \$USER:$USER $SCRIPT_DIR/config/"
     else
         tui_msgbox "Success" "Created:\n- Config: config/$safe_name.yaml\n- Profile: profiles/$safe_name.env\n\nStart with: ./run.sh $safe_name up"
