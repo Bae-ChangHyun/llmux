@@ -243,7 +243,7 @@ class ContainerUpScreen(ModalScreen[str]):
                 return
 
         # Check port conflict before starting
-        conflict = check_port_conflict(self._profile)
+        conflict = await check_port_conflict(self._profile)
         if conflict:
             self.app.notify(
                 f"Port {self._profile.port} is already used by profile '{conflict}'.",
