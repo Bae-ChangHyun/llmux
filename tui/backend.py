@@ -311,13 +311,16 @@ async def get_container_statuses() -> list[ContainerStatus]:
     return statuses
 
 
-def check_port_conflict(profile: Profile) -> str | None:
-    """Check if a port is already used by another profile. Returns conflicting profile name or None."""
+async def check_port_conflict(profile: Profile) -> str | None:
+    """Check if the port is used by a *running* container from another profile."""
+    rc, out = await run_command("docker", "ps", "--format", "{{.Names}}", timeout=10)
+    running_names = set(out.strip().splitlines()) if rc == 0 else set()
+
     for name in list_profile_names():
         if name == profile.name:
             continue
         other = load_profile(name)
-        if other.port == profile.port:
+        if other.port == profile.port and other.container_name in running_names:
             return name
     return None
 
