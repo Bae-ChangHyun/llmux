@@ -17,6 +17,7 @@ from tui.backend import (
     save_profile,
     delete_profile,
     list_config_names,
+    list_profile_names,
     validate_name as _validate_name,
 )
 
@@ -59,7 +60,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
         margin-bottom: 1;
     }
     ProfileFormScreen .form-row Label {
-        width: 20;
+        width: 22;
         padding: 1 1 0 0;
         color: $text-muted;
     }
@@ -191,9 +192,13 @@ class ProfileFormScreen(ModalScreen[str | None]):
             return
         if not _validate_name(name):
             self.notify(
-                "Name must contain only letters, digits, dashes, or underscores.",
+                "Name must start with a letter/digit, and contain only letters, digits, dashes, or underscores.",
                 severity="error",
             )
+            return
+
+        if not self._edit_mode and name in list_profile_names():
+            self.notify(f"Profile '{name}' already exists.", severity="error")
             return
 
         if container and not _validate_name(container):

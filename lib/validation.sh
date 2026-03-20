@@ -38,8 +38,8 @@ validate_gpu_memory() {
 # Validate profile/config name (alphanumeric, dash, underscore only)
 validate_name() {
     local name=$1
-    if ! [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-        echo -e "${RED}Error: Name must contain only letters, numbers, dash, and underscore${NC}"
+    if ! [[ "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+        echo -e "${RED}Error: Name must start with a letter or digit, and contain only letters, numbers, dash, and underscore${NC}"
         return 1
     fi
     return 0
