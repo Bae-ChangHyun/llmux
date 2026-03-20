@@ -11,6 +11,7 @@ from textual.widgets import (
     DataTable,
     Footer,
     Header,
+    Input,
     OptionList,
     Static,
 )
@@ -19,7 +20,11 @@ from textual import work, on
 
 from tui.backend import (
     ContainerStatus,
+    GpuInfo,
+    estimate_model_memory,
+    format_gpu_bar,
     get_container_statuses,
+    get_gpu_info,
     container_down,
     load_profile,
 )
@@ -32,6 +37,7 @@ class DashboardScreen(Screen):
         # Primary: visible in footer
         Binding("w", "quick_setup", "Quick Setup"),
         Binding("n", "new_profile", "New"),
+        Binding("m", "mem_estimate", "Memory"),
         Binding("s", "system_info", "System"),
         Binding("c", "configs", "Configs"),
         # Direct shortcuts: power-user (hidden, but listed in ? help)
@@ -46,20 +52,22 @@ class DashboardScreen(Screen):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._statuses: list[ContainerStatus] = []
+        self._gpus: list[GpuInfo] = []
         self._refresh_timer = None
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Vertical(id="dashboard-header"):
-            yield Static("vLLM Compose", id="dashboard-brand")
-            yield Static("Docker Compose based Multi-Model Serving", id="dashboard-subtitle")
         yield Static("", id="status-bar")
         yield DataTable(id="profile-table", cursor_type="row")
         yield Static(
-            "\n\n\n\n  No profiles yet\n\n"
-            "  [dim][b]w[/b] Quick Setup  ·  [b]n[/b] New Profile[/dim]",
+            "\n  No profiles yet — press [b]w[/b] for Quick Setup\n",
             id="empty-state",
         )
+        yield Static("", id="gpu-bar")
+        with Horizontal(id="mem-search-area"):
+            yield Static(" 🔍 ", id="search-icon")
+            yield Input(placeholder="Estimate model memory (Enter to search)", id="mem-search-input")
+        yield Static("", id="mem-result-bar")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -82,6 +90,12 @@ class DashboardScreen(Screen):
         statuses = await get_container_statuses()
         self._statuses = statuses
         self._update_table(statuses)
+        # Update GPU bar
+        self._gpus = await get_gpu_info()
+        try:
+            self.query_one("#gpu-bar", Static).update(format_gpu_bar(self._gpus))
+        except Exception:
+            pass
 
     def _update_table(self, statuses: list[ContainerStatus]) -> None:
         table = self.query_one("#profile-table", DataTable)
@@ -298,6 +312,59 @@ class DashboardScreen(Screen):
     def action_quick_setup(self) -> None:
         from tui.screens.quick_setup import QuickSetupScreen
         self.app.push_screen(QuickSetupScreen(), callback=self._on_profile_saved)
+
+    def action_mem_estimate(self) -> None:
+        self.query_one("#mem-search-input", Input).focus()
+
+    @on(Input.Submitted, "#mem-search-input")
+    def _on_mem_search(self, event: Input.Submitted) -> None:
+        model = event.value.strip()
+        if model:
+            self._do_mem_estimate(model)
+
+    @work(exclusive=True, group="mem-estimate")
+    async def _do_mem_estimate(self, model_id: str) -> None:
+        try:
+            result_bar = self.query_one("#mem-result-bar", Static)
+            result_bar.update(f"  [dim]⏳ Estimating {model_id}...[/dim]")
+        except Exception:
+            return
+
+        result = await estimate_model_memory(model_id)
+
+        import re
+        match = re.search(r"~([\d.]+)GB", result)
+        est_gb = float(match.group(1)) if match else 0
+
+        try:
+            model_short = model_id.split("/")[-1] if "/" in model_id else model_id
+            if est_gb > 0 and self._gpus:
+                n_gpus = len(self._gpus)
+                # Single GPU: full model on one GPU
+                # Multi GPU: assume tensor parallel, split across all GPUs
+                per_gpu_gb = est_gb / n_gpus if n_gpus > 1 else est_gb
+                tp_note = f"  [dim]TP={n_gpus}: {per_gpu_gb:.1f}GB/GPU[/dim]" if n_gpus > 1 else ""
+
+                parts = []
+                for g in self._gpus:
+                    total_gb = int(g.memory_total) / 1024
+                    ratio = min(per_gpu_gb / total_gb, 1.0) if total_gb > 0 else 0
+                    bar_w = 12
+                    filled = round(ratio * bar_w)
+                    empty = bar_w - filled
+                    color = "green" if ratio < 0.7 else ("yellow" if ratio < 0.9 else "red")
+                    bar = f"[{color}]{'━' * filled}[/{color}][dim]{'╌' * empty}[/dim]"
+                    pct = f"{ratio * 100:.0f}%"
+                    parts.append(f"GPU{g.index} {bar} [{color}]{pct}[/{color}]")
+                gpu_line = " [dim]│[/dim] ".join(parts)
+                result_bar.update(
+                    f"  📦 [bold]{model_short}[/bold] {result}{tp_note}\n"
+                    f"     {gpu_line}"
+                )
+            else:
+                result_bar.update(f"  📦 [bold]{model_short}[/bold]  {result}")
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

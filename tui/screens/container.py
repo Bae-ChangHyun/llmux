@@ -21,6 +21,8 @@ from textual import work, on
 
 from tui.backend import (
     check_port_conflict,
+    format_gpu_bar,
+    get_gpu_info,
     load_profile,
     stream_container_up,
     stream_container_logs,
@@ -150,6 +152,7 @@ class ContainerUpScreen(ModalScreen[str]):
             with Vertical(id="startup-area"):
                 yield Static("", id="startup-status")
                 yield RichLog(highlight=True, auto_scroll=True, id="startup-log")
+            yield Static("", id="gpu-bar")
             with Horizontal(classes="buttons"):
                 yield Button("Start", variant="primary", id="start-btn")
                 yield Button("Cancel", variant="default", id="cancel-btn")
@@ -157,6 +160,7 @@ class ContainerUpScreen(ModalScreen[str]):
     def on_mount(self) -> None:
         if self._profile.config_name:
             self._fetch_version_info()
+            self._fetch_gpu_info()
 
     @work(exclusive=False)
     async def _fetch_version_info(self) -> None:
@@ -190,6 +194,14 @@ class ContainerUpScreen(ModalScreen[str]):
         try:
             btn = radio_set.query_one(f"#{VER_NIGHTLY}", RadioButton)
             btn.label = f"Nightly  ({nightly_date})"
+        except Exception:
+            pass
+
+    @work(exclusive=False)
+    async def _fetch_gpu_info(self) -> None:
+        gpus = await get_gpu_info()
+        try:
+            self.query_one("#gpu-bar", Static).update(format_gpu_bar(gpus))
         except Exception:
             pass
 
