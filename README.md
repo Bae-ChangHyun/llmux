@@ -70,6 +70,10 @@ uv run vllm-compose    # or ./run.sh
 
 **Config** &mdash; Manage vLLM params as YAML, Tab autocomplete for 51 known parameters
 
+**GPU Monitor** &mdash; Real-time GPU usage bar on dashboard, auto-refresh every 5s
+
+**Memory Estimator** &mdash; Estimate GPU memory before deploying via [hf-mem](https://github.com/alvarobartt/hf-mem), with per-GPU progress bar
+
 **Source Build** &mdash; Auto GPU detection Fast Build (10-30 min), fork support
 
 **LoRA** &mdash; Multi-adapter loading with automatic path mapping
@@ -88,7 +92,10 @@ uv run vllm-compose    # or ./run.sh
 | `Enter` | Profile action menu (start/stop/logs/edit/delete) |
 | `w` | Quick Setup |
 | `n` | New profile |
-| `F1` `F2` `F3` | Dashboard / Configs / System |
+| `m` | Memory estimator (focus search bar) |
+| `s` | System info |
+| `c` | Configs |
+| `u` / `d` / `l` | Start / Stop / Logs (selected profile) |
 | `?` | Full shortcut help |
 
 </details>
@@ -191,6 +198,29 @@ response = client.chat.completions.create(
 | Add vLLM args | Write any CLI arg as YAML in `config/*.yaml` |
 
 </details>
+
+---
+
+## Requirements
+
+- Docker with [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+- Python 3.10+ (for TUI)
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+- NVIDIA GPU(s)
+
+---
+
+## Roadmap
+
+- [ ] **Model-specific recommended configs** — Curated vLLM configs per model family (Llama, Qwen, DeepSeek, Gemma, etc.) with vendor-recommended settings for `max-model-len`, `quantization`, `rope-scaling`, and more
+- [ ] **Config presets / templates** — Select from ready-made configs during Quick Setup based on model size and GPU capacity
+- [ ] **.env.common setup wizard** — Interactive first-run setup for HF token and cache path
+- [ ] **Health status in dashboard** — Show `healthy` / `unhealthy` / `starting` in status column
+- [ ] **API connectivity test** — Quick `/v1/models` call to verify the model is serving
+- [ ] **Profile clone** — Duplicate a profile with one click for A/B testing configs
+- [ ] **Batch operations** — Start/stop multiple containers at once
+- [ ] **Export/Import** — Share profile + config bundles across servers
+- [ ] **Web UI** — Optional browser-based dashboard for team access
 
 ---
 

@@ -128,6 +128,9 @@ class DashboardScreen(Screen):
             "  ·  [dim]Enter = actions[/dim]"
         )
 
+        # Running containers first
+        statuses = sorted(statuses, key=lambda s: (not s.running, s.profile_name))
+
         for s in statuses:
             if not s.running:
                 status_cell = "[dim]○ stopped[/]"
