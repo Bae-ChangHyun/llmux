@@ -226,6 +226,6 @@ response = client.chat.completions.create(
 
 <div align="center">
 
-**MIT License** · Made for AI Developers
+**MIT License**
 
 </div>
