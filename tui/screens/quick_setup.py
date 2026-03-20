@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, Horizontal, VerticalScroll
@@ -25,7 +25,7 @@ class QuickSetupScreen(ModalScreen[str]):
         background: $surface;
         border: round $primary;
         padding: 1 2;
-        width: 60;
+        width: 65;
         max-height: 90%;
     }
     QuickSetupScreen .title {
@@ -42,6 +42,11 @@ class QuickSetupScreen(ModalScreen[str]):
     QuickSetupScreen Input {
         margin-bottom: 0;
     }
+    QuickSetupScreen #mem-estimate {
+        height: 1;
+        color: $text-muted;
+        margin-top: 0;
+    }
     QuickSetupScreen .buttons {
         height: 1;
         align: center middle;
@@ -49,12 +54,17 @@ class QuickSetupScreen(ModalScreen[str]):
     }
     """
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._last_estimated_model = ""
+
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static("Quick Setup", classes="title")
             with VerticalScroll():
                 yield Label("HuggingFace Model (e.g., meta-llama/Llama-3-8B)")
                 yield Input(placeholder="org/model-name", id="model-input")
+                yield Static("", id="mem-estimate")
                 yield Label("GPU ID")
                 yield Input(placeholder="0", value="0", id="gpu-input")
                 yield Label("Port")
@@ -67,6 +77,29 @@ class QuickSetupScreen(ModalScreen[str]):
             with Horizontal(classes="buttons"):
                 yield Button("Create", variant="primary", id="create-btn")
                 yield Button("Cancel", id="cancel-btn")
+
+    @on(Input.Blurred, "#model-input")
+    def _on_model_blur(self, event: Input.Blurred) -> None:
+        model = event.input.value.strip()
+        if model and model != self._last_estimated_model:
+            self._last_estimated_model = model
+            self._estimate_memory(model)
+
+    @work(exclusive=True, group="mem-estimate")
+    async def _estimate_memory(self, model_id: str) -> None:
+        try:
+            label = self.query_one("#mem-estimate", Static)
+            label.update(f"[dim]Estimating memory for {model_id}...[/dim]")
+        except Exception:
+            return
+        from tui.backend import estimate_model_memory
+        result = await estimate_model_memory(model_id)
+        try:
+            self.query_one("#mem-estimate", Static).update(
+                f"[bold]Est. Memory:[/bold] {result}"
+            )
+        except Exception:
+            pass
 
     @on(Button.Pressed, "#cancel-btn")
     def on_cancel(self) -> None:
