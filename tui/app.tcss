@@ -58,6 +58,13 @@ DashboardScreen {
 #mem-search-area Input {
     width: 1fr;
     border: round gray;
+    background: $surface;
+}
+
+#mem-search-area Input:focus {
+    border: round gray;
+    background: $surface;
+    background-tint: transparent;
 }
 
 #mem-result-bar {
