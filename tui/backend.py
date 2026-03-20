@@ -436,9 +436,53 @@ async def get_dev_images() -> list[DockerImage]:
     return await get_docker_images("vllm-dev")
 
 
+def format_gpu_bar(gpus: list[GpuInfo], bar_width: int = 8) -> str:
+    """Format GPU info as a rich-text progress bar string."""
+    if not gpus:
+        return "[dim]GPU info unavailable[/dim]"
+    parts = []
+    for g in gpus:
+        used = int(g.memory_used)
+        total = int(g.memory_total)
+        ratio = used / total if total > 0 else 0
+        filled = round(ratio * bar_width)
+        empty = bar_width - filled
+        bar = f"[green]{'█' * filled}[/green][dim]{'░' * empty}[/dim]"
+        mem = f"{used / 1024:.1f}/{total / 1024:.1f}GB"
+        parts.append(
+            f"[bold]GPU{g.index}[/bold] {bar}  {mem}  {g.utilization}%  {g.temperature}°C"
+        )
+    return "  [dim]│[/dim]  ".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Version info for container start screen
 # ---------------------------------------------------------------------------
+
+async def estimate_model_memory(model_id: str) -> str:
+    """Estimate GPU memory requirement for a HuggingFace model using hf-mem."""
+    try:
+        from hf_mem import arun
+        # Pass HF token for gated models
+        common_env = _parse_env_file(SCRIPT_DIR / ".env.common")
+        token = common_env.get("HF_TOKEN", "") or os.environ.get("HF_TOKEN", "")
+        kwargs: dict = {"model_id": model_id, "experimental": True}
+        if token and not token.startswith("your_"):
+            kwargs["hf_token"] = token
+        result = await arun(**kwargs)
+        total_bytes = result.total_memory if hasattr(result, 'total_memory') else result.memory
+        total_gb = total_bytes / (1024 ** 3)
+        mem_gb = result.memory / (1024 ** 3) if result.memory else 0
+        kv_gb = result.kv_cache / (1024 ** 3) if hasattr(result, 'kv_cache') and result.kv_cache else 0
+        if kv_gb > 0:
+            return f"~{total_gb:.1f}GB (model: {mem_gb:.1f}GB + KV: {kv_gb:.1f}GB)"
+        return f"~{total_gb:.1f}GB"
+    except Exception as e:
+        err = str(e)
+        if "403" in err:
+            return "gated model - HF_TOKEN required"
+        return f"estimation failed"
+
 
 async def get_local_latest_tag() -> str:
     """Get the latest local vllm/vllm-openai image tag (excluding nightly)."""

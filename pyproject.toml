@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "textual>=1.0.0",
     "pyyaml>=6.0",
-    "asciinema>=2.4.0",
+    "hf-mem>=0.4.0",
 ]
 
 [tool.hatch.build.targets.wheel]
