@@ -355,7 +355,7 @@ class DashboardScreen(Screen):
                     color = "green" if ratio < 0.7 else ("yellow" if ratio < 0.9 else "red")
                     bar = f"[{color}]{'━' * filled}[/{color}][dim]{'╌' * empty}[/dim]"
                     pct = f"{ratio * 100:.0f}%"
-                    parts.append(f"GPU{g.index} {bar} [{color}]{pct}[/{color}]")
+                    parts.append(f"GPU{g.index} {bar} [{color}]{pct}[/{color}] {per_gpu_gb:.1f}/{total_gb:.0f}GB")
                 gpu_line = " [dim]│[/dim] ".join(parts)
                 result_bar.update(
                     f"  📦 [bold]{model_short}[/bold] {result}{tp_note}\n"
