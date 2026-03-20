@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, Horizontal
@@ -335,7 +337,6 @@ class DashboardScreen(Screen):
 
         result = await estimate_model_memory(model_id)
 
-        import re
         match = re.search(r"~([\d.]+)GB", result)
         est_gb = float(match.group(1)) if match else 0
 

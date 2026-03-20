@@ -107,6 +107,10 @@ def _parse_env_file(path: Path) -> dict[str, str]:
             value = value.strip()
             if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
                 value = value[1:-1]
+            else:
+                # Strip inline comments (KEY=value # comment)
+                if " #" in value:
+                    value = value[:value.index(" #")].rstrip()
             data[key.strip()] = value
     return data
 
@@ -172,9 +176,15 @@ def delete_profile(name: str, delete_config: bool = False) -> None:
         data = _parse_env_file(path)
         config_name = data.get("CONFIG_NAME", "")
         if config_name:
-            config_path = CONFIG_DIR / f"{config_name}.yaml"
-            if config_path.exists():
-                config_path.unlink()
+            # Only delete config if no other profile references it
+            other_refs = [
+                n for n in list_profile_names()
+                if n != name and load_profile(n).config_name == config_name
+            ]
+            if not other_refs:
+                config_path = CONFIG_DIR / f"{config_name}.yaml"
+                if config_path.exists():
+                    config_path.unlink()
     if path.exists():
         path.unlink()
 
@@ -205,14 +215,9 @@ def load_config(name: str) -> Config:
 
 def save_config(config: Config) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    lines = [
-        f"model: {config.model}",
-        f"gpu-memory-utilization: {config.gpu_memory_utilization}",
-    ]
-    for k, v in config.extra_params.items():
-        lines.append(f"{k}: {v}")
-    lines.append("")
-    config.path.write_text("\n".join(lines))
+    data: dict = {"model": config.model, "gpu-memory-utilization": config.gpu_memory_utilization}
+    data.update(config.extra_params)
+    config.path.write_text(yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False))
 
 
 def delete_config(name: str) -> None:
@@ -334,13 +339,15 @@ async def container_up(profile_name: str, use_dev: bool = False, tag: str = "") 
     return await run_sh(*args, timeout=600)
 
 
-async def stream_container_up(profile_name: str, use_dev: bool = False, tag: str = ""):
+async def stream_container_up(profile_name: str, use_dev: bool = False, tag: str = "", pull: bool = False):
     """Async generator that streams run.sh output line by line, then yields return code."""
     args = [str(RUN_SH), profile_name, "up"]
     if use_dev:
         args.append("--dev")
     if tag:
         args.extend(["--tag", tag])
+    if pull:
+        args.append("--pull")
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
@@ -380,11 +387,11 @@ async def stream_container_logs(container_name: str):
     finally:
         try:
             proc.kill()
-        except ProcessLookupError:
+        except (ProcessLookupError, OSError):
             pass
         try:
             await proc.wait()
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, ProcessLookupError, OSError):
             pass
 
 
@@ -442,8 +449,11 @@ def format_gpu_bar(gpus: list[GpuInfo], bar_width: int = 8) -> str:
         return "[dim]GPU info unavailable[/dim]"
     parts = []
     for g in gpus:
-        used = int(g.memory_used)
-        total = int(g.memory_total)
+        try:
+            used = int(g.memory_used)
+            total = int(g.memory_total)
+        except (ValueError, TypeError):
+            continue
         ratio = used / total if total > 0 else 0
         filled = round(ratio * bar_width)
         empty = bar_width - filled
@@ -470,10 +480,14 @@ async def estimate_model_memory(model_id: str) -> str:
         if token and not token.startswith("your_"):
             kwargs["hf_token"] = token
         result = await arun(**kwargs)
-        total_bytes = result.total_memory if hasattr(result, 'total_memory') else result.memory
+        mem_bytes = getattr(result, 'memory', 0) or 0
+        kv_bytes = getattr(result, 'kv_cache', 0) or 0
+        total_bytes = getattr(result, 'total_memory', None) or (mem_bytes + kv_bytes)
+        if not total_bytes:
+            return "estimation failed (no data)"
         total_gb = total_bytes / (1024 ** 3)
-        mem_gb = result.memory / (1024 ** 3) if result.memory else 0
-        kv_gb = result.kv_cache / (1024 ** 3) if hasattr(result, 'kv_cache') and result.kv_cache else 0
+        mem_gb = mem_bytes / (1024 ** 3)
+        kv_gb = kv_bytes / (1024 ** 3)
         if kv_gb > 0:
             return f"~{total_gb:.1f}GB (model: {mem_gb:.1f}GB + KV: {kv_gb:.1f}GB)"
         return f"~{total_gb:.1f}GB"

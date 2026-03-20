@@ -5,7 +5,7 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import Screen, ModalScreen
+from textual.screen import Screen
 from textual.widgets import (
     Button,
     Static,
@@ -15,7 +15,6 @@ from textual.widgets import (
     RadioButton,
     RichLog,
     Header,
-    LoadingIndicator,
 )
 from textual import work, on
 
@@ -118,6 +117,7 @@ class ContainerUpScreen(Screen):
         super().__init__()
         self.profile_name = profile_name
         self._profile = load_profile(profile_name)
+        self._gpu_timer = None
 
     def compose(self) -> ComposeResult:
         # UX: Guard - config must be set before starting
@@ -221,13 +221,18 @@ class ContainerUpScreen(Screen):
         else:
             custom_input.styles.display = "none"
 
+    def _cleanup(self) -> None:
+        if self._gpu_timer is not None:
+            self._gpu_timer.stop()
+        self.workers.cancel_all()
+
     @on(Button.Pressed, "#cancel-btn")
     def _on_cancel(self) -> None:
-        self.workers.cancel_all()
+        self._cleanup()
         self.app.pop_screen()
 
     def action_cancel(self) -> None:
-        self.workers.cancel_all()
+        self._cleanup()
         self.app.pop_screen()
 
     @on(Button.Pressed, "#start-btn")
@@ -244,13 +249,16 @@ class ContainerUpScreen(Screen):
 
         use_dev = False
         tag = ""
+        pull = False
 
         if selected_id == VER_LOCAL:
             pass
         elif selected_id == VER_OFFICIAL:
             tag = "latest"
+            pull = True
         elif selected_id == VER_NIGHTLY:
             tag = "nightly"
+            pull = True
         elif selected_id == VER_DEV:
             use_dev = True
         elif selected_id == VER_CUSTOM:
@@ -273,7 +281,7 @@ class ContainerUpScreen(Screen):
         try:
             self.query_one("#startup-area").styles.display = "block"
             self.query_one("#version-scroll").styles.display = "none"
-            self.query_one(".buttons").styles.display = "none"
+            self.query_one("#start-btn").styles.display = "none"
             status = self.query_one("#startup-status", Static)
             log_widget = self.query_one("#startup-log", RichLog)
             status.update("[bold]Starting container...[/bold]")
@@ -282,7 +290,7 @@ class ContainerUpScreen(Screen):
 
         # Stream run.sh output in real-time
         rc = -1
-        async for msg_type, data in stream_container_up(self.profile_name, use_dev=use_dev, tag=tag):
+        async for msg_type, data in stream_container_up(self.profile_name, use_dev=use_dev, tag=tag, pull=pull):
             if msg_type == "log":
                 try:
                     log_widget.write(data)
@@ -292,9 +300,6 @@ class ContainerUpScreen(Screen):
                 rc = data
 
         try:
-            # Show close button for both success and failure
-            self.query_one("#start-btn").styles.display = "none"
-            self.query_one(".buttons").styles.display = "block"
             if rc == 0:
                 status.update("[green bold]Container started. Logs: (Esc/q to close)[/green bold]")
                 try:
