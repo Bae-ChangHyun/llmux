@@ -70,6 +70,10 @@ uv run vllm-compose    # 또는 ./run.sh
 
 **Config** &mdash; vLLM 파라미터를 YAML로 관리, 51개 파라미터 Tab 자동완성
 
+**GPU 모니터** &mdash; 대시보드에서 실시간 GPU 사용량 바, 5초 자동 갱신
+
+**메모리 추정** &mdash; [hf-mem](https://github.com/alvarobartt/hf-mem) 연동으로 배포 전 GPU 메모리 사전 확인, GPU별 progress bar 표시
+
 **소스 빌드** &mdash; GPU 자동 감지 Fast Build (10-30분), Fork 빌드 지원
 
 **LoRA** &mdash; 멀티 어댑터 동시 로드, 경로 자동 매핑
@@ -88,7 +92,10 @@ uv run vllm-compose    # 또는 ./run.sh
 | `Enter` | 프로필 액션 메뉴 (시작/중지/로그/편집/삭제) |
 | `w` | Quick Setup |
 | `n` | 새 프로필 |
-| `F1` `F2` `F3` | Dashboard / Configs / System |
+| `m` | 메모리 추정기 (검색바 포커스) |
+| `s` | 시스템 정보 |
+| `c` | Config 관리 |
+| `u` / `d` / `l` | 시작 / 중지 / 로그 (선택된 프로필) |
 | `?` | 전체 단축키 도움말 |
 
 </details>
@@ -191,6 +198,29 @@ response = client.chat.completions.create(
 | vLLM 인자 추가 | `config/*.yaml`에 아무 CLI 인자나 YAML로 작성 |
 
 </details>
+
+---
+
+## 요구사항
+
+- Docker + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+- Python 3.10+ (TUI용)
+- [uv](https://docs.astral.sh/uv/) (권장) 또는 pip
+- NVIDIA GPU
+
+---
+
+## 로드맵
+
+- [ ] **모델별 추천 Config** — 모델 제조사/커뮤니티 권장 vLLM 설정 (Llama, Qwen, DeepSeek, Gemma 등) `max-model-len`, `quantization`, `rope-scaling` 등 사전 설정 제공
+- [ ] **Config 프리셋/템플릿** — Quick Setup 시 모델 크기와 GPU 용량에 맞는 설정 자동 추천
+- [ ] **.env.common 설정 위자드** — 첫 실행 시 HF 토큰, 캐시 경로 대화형 설정
+- [ ] **Health 상태 표시** — 대시보드 상태 컬럼에 `healthy` / `unhealthy` / `starting` 구분
+- [ ] **API 연결 테스트** — `/v1/models` 호출로 모델 서빙 상태 즉시 확인
+- [ ] **프로필 복제** — 한 클릭으로 프로필 복사하여 A/B 테스트
+- [ ] **일괄 작업** — 여러 컨테이너 동시 시작/중지
+- [ ] **내보내기/가져오기** — 프로필 + Config 번들을 서버 간 공유
+- [ ] **웹 UI** — 팀 환경을 위한 브라우저 기반 대시보드
 
 ---
 

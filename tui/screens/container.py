@@ -48,8 +48,8 @@ VER_CUSTOM = "custom_tag"
 # ---------------------------------------------------------------------------
 
 
-class ContainerUpScreen(ModalScreen[str]):
-    """Modal dialog to start a container with version selection."""
+class ContainerUpScreen(Screen):
+    """Full-screen container start and log viewer."""
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=False),
@@ -58,15 +58,13 @@ class ContainerUpScreen(ModalScreen[str]):
 
     DEFAULT_CSS = """
     ContainerUpScreen {
-        align: center middle;
+        layout: vertical;
     }
 
     ContainerUpScreen > Vertical {
-        background: $surface;
-        border: round $primary;
-        padding: 1 2;
-        width: 65;
-        max-height: 90%;
+        width: 100%;
+        height: 100%;
+        padding: 0 1;
     }
 
     ContainerUpScreen #title-label {
@@ -112,7 +110,7 @@ class ContainerUpScreen(ModalScreen[str]):
 
     ContainerUpScreen #startup-log {
         height: 1fr;
-        border: round $primary 40%;
+        margin: 0;
     }
     """
 
@@ -161,6 +159,13 @@ class ContainerUpScreen(ModalScreen[str]):
         if self._profile.config_name:
             self._fetch_version_info()
             self._fetch_gpu_info()
+            # Focus the radio set for arrow key navigation
+            try:
+                self.query_one("#version-radio", RadioSet).focus()
+            except Exception:
+                pass
+            # Auto-refresh GPU bar every 3 seconds
+            self._gpu_timer = self.set_interval(3, self._fetch_gpu_info)
 
     @work(exclusive=False)
     async def _fetch_version_info(self) -> None:
@@ -219,11 +224,11 @@ class ContainerUpScreen(ModalScreen[str]):
     @on(Button.Pressed, "#cancel-btn")
     def _on_cancel(self) -> None:
         self.workers.cancel_all()
-        self.dismiss("")
+        self.app.pop_screen()
 
     def action_cancel(self) -> None:
         self.workers.cancel_all()
-        self.dismiss("")
+        self.app.pop_screen()
 
     @on(Button.Pressed, "#start-btn")
     def _on_start(self) -> None:
@@ -327,8 +332,7 @@ class LogScreen(Screen):
 
     LogScreen RichLog {
         height: 1fr;
-        margin: 0 1 1 1;
-        border: round $primary 40%;
+        margin: 0;
     }
     """
 
