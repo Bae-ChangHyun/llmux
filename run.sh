@@ -234,6 +234,7 @@ case "$1" in
             "up")
                 USE_DEV="false"
                 CUSTOM_TAG=""
+                SHOULD_PULL="auto"
 
                 # Parse options
                 while [[ $# -gt 0 ]]; do
@@ -246,13 +247,17 @@ case "$1" in
                             CUSTOM_TAG="$2"
                             shift 2
                             ;;
+                        --pull)
+                            SHOULD_PULL="true"
+                            shift
+                            ;;
                         *)
                             shift
                             ;;
                     esac
                 done
 
-                run_up "$PROFILE_PATH" "$PROFILE_NAME" "$USE_DEV" "$CUSTOM_TAG"
+                run_up "$PROFILE_PATH" "$PROFILE_NAME" "$USE_DEV" "$CUSTOM_TAG" "" "$SHOULD_PULL"
                 ;;
             "down")
                 run_down "$PROFILE_PATH" "$PROFILE_NAME"

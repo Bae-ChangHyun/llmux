@@ -35,7 +35,7 @@ clone_or_update_vllm() {
             git clone "$repo_url" "$vllm_src_dir"
             (cd "$vllm_src_dir" && git checkout "$branch")
         else
-            (cd "$vllm_src_dir" && git fetch origin && git checkout "$branch" 2>/dev/null || git checkout -b "$branch" "origin/$branch" && git pull origin "$branch" 2>/dev/null || true)
+            (cd "$vllm_src_dir" && git fetch origin && { git checkout "$branch" 2>/dev/null || git checkout -b "$branch" "origin/$branch"; } && git pull origin "$branch" 2>/dev/null || true)
         fi
 
         local hash=$(cd "$vllm_src_dir" && git rev-parse --short HEAD)
