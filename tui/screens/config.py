@@ -230,6 +230,15 @@ class ConfigFormScreen(ModalScreen[str | None]):
             classes="param-row",
         )
         container.mount(row)
+        # Scroll to show newly added row
+        self.call_after_refresh(self._scroll_to_bottom)
+
+    def _scroll_to_bottom(self) -> None:
+        try:
+            scroll = self.query_one(VerticalScroll)
+            scroll.scroll_end(animate=False)
+        except Exception:
+            pass
 
     @on(Button.Pressed, "#add-param-btn")
     def _on_add_param(self, event: Button.Pressed) -> None:
