@@ -9,7 +9,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, Horizontal, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Static, Switch
+from textual.widgets import Button, Input, Label, Static, Switch, Select
 
 
 class QuickSetupScreen(ModalScreen[str]):
@@ -71,12 +71,30 @@ class QuickSetupScreen(ModalScreen[str]):
                 yield Input(placeholder="8000", value="8000", id="port-input")
                 yield Label("GPU Memory Utilization")
                 yield Input(placeholder="0.9", value="0.9", id="gpu-mem-input")
+                yield Label("Copy params from (optional)")
+                yield Select(
+                    self._build_config_options(),
+                    prompt="None",
+                    allow_blank=True,
+                    id="copy-config-select",
+                )
                 with Horizontal():
                     yield Label("Enable LoRA")
                     yield Switch(id="lora-switch")
             with Horizontal(classes="buttons"):
                 yield Button("Create", variant="primary", id="create-btn")
                 yield Button("Cancel", id="cancel-btn")
+
+    def _build_config_options(self) -> list[tuple[str, str]]:
+        from tui.backend import list_config_names, load_config
+        options = []
+        for name in list_config_names():
+            cfg = load_config(name)
+            n_params = len(cfg.extra_params)
+            if n_params > 0:
+                label = f"{name}  ({n_params} params)"
+                options.append((label, name))
+        return options
 
     @on(Input.Blurred, "#model-input")
     def _on_model_blur(self, event: Input.Blurred) -> None:
@@ -157,7 +175,7 @@ class QuickSetupScreen(ModalScreen[str]):
 
         from tui.backend import (
             Profile, Config, save_profile, save_config,
-            list_profile_names, list_config_names,
+            list_profile_names, list_config_names, load_config,
         )
 
         # Auto-resolve name collision by appending suffix
@@ -169,11 +187,19 @@ class QuickSetupScreen(ModalScreen[str]):
             suffix += 1
             safe_name = f"{original_name}-{suffix}"
 
+        # Copy extra params from selected config
+        extra_params: dict[str, str] = {}
+        copy_select = self.query_one("#copy-config-select", Select)
+        if copy_select.value and copy_select.value != Select.BLANK:
+            source_cfg = load_config(str(copy_select.value))
+            extra_params = dict(source_cfg.extra_params)
+
         # Save config
         config = Config(
             name=safe_name,
             model=model,
             gpu_memory_utilization=gpu_mem or "0.9",
+            extra_params=extra_params,
         )
         save_config(config)
 
