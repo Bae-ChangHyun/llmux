@@ -460,7 +460,7 @@ class ConfigListScreen(Screen):
             return None
         try:
             row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
-            return str(row_key)
+            return row_key.value
         except Exception:
             return None
 
