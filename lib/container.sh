@@ -127,7 +127,17 @@ run_up() {
     else
         local vllm_version
         if [[ -n "$version_override" ]]; then
-            vllm_version="$version_override"
+            # Resolve "latest" to actual version tag (e.g., v0.18.0)
+            if [[ "$version_override" == "latest" ]]; then
+                local resolved=$(get_latest_release_version)
+                if [[ -n "$resolved" && "$resolved" != "unknown" ]]; then
+                    vllm_version="$resolved"
+                else
+                    vllm_version="$version_override"
+                fi
+            else
+                vllm_version="$version_override"
+            fi
         else
             # Fallback: use latest local image
             vllm_version=$(get_local_latest_image --tag-only)
