@@ -195,7 +195,9 @@ response = client.chat.completions.create(
 | 컨테이너 미시작 | `./run.sh {profile} logs` 로 로그 확인 |
 | GPU OOM | `gpu-memory-utilization: 0.7` 또는 `TENSOR_PARALLEL_SIZE=2` |
 | 포트 충돌 | `VLLM_PORT` 변경 후 `./run.sh ps` 확인 |
+| Distilled 모델 토크나이저 에러 | config YAML에 `tokenizer: 원본Org/원본Model` 추가 |
 | vLLM 인자 추가 | `config/*.yaml`에 아무 CLI 인자나 YAML로 작성 |
+| TUI 로그 복사 | Shift+드래그로 선택, Ctrl+C로 복사 ([상세](https://textual.textualize.io/FAQ/#how-can-i-select-and-copy-text-in-a-textual-app)) |
 
 </details>
 
