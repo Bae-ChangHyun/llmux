@@ -58,7 +58,7 @@ uv run vllm-compose    # or ./run.sh
 | **Manage configs** | Remember long CLI args every time | Per-model YAML + Tab autocomplete |
 | **Multi-model** | Edit compose files by hand | Independent profiles, run simultaneously |
 | **Monitor status** | Repeat docker ps, nvidia-smi | Real-time dashboard |
-| **Version selection** | Track image tags manually | Latest / Official / Nightly picker |
+| **Version selection** | Track image tags manually | Latest / Official / Nightly picker with version-tagged pulls |
 
 <br/>
 
@@ -68,7 +68,7 @@ uv run vllm-compose    # or ./run.sh
 
 **Profiles** &mdash; Save per-model settings independently, switch instantly
 
-**Config** &mdash; Manage vLLM params as YAML, Tab autocomplete for 51 known parameters
+**Config** &mdash; Manage vLLM params as YAML, Tab autocomplete auto-extracted from your vLLM image
 
 **GPU Monitor** &mdash; Real-time GPU usage bar on dashboard, auto-refresh every 5s
 
@@ -126,7 +126,7 @@ uv run vllm-compose    # or ./run.sh
 model: Qwen/Qwen3-30B
 gpu-memory-utilization: 0.9
 max-model-len: 32768
-trust-remote-code: true
+enable-auto-tool-choice: true   # boolean flags: empty value → auto true
 ```
 
 ```bash
