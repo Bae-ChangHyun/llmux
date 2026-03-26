@@ -10,6 +10,8 @@ from textual.binding import Binding
 from textual.suggester import SuggestFromList
 from textual import on
 
+from textual import work
+
 from tui.backend import (
     Config,
     load_config,
@@ -19,44 +21,42 @@ from tui.backend import (
     list_profile_names,
     load_profile,
     validate_name as _validate_name,
+    extract_vllm_params,
 )
 
 
-# Well-known vLLM serve parameters (covers most versions)
-KNOWN_VLLM_PARAMS: set[str] = {
-    # Model & loading
+# Fallback params used when dynamic extraction fails
+_FALLBACK_VLLM_PARAMS: set[str] = {
     "max-model-len", "dtype", "quantization", "load-format",
     "trust-remote-code", "download-dir", "tokenizer", "tokenizer-mode",
     "revision", "code-revision", "tokenizer-revision",
     "served-model-name", "chat-template",
-    # Scheduling & batching
     "max-num-seqs", "max-num-batched-tokens", "max-paddings",
     "scheduling-policy", "preemption-mode",
     "num-scheduler-steps", "multi-step-stream-outputs",
-    # Memory & cache
     "swap-space", "kv-cache-dtype", "block-size",
     "enable-prefix-caching", "disable-sliding-window",
-    # Performance
     "enforce-eager", "enable-chunked-prefill",
     "disable-async-output-proc", "max-parallel-loading-workers",
     "distributed-executor-backend",
-    # LoRA (advanced)
     "max-loras", "max-lora-rank", "lora-extra-vocab-size",
     "long-lora-scaling-factors",
-    # Speculative decoding
     "speculative-model", "num-speculative-tokens",
     "speculative-max-model-len",
-    # Logging & debug
     "disable-log-requests", "disable-log-stats",
     "uvicorn-log-level",
-    # Misc
     "seed", "max-logprobs", "response-role",
     "enable-auto-tool-choice", "tool-call-parser",
     "disable-frontend-multiprocessing",
     "otlp-traces-endpoint", "collect-detailed-traces",
     "rope-scaling", "rope-theta",
     "pipeline-parallel-size",
+    "reasoning-parser", "mm-encoder-tp-mode",
+    "enable-expert-parallel", "mm-processor-cache-type",
 }
+
+# Mutable set: starts with fallback, updated dynamically from image
+KNOWN_VLLM_PARAMS: set[str] = set(_FALLBACK_VLLM_PARAMS)
 
 _PARAM_SUGGESTER = SuggestFromList(sorted(KNOWN_VLLM_PARAMS), case_sensitive=False)
 
@@ -200,6 +200,18 @@ class ConfigFormScreen(ModalScreen[str | None]):
         if self._edit_mode and self._initial_config:
             for key, value in self._initial_config.extra_params.items():
                 self._add_param_row(key, value)
+        self._load_vllm_params()
+
+    @work(exclusive=False)
+    async def _load_vllm_params(self) -> None:
+        """Load vllm params from docker image and update suggestions."""
+        global KNOWN_VLLM_PARAMS, _PARAM_SUGGESTER
+        extracted = await extract_vllm_params()
+        if extracted:
+            KNOWN_VLLM_PARAMS.update(extracted)
+            _PARAM_SUGGESTER = SuggestFromList(sorted(KNOWN_VLLM_PARAMS), case_sensitive=False)
+            for inp in self.query(".param-key"):
+                inp.suggester = _PARAM_SUGGESTER
 
     def _add_param_row(self, key: str = "", value: str = "") -> None:
         container = self.query_one("#params-container")
@@ -218,6 +230,15 @@ class ConfigFormScreen(ModalScreen[str | None]):
             classes="param-row",
         )
         container.mount(row)
+        # Scroll to show newly added row
+        self.call_after_refresh(self._scroll_to_bottom)
+
+    def _scroll_to_bottom(self) -> None:
+        try:
+            scroll = self.query_one(VerticalScroll)
+            scroll.scroll_end(animate=False)
+        except Exception:
+            pass
 
     @on(Button.Pressed, "#add-param-btn")
     def _on_add_param(self, event: Button.Pressed) -> None:
