@@ -58,7 +58,7 @@ uv run vllm-compose    # 또는 ./run.sh
 | **설정 관리** | 긴 CLI 인자를 매번 기억 | 모델별 YAML + Tab 자동완성 |
 | **멀티 모델** | compose 파일 수동 편집 | 프로필별 독립 관리, 동시 실행 |
 | **상태 확인** | docker ps, nvidia-smi 반복 | 대시보드에서 실시간 확인 |
-| **버전 선택** | 이미지 태그 직접 관리 | Latest / Official / Nightly 선택 |
+| **버전 선택** | 이미지 태그 직접 관리 | Latest / Official / Nightly 선택, 버전 태그로 pull |
 
 <br/>
 
@@ -68,7 +68,7 @@ uv run vllm-compose    # 또는 ./run.sh
 
 **프로필** &mdash; 모델별 설정을 독립 저장, 언제든 한 번에 전환
 
-**Config** &mdash; vLLM 파라미터를 YAML로 관리, 51개 파라미터 Tab 자동완성
+**Config** &mdash; vLLM 파라미터를 YAML로 관리, 이미지에서 자동 추출한 파라미터 Tab 자동완성
 
 **GPU 모니터** &mdash; 대시보드에서 실시간 GPU 사용량 바, 5초 자동 갱신
 
@@ -126,7 +126,7 @@ uv run vllm-compose    # 또는 ./run.sh
 model: Qwen/Qwen3-30B
 gpu-memory-utilization: 0.9
 max-model-len: 32768
-trust-remote-code: true
+enable-auto-tool-choice: true   # boolean 플래그: 빈 값 → 자동 true 변환
 ```
 
 ```bash
