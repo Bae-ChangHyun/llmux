@@ -257,7 +257,7 @@ case "$1" in
                     esac
                 done
 
-                run_up "$PROFILE_PATH" "$PROFILE_NAME" "$USE_DEV" "$CUSTOM_TAG" "" "$SHOULD_PULL"
+                run_up "$PROFILE_PATH" "$PROFILE_NAME" "$USE_DEV" "$CUSTOM_TAG" "$CUSTOM_TAG" "$SHOULD_PULL"
                 ;;
             "down")
                 run_down "$PROFILE_PATH" "$PROFILE_NAME"

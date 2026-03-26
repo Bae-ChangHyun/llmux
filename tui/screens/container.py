@@ -118,6 +118,7 @@ class ContainerUpScreen(Screen):
         self.profile_name = profile_name
         self._profile = load_profile(profile_name)
         self._gpu_timer = None
+        self._release_version: str = ""
 
     def compose(self) -> ComposeResult:
         # UX: Guard - config must be set before starting
@@ -188,6 +189,7 @@ class ContainerUpScreen(Screen):
 
         # Official release
         release_ver = await get_dockerhub_release_version()
+        self._release_version = release_ver if release_ver != "unknown" else ""
         try:
             btn = radio_set.query_one(f"#{VER_OFFICIAL}", RadioButton)
             btn.label = f"Official Release  ({release_ver})"
@@ -254,7 +256,7 @@ class ContainerUpScreen(Screen):
         if selected_id == VER_LOCAL:
             pass
         elif selected_id == VER_OFFICIAL:
-            tag = "latest"
+            tag = self._release_version or "latest"
             pull = True
         elif selected_id == VER_NIGHTLY:
             tag = "nightly"

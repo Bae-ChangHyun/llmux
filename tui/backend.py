@@ -209,14 +209,15 @@ def load_config(name: str) -> Config:
     data = yaml.safe_load(path.read_text()) or {}
     model = str(data.pop("model", ""))
     gpu_mem = str(data.pop("gpu-memory-utilization", "0.9"))
-    extra = {str(k): str(v) for k, v in data.items()}
+    extra = {str(k): "" if isinstance(v, bool) else str(v) for k, v in data.items()}
     return Config(name=name, model=model, gpu_memory_utilization=gpu_mem, extra_params=extra)
 
 
 def save_config(config: Config) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     data: dict = {"model": config.model, "gpu-memory-utilization": config.gpu_memory_utilization}
-    data.update(config.extra_params)
+    for k, v in config.extra_params.items():
+        data[k] = True if v == "" else v
     config.path.write_text(yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False))
 
 
@@ -553,3 +554,81 @@ async def get_dockerhub_nightly_date() -> str:
     except (json.JSONDecodeError, KeyError):
         pass
     return "unknown"
+
+
+# ---------------------------------------------------------------------------
+# vLLM parameter extraction from docker image
+# ---------------------------------------------------------------------------
+
+_VLLM_PARAMS_CACHE_DIR = CONFIG_DIR
+
+_EXTRACT_SCRIPT = r'''
+import re, os, json
+vllm_path = __import__("vllm").__path__[0]
+args = set()
+scan_dirs = [
+    os.path.join(vllm_path, "entrypoints"),
+    os.path.join(vllm_path, "engine"),
+    os.path.join(vllm_path, "config"),
+]
+for scan_dir in scan_dirs:
+    if not os.path.isdir(scan_dir):
+        continue
+    for root, _, files in os.walk(scan_dir):
+        for f in files:
+            if not f.endswith(".py"):
+                continue
+            try:
+                with open(os.path.join(root, f)) as fh:
+                    for line in fh:
+                        for m in re.finditer(r"add_argument\(\s*[\"'](-{2}[a-zA-Z][a-zA-Z0-9_-]*)[\"']", line):
+                            args.add(m.group(1)[2:])
+            except Exception:
+                pass
+print(json.dumps(sorted(args)))
+'''
+
+
+async def extract_vllm_params(image_tag: str = "") -> set[str]:
+    """Extract valid vllm serve parameters from a docker image.
+
+    Scans the vllm Python source in the container to find all add_argument
+    definitions. Results are cached per image tag in config/.vllm-params-{tag}.json.
+    """
+    import json
+
+    if not image_tag:
+        image_tag = await get_local_latest_tag()
+        if image_tag == "none":
+            return set()
+
+    # Check cache
+    cache_file = _VLLM_PARAMS_CACHE_DIR / f".vllm-params-{image_tag}.json"
+    if cache_file.exists():
+        try:
+            return set(json.loads(cache_file.read_text()))
+        except Exception:
+            pass
+
+    # Extract from container
+    rc, out = await run_command(
+        "docker", "run", "--rm", "--entrypoint", "python3",
+        f"vllm/vllm-openai:{image_tag}",
+        "-c", _EXTRACT_SCRIPT,
+        timeout=30,
+    )
+    if rc != 0 or not out.strip():
+        return set()
+
+    # Parse last line (stdout may have warnings before JSON)
+    for line in reversed(out.strip().splitlines()):
+        line = line.strip()
+        if line.startswith("["):
+            try:
+                params = json.loads(line)
+                _VLLM_PARAMS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(json.dumps(params))
+                return set(params)
+            except json.JSONDecodeError:
+                continue
+    return set()
