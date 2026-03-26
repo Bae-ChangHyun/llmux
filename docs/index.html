@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>vLLM Compose — Manage multiple LLMs from one terminal</title>
+  <meta name="description" content="Save per-model settings as profiles. Pick one in the TUI and hit Enter to spin it up or down." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #111110;
+      --bg-card: #1a1918;
+      --bg-code: #0d0d0c;
+      --border: #2a2825;
+      --border-light: #3a3835;
+      --text: #fcfcfa;
+      --text-dim: #939293;
+      --text-muted: #727072;
+      /* Monokai Pro palette */
+      --pink: #ff6188;
+      --purple: #ab9df2;
+      --cyan: #78dce8;
+      --green: #a9dc76;
+      --yellow: #ffd866;
+      --orange: #fc9867;
+      --accent: var(--purple);
+      --accent-dim: rgba(171, 157, 242, 0.12);
+      --mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+      --sans: 'Inter', system-ui, -apple-system, sans-serif;
+      --max-w: 1200px;
+      --section-gap: clamp(5rem, 10vh, 8rem);
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      -webkit-font-smoothing: antialiased;
+      line-height: 1.6;
+    }
+
+    /* ── NAV ── */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+      background: rgba(17,17,16,0.9);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-inner {
+      max-width: var(--max-w); margin: 0 auto;
+      padding: 14px 32px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .nav-brand {
+      font-family: var(--mono); font-size: 18px; font-weight: 700;
+      color: var(--text); text-decoration: none; letter-spacing: -0.03em;
+    }
+    .nav-links { display: flex; align-items: center; gap: 32px; }
+    .nav-links-desktop {
+      display: flex; align-items: center; gap: 32px;
+    }
+    .nav-links a {
+      font-size: 14px; color: var(--text-dim); text-decoration: none;
+      font-family: var(--mono); transition: color 0.2s;
+    }
+    .nav-links a:hover { color: var(--text); }
+    .nav-github {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 6px 14px; border-radius: 8px;
+      background: #24292e; border: 1px solid #3a3a3a;
+      text-decoration: none; transition: border-color 0.2s;
+    }
+    .nav-github:hover { border-color: #555; }
+    .nav-github svg { width: 18px; height: 18px; fill: #fff; }
+    .nav-github-stars {
+      font-family: var(--mono); font-size: 12px;
+      color: var(--text); font-weight: 600;
+    }
+
+    /* ── LAYOUT ── */
+    .page-wrap { max-width: var(--max-w); margin: 0 auto; padding: 0 32px; }
+    section { padding-bottom: var(--section-gap); }
+
+    /* ── SECTION LABEL ── */
+    .section-label {
+      font-family: var(--mono); font-size: 10px;
+      letter-spacing: 0.1em; text-transform: uppercase;
+      color: var(--text-muted); margin-bottom: 12px;
+    }
+    .section-title {
+      font-size: clamp(28px, 4vw, 40px); font-weight: 700;
+      line-height: 1.15; letter-spacing: -0.03em;
+      color: var(--text); margin-bottom: 16px;
+    }
+    .section-sub {
+      font-size: 15px; color: var(--text-dim);
+      max-width: 520px; line-height: 1.7;
+    }
+    .section-header { margin-bottom: 48px; }
+
+    /* ── HERO ── */
+    .hero {
+      text-align: center;
+      padding-top: clamp(7rem, 13vh, 10rem);
+      padding-bottom: clamp(2rem, 4vh, 4rem);
+    }
+    .hero-badge {
+      display: inline-block;
+      font-family: var(--mono); font-size: 10px;
+      letter-spacing: 0.1em; text-transform: uppercase;
+      color: var(--text-muted); margin-bottom: 24px;
+    }
+    .hero h1 {
+      font-size: clamp(36px, 6vw, 64px); font-weight: 700;
+      line-height: 1.08; letter-spacing: -0.04em;
+      margin-bottom: 20px;
+    }
+    .hero h1 .accent { color: var(--cyan); }
+    .hero-sub {
+      font-size: clamp(15px, 2vw, 17px); color: var(--text-dim);
+      max-width: 480px; margin: 0 auto 40px; line-height: 1.7;
+    }
+    .hero-cmd {
+      display: inline-flex; align-items: center; gap: 12px;
+      background: var(--bg-code); border: 1px solid var(--border);
+      border-radius: 8px; padding: 14px 24px;
+      font-family: var(--mono); font-size: 14px;
+      color: var(--text-dim); cursor: pointer;
+      transition: border-color 0.2s;
+      position: relative;
+    }
+    .hero-cmd:hover { border-color: var(--border-light); }
+    .hero-cmd .prompt { color: var(--green); user-select: none; }
+    .hero-cmd .cmd-text { color: var(--text); }
+    .hero-cmd .copy-icon {
+      color: var(--text-muted); transition: color 0.2s;
+      width: 16px; height: 16px;
+    }
+    .hero-cmd:hover .copy-icon { color: var(--text-dim); }
+    .hero-cmd .copied-tooltip {
+      position: absolute; top: -32px; left: 50%; transform: translateX(-50%);
+      background: var(--green); color: var(--bg); padding: 4px 10px;
+      border-radius: 4px; font-size: 11px; opacity: 0;
+      transition: opacity 0.2s; pointer-events: none;
+    }
+    .hero-cmd .copied-tooltip.show { opacity: 1; }
+    .hero-links {
+      display: flex; gap: 16px; justify-content: center; margin-top: 20px;
+    }
+    .hero-links a {
+      font-family: var(--mono); font-size: 13px;
+      color: var(--text-dim); text-decoration: none;
+      transition: color 0.2s;
+    }
+    .hero-links a:hover { color: var(--text); }
+
+    /* ── HERO LOGO ── */
+    .hero-logo {
+      display: block; margin: 0 auto 24px auto;
+      width: 160px; height: auto;
+      filter: drop-shadow(0 0 30px rgba(120, 220, 232, 0.3));
+      animation: float 3s ease-in-out infinite;
+    }
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-8px); }
+    }
+
+    /* ── TECH STACK BADGES ── */
+    .tech-stack {
+      display: flex; gap: 20px; justify-content: center;
+      align-items: center; margin-top: 32px;
+      flex-wrap: wrap;
+    }
+    .tech-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 14px; border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      font-family: var(--mono); font-size: 11px;
+      color: var(--text-dim);
+      transition: border-color 0.2s;
+    }
+    .tech-badge:hover { border-color: var(--border-light); }
+    .tech-badge svg { width: 16px; height: 16px; flex-shrink: 0; }
+
+    /* ── DEMO GIF ── */
+    .demo-section { text-align: center; }
+    .demo-wrap {
+      max-width: 720px; margin: 0 auto;
+      border-radius: 12px; overflow: hidden;
+      border: 1px solid var(--border);
+      background: var(--bg-code);
+    }
+    .demo-wrap img {
+      width: 100%; height: auto; display: block;
+    }
+
+    /* ── PROBLEMS ── */
+    .problems-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 20px;
+    }
+    .problem-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 28px;
+      transition: border-color 0.2s;
+    }
+    .problem-card:hover { border-color: var(--border-light); }
+    .problem-num {
+      font-family: var(--mono); font-size: 11px;
+      color: var(--text-muted); margin-bottom: 12px;
+    }
+    .problem-card h3 {
+      font-size: 16px; font-weight: 600;
+      margin-bottom: 8px; letter-spacing: -0.01em;
+    }
+    .problem-card p {
+      font-size: 13px; color: var(--text-dim); line-height: 1.6;
+    }
+    .problem-cmd {
+      display: inline-block; margin-top: 12px;
+      font-family: var(--mono); font-size: 12px;
+      color: var(--pink); background: rgba(255, 97, 136, 0.1);
+      padding: 6px 12px; border-radius: 6px;
+    }
+
+    /* ── STEPS ── */
+    .steps-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 24px;
+    }
+    .step-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 28px;
+      transition: border-color 0.2s;
+    }
+    .step-card:hover { border-color: var(--border-light); }
+    .step-num {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px; border-radius: 50%;
+      background: rgba(255, 216, 102, 0.12); color: var(--yellow);
+      font-family: var(--mono); font-size: 13px; font-weight: 700;
+      margin-bottom: 16px;
+    }
+    .step-card h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+    .step-card p { font-size: 13px; color: var(--text-dim); line-height: 1.6; margin-bottom: 12px; }
+    .step-code {
+      font-family: var(--mono); font-size: 13px;
+      background: var(--bg-code); border: 1px solid var(--border);
+      border-radius: 6px; padding: 10px 14px;
+      color: var(--text);
+    }
+
+    /* ── TERMINAL ── */
+    .terminal-section { text-align: center; }
+    .terminal {
+      max-width: 640px; margin: 0 auto;
+      background: var(--bg-code); border: 1px solid var(--border);
+      border-radius: 12px; overflow: hidden; text-align: left;
+    }
+    .terminal-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 12px 16px; border-bottom: 1px solid var(--border);
+    }
+    .terminal-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+    }
+    .terminal-dot.red { background: #ff5f57; }
+    .terminal-dot.yellow { background: #ffbd2e; }
+    .terminal-dot.green { background: #28c840; }
+    .terminal-title {
+      flex: 1; text-align: center;
+      font-family: var(--mono); font-size: 11px; color: var(--text-muted);
+    }
+    .terminal-body {
+      padding: 20px; font-family: var(--mono); font-size: 13px;
+      line-height: 1.8; min-height: 280px;
+    }
+    .terminal-body .line { opacity: 0; transform: translateY(4px); transition: all 0.3s ease; }
+    .terminal-body .line.visible { opacity: 1; transform: translateY(0); }
+    .terminal-body .prompt-line { color: var(--text); }
+    .terminal-body .prompt-sign { color: var(--green); }
+    .terminal-body .success { color: var(--green); }
+    .terminal-body .info { color: var(--text-dim); }
+    .terminal-body .highlight { color: var(--cyan); }
+
+    /* ── BEFORE / AFTER ── */
+    .comparison-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+    }
+    .comparison-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 32px;
+    }
+    .comparison-card.after { border-color: var(--green); }
+    .comparison-card h3 {
+      font-family: var(--mono); font-size: 12px;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      margin-bottom: 24px;
+    }
+    .comparison-card.before h3 { color: var(--text-muted); }
+    .comparison-card.after h3 { color: var(--green); }
+    .comp-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 0; border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .comp-row:last-child { border-bottom: none; }
+    .comp-label { color: var(--text-dim); font-size: 12px; }
+    .comp-value { font-family: var(--mono); font-size: 12px; }
+    .comp-value.dim { color: var(--text-muted); }
+    .comp-value.good { color: var(--green); }
+
+    /* ── FEATURES ── */
+    .features-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 20px;
+    }
+    .feature-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 28px;
+      transition: border-color 0.2s;
+    }
+    .feature-card:hover { border-color: var(--border-light); }
+    .feature-icon {
+      font-size: 20px; margin-bottom: 14px;
+      width: 40px; height: 40px; display: flex;
+      align-items: center; justify-content: center;
+      border-radius: 10px;
+    }
+    .feature-card:nth-child(1) .feature-icon { background: rgba(120,220,232,0.12); color: var(--cyan); }
+    .feature-card:nth-child(2) .feature-icon { background: rgba(255,97,136,0.12); color: var(--pink); }
+    .feature-card:nth-child(3) .feature-icon { background: rgba(169,220,118,0.12); color: var(--green); }
+    .feature-card:nth-child(4) .feature-icon { background: rgba(255,216,102,0.12); color: var(--yellow); }
+    .feature-card:nth-child(5) .feature-icon { background: rgba(252,152,103,0.12); color: var(--orange); }
+    .feature-card:nth-child(6) .feature-icon { background: rgba(171,157,242,0.12); color: var(--purple); }
+    .feature-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+    .feature-card p { font-size: 13px; color: var(--text-dim); line-height: 1.6; }
+
+    /* ── FAQ ── */
+    .faq-list { max-width: 700px; }
+    .faq-item {
+      border-bottom: 1px solid var(--border); padding: 20px 0;
+    }
+    .faq-q {
+      font-size: 15px; font-weight: 600; cursor: pointer;
+      display: flex; justify-content: space-between; align-items: center;
+      color: var(--text); transition: color 0.2s;
+    }
+    .faq-q:hover { color: var(--cyan); }
+    .faq-arrow {
+      font-size: 18px; color: var(--text-muted);
+      transition: transform 0.3s;
+    }
+    .faq-item.open .faq-arrow { transform: rotate(45deg); }
+    .faq-a {
+      max-height: 0; overflow: hidden;
+      transition: max-height 0.3s ease, padding 0.3s ease;
+      font-size: 13px; color: var(--text-dim); line-height: 1.7;
+    }
+    .faq-item.open .faq-a { max-height: 300px; padding-top: 12px; }
+    .faq-a code {
+      font-family: var(--mono); font-size: 12px;
+      background: var(--bg-code); padding: 2px 6px;
+      border-radius: 4px; color: var(--green);
+    }
+
+    /* ── FOOTER ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 32px 0; text-align: center;
+      font-size: 12px; color: var(--text-muted);
+      font-family: var(--mono);
+    }
+    footer a { color: var(--text-dim); text-decoration: none; }
+    footer a:hover { color: var(--text); }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 768px) {
+      .nav-inner { padding: 12px 20px; }
+      .nav-links-desktop { display: none; }
+      .page-wrap { padding: 0 20px; }
+      .comparison-grid { grid-template-columns: 1fr; }
+      .compare-table { font-size: 12px; }
+      .compare-table th, .compare-table td { padding: 10px 12px; }
+    }
+    @media (max-width: 480px) {
+      .hero h1 { font-size: 28px; }
+      .problems-grid, .steps-grid, .features-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* ── ANIMATIONS ── */
+    .fade-in {
+      opacity: 0; transform: translateY(20px);
+      transition: opacity 0.6s ease, transform 0.6s ease;
+    }
+    .fade-in.visible { opacity: 1; transform: translateY(0); }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-inner">
+    <a href="#" class="nav-brand">vllm-compose</a>
+    <div class="nav-links">
+      <span class="nav-links-desktop">
+        <a href="#features">Features</a>
+        <a href="#faq">FAQ</a>
+      </span>
+      <a href="https://github.com/Bae-ChangHyun/vllm-compose" class="nav-github" target="_blank">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="nav-github-stars" id="starCount">GitHub</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="page-wrap">
+
+  <!-- HERO -->
+  <section class="hero">
+    <img src="assets/vllm-compose.png" alt="vLLM Compose" class="hero-logo" />
+    <p class="hero-badge">open source &middot; free &middot; GPU-native</p>
+    <h1>
+      The simplest way<br/>
+      to <span class="accent">serve vLLM.</span>
+    </h1>
+    <p class="hero-sub">
+      Save per-model settings as profiles.<br/>
+      Pick one in the TUI and hit Enter to spin it up or down.
+    </p>
+    <div class="hero-cmd" onclick="copyCmd(this)">
+      <span class="prompt">$</span>
+      <span class="cmd-text">git clone https://github.com/Bae-ChangHyun/vllm-compose.git</span>
+      <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+        <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+      </svg>
+      <span class="copied-tooltip">Copied!</span>
+    </div>
+    <div class="hero-links">
+      <a href="https://github.com/Bae-ChangHyun/vllm-compose">GitHub</a>
+      <a href="https://github.com/Bae-ChangHyun/vllm-compose#get-started-in-30-seconds">Docs</a>
+    </div>
+    <!-- Tech Stack Badges -->
+    <div class="tech-stack">
+      <span class="tech-badge">
+        <svg viewBox="0 0 640 512" fill="#2496ED" width="18" height="18"><path d="M349.9 236.3h-66.1v-59.4h66.1v59.4zm0-204.3h-66.1v60.7h66.1V32zm78.2 144.8H362v59.4h66.1v-59.4zm-156.3-72.1h-66.1v60.1h66.1v-60.1zm78.1 0h-66.1v60.1h66.1v-60.1zm276.8 100c-14.4-9.7-47.6-13.2-73.1-8.4-3.3-24-16.7-44.9-41.1-63.7l-14-9.3-9.3 14c-18.4 27.8-23.4 73.6-3.7 103.8-8.7 4.7-25.8 11.1-48.4 10.7H2.4c-8.7 50.8 5.8 116.8 44 162.1 37.1 43.9 92.7 66.2 165.4 66.2 157.4 0 273.9-72.5 328.4-204.2 21.4.4 67.6.1 91.3-45.2 1.5-2.5 6.6-13.2 8.5-17.1l-13.3-8.9zm-511.1-27.9h-66v59.4h66.1v-59.4zm78.1 0h-66.1v59.4h66.1v-59.4zm78.1 0h-66.1v59.4h66.1v-59.4zm-78.1-72.1h-66.1v60.1h66.1v-60.1z"/></svg>
+        Docker
+      </span>
+      <span class="tech-badge">
+        <span style="font-family:var(--mono);font-weight:700;font-size:13px;color:var(--cyan);">V</span>
+        vLLM
+      </span>
+      <span class="tech-badge">
+        <img src="https://cdn.simpleicons.org/nvidia/76B900" width="16" height="16" alt="NVIDIA" />
+        NVIDIA
+      </span>
+      <span class="tech-badge">
+        <svg viewBox="0 0 256 255" width="16" height="16"><path d="M126.916.072c-64.832 0-60.784 28.115-60.784 28.115l.072 29.128h61.868v8.745H41.631S.145 61.355.145 126.77c0 65.417 36.21 63.097 36.21 63.097h21.61v-30.356s-1.165-36.21 35.632-36.21h61.362s34.475.557 34.475-33.319V33.97S194.67.072 126.916.072zM92.802 19.66a11.12 11.12 0 0 1 11.13 11.13 11.12 11.12 0 0 1-11.13 11.13 11.12 11.12 0 0 1-11.13-11.13 11.12 11.12 0 0 1 11.13-11.13z" fill="#3776AB"/><path d="M128.757 254.126c64.832 0 60.784-28.115 60.784-28.115l-.072-29.127H127.6v-8.745h86.441s41.486 4.705 41.486-60.712c0-65.416-36.21-63.096-36.21-63.096h-21.61v30.355s1.165 36.21-35.632 36.21h-61.362s-34.475-.557-34.475 33.32v56.013s-5.235 33.897 62.518 33.897zm34.114-19.586a11.12 11.12 0 0 1-11.13-11.13 11.12 11.12 0 0 1 11.13-11.131 11.12 11.12 0 0 1 11.13 11.13 11.12 11.12 0 0 1-11.13 11.13z" fill="#FFD43B"/></svg>
+        Python
+      </span>
+    </div>
+  </section>
+
+  <!-- PROBLEMS -->
+  <section class="fade-in">
+    <div class="section-header">
+      <p class="section-label">the problem</p>
+      <h2 class="section-title">Every ML engineer hits these walls</h2>
+    </div>
+    <div class="problems-grid">
+      <div class="problem-card">
+        <p class="problem-num">01</p>
+        <h3>Config chaos</h3>
+        <p>Different models need different GPU settings, memory limits, and serving params. You end up copy-pasting docker commands every time.</p>
+        <span class="problem-cmd">$ docker run --gpus ... -e ... vllm/vllm ...</span>
+      </div>
+      <div class="problem-card">
+        <p class="problem-num">02</p>
+        <h3>Switching models is painful</h3>
+        <p>Testing Qwen, then Llama, then DeepSeek? Each switch means stopping, reconfiguring, and restarting manually.</p>
+        <span class="problem-cmd">$ docker stop && docker rm && docker run ...</span>
+      </div>
+      <div class="problem-card">
+        <p class="problem-num">03</p>
+        <h3>No visibility</h3>
+        <p>Which container is running? How much GPU memory is left? You're constantly running docker ps and nvidia-smi.</p>
+        <span class="problem-cmd">$ docker ps && nvidia-smi</span>
+      </div>
+      <div class="problem-card">
+        <p class="problem-num">04</p>
+        <h3>Multi-model headaches</h3>
+        <p>Running multiple models simultaneously means juggling ports, GPU assignments, and compose files by hand.</p>
+        <span class="problem-cmd">$ vim docker-compose.yaml  # again...</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section class="fade-in">
+    <div class="section-header">
+      <p class="section-label">how it works</p>
+      <h2 class="section-title">Three steps. That's it.</h2>
+    </div>
+    <div class="steps-grid">
+      <div class="step-card">
+        <div class="step-num">1</div>
+        <h3>Clone & configure</h3>
+        <p>Set your HuggingFace token and cache path. One-time setup.</p>
+        <div class="step-code">$ git clone ... && cat > .env.common</div>
+      </div>
+      <div class="step-card">
+        <div class="step-num">2</div>
+        <h3>Launch the TUI</h3>
+        <p>Quick Setup auto-generates a profile from just a model name. Or create one manually with full control.</p>
+        <div class="step-code">$ uv run vllm-compose</div>
+      </div>
+      <div class="step-card">
+        <div class="step-num">3</div>
+        <h3>Select & deploy</h3>
+        <p>Pick a profile, press Enter, choose Start. Your model is serving on the OpenAI-compatible API.</p>
+        <div class="step-code">Enter &rarr; Start &rarr; Serving at :8000</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- DEMO GIF -->
+  <section class="demo-section fade-in">
+    <div class="section-header" style="text-align:center;">
+      <p class="section-label">demo</p>
+      <h2 class="section-title">See it in action</h2>
+    </div>
+    <div class="demo-wrap">
+      <div class="terminal-bar">
+        <span class="terminal-dot red"></span>
+        <span class="terminal-dot yellow"></span>
+        <span class="terminal-dot green"></span>
+        <span class="terminal-title">vllm-compose</span>
+      </div>
+      <img src="assets/demo.gif" alt="vLLM Compose Demo" loading="lazy" />
+    </div>
+  </section>
+
+  <!-- TERMINAL QUICK LOOK -->
+  <section class="terminal-section fade-in">
+    <div class="section-header" style="text-align:center;">
+      <p class="section-label">terminal</p>
+      <h2 class="section-title">Quick Start in your terminal</h2>
+    </div>
+    <div class="terminal">
+      <div class="terminal-bar">
+        <span class="terminal-dot red"></span>
+        <span class="terminal-dot yellow"></span>
+        <span class="terminal-dot green"></span>
+        <span class="terminal-title">~</span>
+      </div>
+      <div class="terminal-body" id="terminalBody">
+        <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">git clone https://github.com/Bae-ChangHyun/vllm-compose.git</span></div>
+        <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">cd vllm-compose</span></div>
+        <div class="line info">&nbsp;</div>
+        <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">cat > .env.common << 'EOF'</span></div>
+        <div class="line info">HF_TOKEN=hf_your_token_here</div>
+        <div class="line info">HF_CACHE_PATH=/home/user/.cache/huggingface</div>
+        <div class="line info">EOF</div>
+        <div class="line info">&nbsp;</div>
+        <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">uv run vllm-compose</span></div>
+        <div class="line info">&nbsp;</div>
+        <div class="line"><span class="success">&#10004;</span> <span class="highlight">TUI launched</span> <span class="info">— press w for Quick Setup</span></div>
+        <div class="line"><span class="success">&#10004;</span> Enter model name: <span class="highlight">Qwen/Qwen3-30B-A3B</span></div>
+        <div class="line"><span class="success">&#10004;</span> Profile created <span class="info">— config auto-generated</span></div>
+        <div class="line"><span class="success">&#10004;</span> Container started <span class="info">— serving at</span> <span class="highlight">http://localhost:8000/v1</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- BEFORE / AFTER -->
+  <section class="fade-in">
+    <div class="section-header">
+      <p class="section-label">before &amp; after</p>
+      <h2 class="section-title">From config hell to one-click deploy</h2>
+    </div>
+    <div class="comparison-grid">
+      <div class="comparison-card before">
+        <h3>manual workflow</h3>
+        <div class="comp-row"><span class="comp-label">Switch models</span><span class="comp-value dim">docker stop/rm/run</span></div>
+        <div class="comp-row"><span class="comp-label">Manage configs</span><span class="comp-value dim">remember CLI args</span></div>
+        <div class="comp-row"><span class="comp-label">Multi-model</span><span class="comp-value dim">edit compose files</span></div>
+        <div class="comp-row"><span class="comp-label">Monitor GPUs</span><span class="comp-value dim">nvidia-smi loop</span></div>
+        <div class="comp-row"><span class="comp-label">Memory check</span><span class="comp-value dim">trial & error</span></div>
+        <div class="comp-row"><span class="comp-label">Setup time</span><span class="comp-value dim">~15 min / model</span></div>
+      </div>
+      <div class="comparison-card after">
+        <h3>with vllm compose</h3>
+        <div class="comp-row"><span class="comp-label">Switch models</span><span class="comp-value good">select + Enter</span></div>
+        <div class="comp-row"><span class="comp-label">Manage configs</span><span class="comp-value good">YAML + autocomplete</span></div>
+        <div class="comp-row"><span class="comp-label">Multi-model</span><span class="comp-value good">independent profiles</span></div>
+        <div class="comp-row"><span class="comp-label">Monitor GPUs</span><span class="comp-value good">real-time dashboard</span></div>
+        <div class="comp-row"><span class="comp-label">Memory check</span><span class="comp-value good">built-in estimator</span></div>
+        <div class="comp-row"><span class="comp-label">Setup time</span><span class="comp-value good">30 seconds</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features" class="fade-in">
+    <div class="section-header">
+      <p class="section-label">features</p>
+      <h2 class="section-title">Everything you need, nothing you don't</h2>
+    </div>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </div>
+        <h3>Interactive TUI</h3>
+        <p>Start, stop, view logs, edit configs &mdash; all from one terminal screen with keyboard shortcuts.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        </div>
+        <h3>Model Profiles</h3>
+        <p>Save per-model settings independently. Switch between Qwen, Llama, DeepSeek instantly.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        </div>
+        <h3>GPU Monitor</h3>
+        <p>Real-time GPU usage bars on the dashboard. Auto-refresh every 5 seconds. No more nvidia-smi.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>
+        </div>
+        <h3>Memory Estimator</h3>
+        <p>Estimate GPU memory before deploying. Know if your model fits before wasting time on OOM errors.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>
+        </div>
+        <h3>Source Build</h3>
+        <p>Auto-detect GPU architecture. Fast Build in 10-30 min. Support for forks and custom versions.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+        </div>
+        <h3>LoRA Adapters</h3>
+        <p>Multi-adapter loading with automatic path mapping. Serve fine-tuned models alongside base models.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" class="fade-in">
+    <div class="section-header">
+      <p class="section-label">faq</p>
+      <h2 class="section-title">Common questions</h2>
+    </div>
+    <div class="faq-list">
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          How do I get started?
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          Clone the repo, set your HuggingFace token in <code>.env.common</code>, and run <code>uv run vllm-compose</code>.
+          Quick Setup auto-generates a profile from just a model name &mdash; you'll be serving in 30 seconds.
+        </div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          What GPU do I need?
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          Any NVIDIA GPU supported by vLLM. The built-in Memory Estimator helps you check if a model fits
+          your GPU before deploying. Tensor parallelism lets you split large models across multiple GPUs.
+        </div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          Can I run multiple models at once?
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          Yes. Each profile runs independently with its own container, port, and GPU assignment.
+          Start as many as your hardware supports &mdash; the dashboard shows all running containers.
+        </div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          What are the requirements?
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          Docker with NVIDIA Container Toolkit, Python 3.10+, and an NVIDIA GPU.
+          We recommend <code>uv</code> for Python package management but <code>pip</code> works too.
+        </div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          Can I use my own vLLM fork?
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          Yes. The Source Build feature supports custom forks: <code>./run.sh build main --repo &lt;your-fork-url&gt;</code>.
+          It auto-detects your GPU architecture for optimized builds.
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="page-wrap">
+    <p>
+      MIT License &middot;
+      <a href="https://github.com/Bae-ChangHyun/vllm-compose">GitHub</a> &middot;
+      Made by <a href="https://github.com/Bae-ChangHyun">Bae-ChangHyun</a>
+    </p>
+  </div>
+</footer>
+
+<script>
+// Copy command
+function copyCmd(el) {
+  const text = el.querySelector('.cmd-text').textContent;
+  navigator.clipboard.writeText(text);
+  const tooltip = el.querySelector('.copied-tooltip');
+  tooltip.classList.add('show');
+  setTimeout(() => tooltip.classList.remove('show'), 1500);
+}
+
+// FAQ toggle
+function toggleFaq(el) {
+  el.parentElement.classList.toggle('open');
+}
+
+// Scroll animations
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('visible');
+    }
+  });
+}, { threshold: 0.1 });
+
+document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+// Terminal animation
+function animateTerminal() {
+  const lines = document.querySelectorAll('#terminalBody .line');
+  lines.forEach((line, i) => {
+    setTimeout(() => line.classList.add('visible'), i * 200);
+  });
+}
+
+const termObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      animateTerminal();
+      termObserver.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.3 });
+
+termObserver.observe(document.getElementById('terminalBody'));
+
+// Fetch GitHub star count
+fetch('https://api.github.com/repos/Bae-ChangHyun/vllm-compose')
+  .then(r => r.json())
+  .then(data => {
+    if (data.stargazers_count !== undefined) {
+      const count = data.stargazers_count;
+      const display = count >= 1000 ? (count / 1000).toFixed(1) + 'K' : count;
+      document.getElementById('starCount').textContent = display;
+    }
+  })
+  .catch(() => {});
+</script>
+
+</body>
+</html>
