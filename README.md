@@ -195,7 +195,9 @@ response = client.chat.completions.create(
 | Container won't start | Check logs: `./run.sh {profile} logs` |
 | GPU OOM | Set `gpu-memory-utilization: 0.7` or `TENSOR_PARALLEL_SIZE=2` |
 | Port conflict | Change `VLLM_PORT`, verify with `./run.sh ps` |
+| Tokenizer error on distilled models | Add `tokenizer: OriginalOrg/OriginalModel` in config YAML |
 | Add vLLM args | Write any CLI arg as YAML in `config/*.yaml` |
+| Copy logs in TUI | Shift+drag to select, Ctrl+C to copy ([details](https://textual.textualize.io/FAQ/#how-can-i-select-and-copy-text-in-a-textual-app)) |
 
 </details>
 
