@@ -352,14 +352,18 @@ class DashboardScreen(Screen):
                 parts = []
                 for g in self._gpus:
                     total_gb = int(g.memory_total) / 1024
-                    ratio = min(per_gpu_gb / total_gb, 1.0) if total_gb > 0 else 0
+                    ratio = per_gpu_gb / total_gb if total_gb > 0 else 0
                     bar_w = 12
-                    filled = round(ratio * bar_w)
-                    empty = bar_w - filled
-                    color = "green" if ratio < 0.7 else ("yellow" if ratio < 0.9 else "red")
-                    bar = f"[{color}]{'━' * filled}[/{color}][dim]{'╌' * empty}[/dim]"
-                    pct = f"{ratio * 100:.0f}%"
-                    parts.append(f"GPU{g.index} {bar} [{color}]{pct}[/{color}] {per_gpu_gb:.1f}/{total_gb:.0f}GB")
+                    if ratio > 1.0:
+                        bar = f"[red bold]{'✗' * bar_w}[/red bold]"
+                        label = f"[red bold]OVER[/red bold] {per_gpu_gb:.1f}/{total_gb:.0f}GB"
+                    else:
+                        filled = round(ratio * bar_w)
+                        empty = bar_w - filled
+                        color = "green" if ratio < 0.7 else ("yellow" if ratio < 0.9 else "red")
+                        bar = f"[{color}]{'━' * filled}[/{color}][dim]{'╌' * empty}[/dim]"
+                        label = f"[{color}]{ratio * 100:.0f}%[/{color}] {per_gpu_gb:.1f}/{total_gb:.0f}GB"
+                    parts.append(f"GPU{g.index} {bar} {label}")
                 gpu_line = " [dim]│[/dim] ".join(parts)
                 result_bar.update(
                     f"  📦 [bold]{model_short}[/bold] {result}{tp_note}\n"
