@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import (
     Button,
@@ -136,7 +136,7 @@ class ContainerUpScreen(Screen):
         with Vertical(id="modal-dialog"):
             yield Static("Start Container", id="title-label")
             yield Static(f"Profile: [b]{self.profile_name}[/b]", id="profile-label")
-            with VerticalScroll(id="version-scroll"):
+            with Vertical(id="version-scroll"):
                 yield Label("Version", id="version-label")
                 with RadioSet(id="version-radio"):
                     yield RadioButton("Local Latest  (loading...)", id=VER_LOCAL, value=True)

@@ -480,7 +480,17 @@ async def estimate_model_memory(model_id: str) -> str:
         kwargs: dict = {"model_id": model_id, "experimental": True}
         if token and not token.startswith("your_"):
             kwargs["hf_token"] = token
-        result = await arun(**kwargs)
+
+        # Try default first, fallback to fp8 for models with unsupported quantization
+        try:
+            result = await arun(**kwargs)
+        except RuntimeError as e:
+            if "kv-cache-dtype" in str(e).lower() or "kv_cache_dtype" in str(e).lower():
+                kwargs["kv_cache_dtype"] = "fp8"
+                result = await arun(**kwargs)
+            else:
+                raise
+
         mem_bytes = getattr(result, 'memory', 0) or 0
         kv_bytes = getattr(result, 'kv_cache', 0) or 0
         total_bytes = getattr(result, 'total_memory', None) or (mem_bytes + kv_bytes)
@@ -496,6 +506,8 @@ async def estimate_model_memory(model_id: str) -> str:
         err = str(e)
         if "403" in err:
             return "gated model - HF_TOKEN required"
+        if "404" in err or "not found" in err.lower():
+            return "model not found on HuggingFace"
         return f"estimation failed"
 
 
