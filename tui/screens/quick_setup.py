@@ -182,7 +182,7 @@ class QuickSetupScreen(ModalScreen[str]):
         existing_profiles = list_profile_names()
         existing_configs = list_config_names()
         original_name = safe_name
-        suffix = 1
+        suffix = 0
         while safe_name in existing_profiles or safe_name in existing_configs:
             suffix += 1
             safe_name = f"{original_name}-{suffix}"
@@ -211,6 +211,7 @@ class QuickSetupScreen(ModalScreen[str]):
             gpu_id=gpu,
             tensor_parallel=str(gpu_count),
             config_name=safe_name,
+            model_id=model,
             enable_lora="true" if lora else "false",
         )
         save_profile(profile)

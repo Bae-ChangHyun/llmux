@@ -10,7 +10,6 @@ COMMON_ENV="$SCRIPT_DIR/.env.common"
 # Load library modules
 source "$SCRIPT_DIR/lib/colors.sh"
 source "$SCRIPT_DIR/lib/validation.sh"
-source "$SCRIPT_DIR/lib/tui.sh"
 
 # Temp file tracking for automatic cleanup on exit
 TEMP_FILES=()
@@ -35,45 +34,36 @@ declare -A VERSION_CACHE
 source "$SCRIPT_DIR/lib/version.sh"
 source "$SCRIPT_DIR/lib/build.sh"
 source "$SCRIPT_DIR/lib/container.sh"
-source "$SCRIPT_DIR/lib/menus.sh"
 
 # Interactive mode entry point
 run_interactive() {
-    # Try Textual TUI first (Python), fallback to whiptail/dialog
-    if command -v python3 &> /dev/null; then
-        local tui_dir="$SCRIPT_DIR/tui"
-        if [[ -f "$tui_dir/app.py" ]]; then
-            # Check if textual is available
-            if ! python3 -c "import textual" 2>/dev/null; then
-                echo -e "${YELLOW}Textual not found. Installing...${NC}"
-                if command -v uv &> /dev/null && [[ -f "$SCRIPT_DIR/pyproject.toml" ]]; then
-                    (cd "$SCRIPT_DIR" && uv sync 2>/dev/null)
-                    if [[ -f "$SCRIPT_DIR/.venv/bin/python" ]]; then
-                        PYTHONPATH="$SCRIPT_DIR" "$SCRIPT_DIR/.venv/bin/python" -m tui.app
-                        return $?
-                    fi
-                fi
-                pip install textual 2>/dev/null
-            fi
-            if python3 -c "import textual" 2>/dev/null; then
-                if [[ -f "$SCRIPT_DIR/.venv/bin/python" ]]; then
-                    PYTHONPATH="$SCRIPT_DIR" "$SCRIPT_DIR/.venv/bin/python" -m tui.app
-                else
-                    PYTHONPATH="$SCRIPT_DIR" python3 -m tui.app
-                fi
-                return $?
-            fi
-            echo -e "${YELLOW}Textual not installed. Install with: pip install textual${NC}"
-            echo -e "${YELLOW}Falling back to whiptail/dialog TUI...${NC}"
-            echo ""
+    local tui_dir="$SCRIPT_DIR/tui"
+    if [[ ! -f "$tui_dir/app.py" ]]; then
+        echo -e "${RED}Error: Textual app not found at $tui_dir/app.py${NC}"
+        return 1
+    fi
+
+    if [[ -f "$SCRIPT_DIR/.venv/bin/python" ]]; then
+        PYTHONPATH="$SCRIPT_DIR" "$SCRIPT_DIR/.venv/bin/python" -m tui.app
+        return $?
+    fi
+
+    if command -v uv &> /dev/null && [[ -f "$SCRIPT_DIR/pyproject.toml" ]]; then
+        (cd "$SCRIPT_DIR" && uv run --no-sync vllm-compose)
+        local rc=$?
+        if [[ $rc -eq 0 ]]; then
+            return 0
         fi
     fi
 
-    # Fallback: legacy whiptail/dialog TUI
-    if ! check_tui_tool; then
-        exit 1
+    if command -v python3 &> /dev/null && python3 -c "import textual, yaml, hf_mem" 2>/dev/null; then
+        PYTHONPATH="$SCRIPT_DIR" python3 -m tui.app
+        return $?
     fi
-    show_main_menu
+
+    echo -e "${RED}Error: Textual dependencies are not available.${NC}"
+    echo "Install with: uv sync"
+    return 1
 }
 
 #=============================================================================

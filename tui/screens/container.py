@@ -121,21 +121,13 @@ class ContainerUpScreen(Screen):
         self._release_version: str = ""
 
     def compose(self) -> ComposeResult:
-        # UX: Guard - config must be set before starting
-        if not self._profile.config_name:
-            with Vertical(id="modal-dialog"):
-                yield Static("Start Container", id="title-label")
-                yield Static(
-                    f"Profile [b]{self.profile_name}[/b] has no config linked.\n"
-                    "Please edit the profile and select a config first.",
-                    id="profile-label",
-                )
-                with Horizontal(classes="buttons"):
-                    yield Button("Close", variant="default", id="cancel-btn")
-            return
         with Vertical(id="modal-dialog"):
             yield Static("Start Container", id="title-label")
             yield Static(f"Profile: [b]{self.profile_name}[/b]", id="profile-label")
+            if not self._profile.config_name:
+                yield Static(
+                    "[yellow]No config linked. A default config will be generated on start.[/yellow]"
+                )
             with Vertical(id="version-scroll"):
                 yield Label("Version", id="version-label")
                 with RadioSet(id="version-radio"):

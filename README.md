@@ -42,7 +42,8 @@ HF_TOKEN=your_token_here
 HF_CACHE_PATH=/home/your-username/.cache/huggingface  # absolute path required
 EOF
 
-# Launch (auto-installs dependencies)
+# Launch
+uv sync
 uv run vllm-compose    # or ./run.sh
 ```
 
@@ -64,11 +65,11 @@ uv run vllm-compose    # or ./run.sh
 
 ## Core Features
 
-**TUI** &mdash; Start, stop, view logs, edit configs — all from one screen
+**TUI** &mdash; Textual-only interface for start, stop, logs, and config management
 
 **Profiles** &mdash; Save per-model settings independently, switch instantly
 
-**Config** &mdash; Manage vLLM params as YAML, Tab autocomplete auto-extracted from your vLLM image
+**Config** &mdash; Manage vLLM params as YAML, Tab autocomplete auto-extracted from your local vLLM image
 
 **GPU Monitor** &mdash; Real-time GPU usage bar on dashboard, auto-refresh every 5s
 
@@ -76,7 +77,7 @@ uv run vllm-compose    # or ./run.sh
 
 **Source Build** &mdash; Auto GPU detection Fast Build (10-30 min), fork support
 
-**LoRA** &mdash; Multi-adapter loading with automatic path mapping
+**LoRA** &mdash; Multi-adapter loading with conditional path mapping when enabled
 
 <br/>
 
@@ -137,6 +138,7 @@ CONFIG_NAME=my-model
 GPU_ID=0
 TENSOR_PARALLEL_SIZE=1
 ENABLE_LORA=false
+MODEL_ID=Qwen/Qwen3-30B   # optional, used to auto-create a default config
 ```
 
 </details>
@@ -183,6 +185,8 @@ response = client.chat.completions.create(
 )
 ```
 
+> LoRA mount is added only when `ENABLE_LORA=true`.
+
 </details>
 
 <details>
@@ -193,9 +197,11 @@ response = client.chat.completions.create(
 | Problem | Solution |
 |:---|:---|
 | Container won't start | Check logs: `./run.sh {profile} logs` |
+| API should stay local-only | Default bind is `127.0.0.1:${VLLM_PORT}`; put it behind a proxy if remote access is needed |
 | GPU OOM | Set `gpu-memory-utilization: 0.7` or `TENSOR_PARALLEL_SIZE=2` |
 | Port conflict | Change `VLLM_PORT`, verify with `./run.sh ps` |
 | Tokenizer error on distilled models | Add `tokenizer: OriginalOrg/OriginalModel` in config YAML |
+| Need extra Python packages | Set `EXTRA_PIP_PACKAGES` in the profile and pin versions carefully |
 | Add vLLM args | Write any CLI arg as YAML in `config/*.yaml` |
 | Copy logs in TUI | Shift+drag to select, Ctrl+C to copy ([details](https://textual.textualize.io/FAQ/#how-can-i-select-and-copy-text-in-a-textual-app)) |
 
@@ -217,7 +223,6 @@ response = client.chat.completions.create(
 - [ ] **Model-specific recommended configs** — Curated vLLM configs per model family (Llama, Qwen, DeepSeek, Gemma, etc.) with vendor-recommended settings for `max-model-len`, `quantization`, `rope-scaling`, and more
 - [ ] **Config presets / templates** — Select from ready-made configs during Quick Setup based on model size and GPU capacity
 - [ ] **.env.common setup wizard** — Interactive first-run setup for HF token and cache path
-- [ ] **Health status in dashboard** — Show `healthy` / `unhealthy` / `starting` in status column
 - [ ] **API connectivity test** — Quick `/v1/models` call to verify the model is serving
 - [ ] **Profile clone** — Duplicate a profile with one click for A/B testing configs
 - [ ] **Batch operations** — Start/stop multiple containers at once

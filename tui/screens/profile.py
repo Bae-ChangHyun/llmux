@@ -155,6 +155,14 @@ class ProfileFormScreen(ModalScreen[str | None]):
                     yield Select(config_options, **select_kwargs)
 
                 with Horizontal(classes="form-row"):
+                    yield Label("Model ID")
+                    yield Input(
+                        value=(p.model_id if p else ""),
+                        placeholder="org/model-name (used for auto config)",
+                        id="model-id-input",
+                    )
+
+                with Horizontal(classes="form-row"):
                     yield Label("Enable LoRA")
                     yield Switch(
                         value=(p.enable_lora == "true") if p else False,
@@ -185,6 +193,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
         config_select = self.query_one("#config-select", Select)
         config_name = str(config_select.value) if config_select.value != Select.BLANK else ""
+        model_id = self.query_one("#model-id-input", Input).value.strip()
 
         # --- Validation ---
         if not name:
@@ -240,6 +249,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             profile.gpu_id = gpu_id or "0"
             profile.tensor_parallel = tp or "1"
             profile.config_name = config_name
+            profile.model_id = model_id
             profile.enable_lora = "true" if lora else "false"
         else:
             profile = Profile(
@@ -249,6 +259,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 gpu_id=gpu_id or "0",
                 tensor_parallel=tp or "1",
                 config_name=config_name,
+                model_id=model_id,
                 enable_lora="true" if lora else "false",
             )
 
