@@ -21,6 +21,7 @@ from textual import work, on
 from tui.backend import (
     check_port_conflict,
     format_gpu_bar,
+    get_dev_build_defaults,
     get_gpu_info,
     load_profile,
     stream_container_up,
@@ -91,6 +92,23 @@ class ContainerUpScreen(Screen):
         display: none;
     }
 
+    ContainerUpScreen #dev-build-options {
+        display: none;
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    ContainerUpScreen .dev-build-row {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    ContainerUpScreen .dev-build-row Label {
+        width: 10;
+        color: $text-muted;
+        padding-top: 1;
+    }
+
     ContainerUpScreen .buttons {
         height: 1;
         align: center middle;
@@ -119,6 +137,7 @@ class ContainerUpScreen(Screen):
         self._profile = load_profile(profile_name)
         self._gpu_timer = None
         self._release_version: str = ""
+        self._dev_repo_url, self._dev_branch = get_dev_build_defaults()
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal-dialog"):
@@ -140,6 +159,21 @@ class ContainerUpScreen(Screen):
                     placeholder="Enter custom image tag...",
                     id="custom-tag-input",
                 )
+                with Vertical(id="dev-build-options"):
+                    with Horizontal(classes="dev-build-row"):
+                        yield Label("Repo URL")
+                        yield Input(
+                            value=self._dev_repo_url,
+                            placeholder="https://github.com/owner/vllm.git",
+                            id="dev-repo-input",
+                        )
+                    with Horizontal(classes="dev-build-row"):
+                        yield Label("Branch")
+                        yield Input(
+                            value=self._dev_branch,
+                            placeholder="main",
+                            id="dev-branch-input",
+                        )
             with Vertical(id="startup-area"):
                 yield Static("", id="startup-status")
                 yield RichLog(highlight=True, auto_scroll=True, id="startup-log")
@@ -206,14 +240,21 @@ class ContainerUpScreen(Screen):
 
     @on(RadioSet.Changed, "#version-radio")
     def _on_version_changed(self, event: RadioSet.Changed) -> None:
-        """Show/hide custom tag input based on radio selection."""
+        """Show/hide extra inputs based on the selected startup mode."""
         custom_input = self.query_one("#custom-tag-input", Input)
+        dev_options = self.query_one("#dev-build-options", Vertical)
         pressed = event.pressed
         if pressed and pressed.id == VER_CUSTOM:
             custom_input.styles.display = "block"
+            dev_options.styles.display = "none"
             custom_input.focus()
+        elif pressed and pressed.id == VER_DEV:
+            custom_input.styles.display = "none"
+            dev_options.styles.display = "block"
+            self.query_one("#dev-repo-input", Input).focus()
         else:
             custom_input.styles.display = "none"
+            dev_options.styles.display = "none"
 
     def _cleanup(self) -> None:
         if self._gpu_timer is not None:
@@ -244,6 +285,8 @@ class ContainerUpScreen(Screen):
         use_dev = False
         tag = ""
         pull = False
+        repo_url = ""
+        branch = ""
 
         if selected_id == VER_LOCAL:
             pass
@@ -255,6 +298,14 @@ class ContainerUpScreen(Screen):
             pull = True
         elif selected_id == VER_DEV:
             use_dev = True
+            repo_url = self.query_one("#dev-repo-input", Input).value.strip()
+            branch = self.query_one("#dev-branch-input", Input).value.strip()
+            if not repo_url:
+                self.app.notify("Please enter a repository URL.", severity="error")
+                return
+            if not branch:
+                self.app.notify("Please enter a branch.", severity="error")
+                return
         elif selected_id == VER_CUSTOM:
             tag = self.query_one("#custom-tag-input", Input).value.strip()
             if not tag:
@@ -284,7 +335,14 @@ class ContainerUpScreen(Screen):
 
         # Stream backend startup output in real-time
         rc = -1
-        async for msg_type, data in stream_container_up(self.profile_name, use_dev=use_dev, tag=tag, pull=pull):
+        async for msg_type, data in stream_container_up(
+            self.profile_name,
+            use_dev=use_dev,
+            tag=tag,
+            pull=pull,
+            repo_url=repo_url,
+            branch=branch,
+        ):
             if msg_type == "log":
                 try:
                     log_widget.write(data)

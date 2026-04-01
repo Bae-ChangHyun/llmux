@@ -16,6 +16,7 @@ PROFILES_DIR = SCRIPT_DIR / "profiles"
 CONFIG_DIR = SCRIPT_DIR / "config"
 COMMON_ENV = SCRIPT_DIR / ".env.common"
 VLLM_SRC_DIR = SCRIPT_DIR / ".vllm-src"
+DEFAULT_VLLM_REPO_URL = "https://github.com/vllm-project/vllm.git"
 
 
 def validate_name(name: str) -> bool:
@@ -314,6 +315,13 @@ def _common_env() -> dict[str, str]:
     return _parse_env_file(COMMON_ENV)
 
 
+def get_dev_build_defaults() -> tuple[str, str]:
+    common = _common_env()
+    repo_url = common.get("VLLM_REPO_URL", DEFAULT_VLLM_REPO_URL) or DEFAULT_VLLM_REPO_URL
+    branch = common.get("VLLM_BRANCH", "main") or "main"
+    return repo_url, branch
+
+
 def _build_lora_options(profile: Profile) -> str:
     if profile.enable_lora != "true":
         return ""
@@ -521,7 +529,7 @@ async def _clone_or_update_vllm(repo_url: str, branch: str):
 async def _stream_build_dev_image(
     branch: str,
     *,
-    repo_url: str = "https://github.com/vllm-project/vllm.git",
+    repo_url: str = DEFAULT_VLLM_REPO_URL,
     custom_tag: str = "",
     use_official: bool = False,
 ):
@@ -582,6 +590,27 @@ async def _stream_build_dev_image(
                 yield event
             return
         yield event
+
+
+async def _get_image_label(image_ref: str, label: str) -> str:
+    rc, out = await run_command(
+        "docker", "inspect", image_ref,
+        f"--format={{{{index .Config.Labels {label!r}}}}}",
+        timeout=20,
+    )
+    if rc != 0:
+        return ""
+    value = out.strip()
+    return "" if value == "<no value>" else value
+
+
+async def _dev_image_matches(image_tag: str, repo_url: str, branch: str) -> bool:
+    image_ref = f"vllm-dev:{image_tag}"
+    saved_repo = await _get_image_label(image_ref, "vllm.repo.url")
+    saved_branch = await _get_image_label(image_ref, "vllm.repo.branch")
+    if not saved_repo or not saved_branch:
+        return False
+    return saved_repo == repo_url and saved_branch == branch
 
 
 async def is_container_running(container_name: str) -> bool:
@@ -657,10 +686,22 @@ async def check_port_conflict(profile: Profile) -> str | None:
     return None
 
 
-async def container_up(profile_name: str, use_dev: bool = False, tag: str = "") -> tuple[int, str]:
+async def container_up(
+    profile_name: str,
+    use_dev: bool = False,
+    tag: str = "",
+    repo_url: str = "",
+    branch: str = "",
+) -> tuple[int, str]:
     lines: list[str] = []
     rc = 0
-    async for msg_type, data in stream_container_up(profile_name, use_dev=use_dev, tag=tag):
+    async for msg_type, data in stream_container_up(
+        profile_name,
+        use_dev=use_dev,
+        tag=tag,
+        repo_url=repo_url,
+        branch=branch,
+    ):
         if msg_type == "log":
             lines.append(data)
         elif msg_type == "rc":
@@ -668,7 +709,14 @@ async def container_up(profile_name: str, use_dev: bool = False, tag: str = "") 
     return rc, "\n".join(lines)
 
 
-async def stream_container_up(profile_name: str, use_dev: bool = False, tag: str = "", pull: bool = False):
+async def stream_container_up(
+    profile_name: str,
+    use_dev: bool = False,
+    tag: str = "",
+    pull: bool = False,
+    repo_url: str = "",
+    branch: str = "",
+):
     """Async generator that streams container startup output line by line."""
     profile = load_profile(profile_name)
 
@@ -702,10 +750,16 @@ async def stream_container_up(profile_name: str, use_dev: bool = False, tag: str
     compose_files = _compose_files(profile, use_dev)
 
     if use_dev:
-        branch = _common_env().get("VLLM_BRANCH", "main") or "main"
-        image_tag = tag or branch
+        default_repo_url, default_branch = get_dev_build_defaults()
+        resolved_repo_url = repo_url.strip() or default_repo_url
+        resolved_branch = branch.strip() or default_branch
+        image_tag = tag or resolved_branch
         rc, _ = await run_command("docker", "image", "inspect", f"vllm-dev:{image_tag}", timeout=20)
-        if rc != 0:
+        needs_build = rc != 0
+        if not tag and not needs_build:
+            needs_build = not await _dev_image_matches(image_tag, resolved_repo_url, resolved_branch)
+
+        if needs_build:
             if tag:
                 yield ("log", f"Error: Image vllm-dev:{image_tag} not found")
                 rc, out = await run_command("docker", "images", "vllm-dev", "--format", "  {{.Tag}}", timeout=20)
@@ -715,8 +769,11 @@ async def stream_container_up(profile_name: str, use_dev: bool = False, tag: str
                         yield ("log", line)
                 yield ("rc", 1)
                 return
-            yield ("log", "Dev image not found. Building first...")
-            async for event in _stream_build_dev_image(branch):
+            if rc == 0:
+                yield ("log", "Existing dev image metadata does not match the requested repository/branch. Rebuilding...")
+            else:
+                yield ("log", "Dev image not found. Building first...")
+            async for event in _stream_build_dev_image(resolved_branch, repo_url=resolved_repo_url):
                 yield event
                 if event[0] == "rc" and event[1] != 0:
                     return
