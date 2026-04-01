@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vllm-compose-tui"
-version = "0.1.0"
+version = "0.6.0"
 description = "Textual TUI for vLLM Container Management"
 requires-python = ">=3.10"
 dependencies = [

@@ -146,6 +146,8 @@ vLLM Compose will:
 
 Set `VLLM_BRANCH` in `.env.common` to choose the default source branch.
 
+You can also override the repository URL and branch directly from the Dev Build screen to build from your own fork.
+
 </details>
 
 <details>
@@ -198,7 +200,7 @@ response = client.chat.completions.create(
 
 - Docker with [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
 - Python 3.10+ (for TUI)
-- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+- [uv](https://docs.astral.sh/uv/)
 - NVIDIA GPU(s)
 
 ---
