@@ -32,6 +32,125 @@ build_lora_options() {
     echo "$lora_options"
 }
 
+profile_env_get() {
+    local key=$1
+    local profile_path=$2
+    grep "^${key}=" "$profile_path" | cut -d'=' -f2-
+}
+
+profile_env_set() {
+    local key=$1
+    local value=$2
+    local profile_path=$3
+
+    if grep -q "^${key}=" "$profile_path"; then
+        sed -i "s|^${key}=.*|${key}=${value}|" "$profile_path"
+    else
+        printf '\n%s=%s\n' "$key" "$value" >> "$profile_path"
+    fi
+}
+
+check_common_env() {
+    local profile_path=$1
+
+    if [[ ! -f "$COMMON_ENV" ]]; then
+        echo -e "${RED}Error: .env.common not found.${NC}"
+        echo -e "${YELLOW}Create it from .env.common.example before starting containers.${NC}"
+        return 1
+    fi
+
+    local hf_cache_path=$(grep "^HF_CACHE_PATH=" "$COMMON_ENV" | cut -d'=' -f2-)
+    if [[ -z "$hf_cache_path" ]]; then
+        echo -e "${RED}Error: HF_CACHE_PATH is not set in .env.common${NC}"
+        return 1
+    fi
+    if [[ "$hf_cache_path" != /* ]]; then
+        echo -e "${RED}Error: HF_CACHE_PATH must be an absolute path. Current value: $hf_cache_path${NC}"
+        return 1
+    fi
+
+    if is_lora_enabled "$profile_path"; then
+        local lora_base_path=$(grep "^LORA_BASE_PATH=" "$COMMON_ENV" | cut -d'=' -f2-)
+        if [[ -z "$lora_base_path" ]]; then
+            echo -e "${RED}Error: ENABLE_LORA=true but LORA_BASE_PATH is not set in .env.common${NC}"
+            return 1
+        fi
+        if [[ "$lora_base_path" != /* ]]; then
+            echo -e "${RED}Error: LORA_BASE_PATH must be an absolute path. Current value: $lora_base_path${NC}"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+is_lora_enabled() {
+    local profile_path=$1
+    local enable_lora=$(profile_env_get "ENABLE_LORA" "$profile_path")
+    [[ "$enable_lora" == "true" ]]
+}
+
+ensure_profile_config() {
+    local profile_path=$1
+    local profile_name=$2
+    local config_name=$(profile_env_get "CONFIG_NAME" "$profile_path")
+    local model_id=$(profile_env_get "MODEL_ID" "$profile_path")
+
+    if [[ -z "$config_name" ]]; then
+        config_name="$profile_name"
+        profile_env_set "CONFIG_NAME" "$config_name" "$profile_path"
+        echo -e "${YELLOW}No config linked for '$profile_name'. Auto-linked default config '${config_name}'.${NC}"
+    fi
+
+    local config_path="$SCRIPT_DIR/config/${config_name}.yaml"
+    if [[ -f "$config_path" ]]; then
+        export CONFIG_NAME="$config_name"
+        return 0
+    fi
+
+    mkdir -p "$SCRIPT_DIR/config"
+
+    if [[ -n "$model_id" ]]; then
+        cat > "$config_path" << EOF
+model: $model_id
+gpu-memory-utilization: 0.55
+EOF
+        echo -e "${YELLOW}Created default config: config/${config_name}.yaml${NC}"
+        export CONFIG_NAME="$config_name"
+        return 0
+    fi
+
+    cat > "$config_path" << EOF
+# Auto-generated default config for profile: $profile_name
+# Set a valid Hugging Face model ID below, then start again.
+model: your-org/your-model
+gpu-memory-utilization: 0.55
+EOF
+    echo -e "${RED}Created config/${config_name}.yaml but MODEL_ID is not set for profile '$profile_name'.${NC}"
+    echo -e "${YELLOW}Edit the config model field or set MODEL_ID in profiles/${profile_name}.env, then start again.${NC}"
+    export CONFIG_NAME="$config_name"
+    return 1
+}
+
+get_compose_files() {
+    local profile_path=$1
+    local use_dev=$2
+    local compose_files=()
+
+    if [[ "$use_dev" == "true" ]]; then
+        compose_files+=("-f" "docker-compose.dev.yaml")
+    else
+        compose_files+=("-f" "docker-compose.yaml")
+    fi
+
+    if is_lora_enabled "$profile_path"; then
+        compose_files+=("-f" "docker-compose.lora.yaml")
+    fi
+
+    compose_files+=("-f" "docker-compose.overrides.yaml")
+    printf '%s\n' "${compose_files[@]}"
+}
+
 check_conflict() {
     local profile=$1
     local gpu_id=$(grep "^GPU_ID=" "$profile" | cut -d'=' -f2)
@@ -86,11 +205,17 @@ run_up() {
 
     cd "$SCRIPT_DIR"
 
-    # Ensure network exists (external: true in docker-compose.yaml)
-    docker network create vllm-network 2>/dev/null || true
+    if ! check_common_env "$profile_path"; then
+        return 1
+    fi
+
+    if ! ensure_profile_config "$profile_path" "$profile_name"; then
+        return 1
+    fi
 
     # Export profile path for container env injection via overrides
     export PROFILE_PATH="$profile_path"
+    mapfile -t compose_files < <(get_compose_files "$profile_path" "$use_dev") || return 1
 
     local extra_packages=$(grep "^EXTRA_PIP_PACKAGES=" "$profile_path" | cut -d'=' -f2)
     if [[ -n "$extra_packages" ]]; then
@@ -123,7 +248,7 @@ run_up() {
 
         echo -e "${BLUE}Using image:${NC} vllm-dev:$image_tag"
         export VLLM_DEV_TAG="$image_tag"
-        docker compose -f docker-compose.dev.yaml -f docker-compose.overrides.yaml --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
+        docker compose "${compose_files[@]}" --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d
     else
         local vllm_version
         if [[ -n "$version_override" ]]; then
@@ -165,7 +290,7 @@ run_up() {
 
         echo -e "${BLUE}Using image:${NC} vllm/vllm-openai:$vllm_version"
         export VLLM_VERSION="$vllm_version"
-        docker compose -f docker-compose.yaml -f docker-compose.overrides.yaml --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d "${pull_args[@]}"
+        docker compose "${compose_files[@]}" --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" up -d "${pull_args[@]}"
     fi
 
     local result=$?
@@ -212,19 +337,20 @@ run_down() {
 
     # Determine which compose file was used based on container image
     local image=$(docker inspect "$container_name" --format='{{.Config.Image}}' 2>/dev/null)
-    local compose_file="docker-compose.yaml"
+    local use_dev="false"
 
     if [[ "$image" == vllm-dev:* ]]; then
-        compose_file="docker-compose.dev.yaml"
+        use_dev="true"
         export VLLM_DEV_TAG="${image#vllm-dev:}"
     fi
 
     cd "$SCRIPT_DIR"
 
     export PROFILE_PATH="$profile_path"
+    mapfile -t compose_files < <(get_compose_files "$profile_path" "$use_dev") || return 1
 
     # Use docker compose down for proper cleanup (networks, etc.)
-    if docker compose -f "$compose_file" -f docker-compose.overrides.yaml --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" down 2>/dev/null; then
+    if docker compose "${compose_files[@]}" --env-file "$COMMON_ENV" --env-file "$profile_path" -p "$profile_name" down 2>/dev/null; then
         echo -e "${GREEN}$profile_name stopped successfully!${NC}"
     else
         # Fallback to direct docker stop/rm if compose down fails

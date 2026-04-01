@@ -25,6 +25,8 @@ from tui.backend import (
     get_dev_images,
     DockerImage,
     run_command,
+    list_profile_names,
+    load_profile,
 )
 
 
@@ -172,10 +174,13 @@ class SystemScreen(Screen):
 
     @work(exclusive=True, group="containers")
     async def _refresh_containers(self) -> None:
-        """Fetch running vLLM containers and display in RichLog."""
+        """Fetch known profile containers and display them."""
+        known_names = {
+            load_profile(name).container_name
+            for name in list_profile_names()
+        }
         rc, output = await run_command(
-            "docker", "ps",
-            "--filter", "name=vllm",
+            "docker", "ps", "-a",
             "--format", "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}",
             timeout=10,
         )
@@ -187,7 +192,16 @@ class SystemScreen(Screen):
         elif not output.strip():
             log.write("[dim]No vLLM containers running.[/]")
         else:
-            for line in output.strip().splitlines():
+            lines = output.strip().splitlines()
+            filtered = [lines[0]]
+            filtered.extend(
+                line for line in lines[1:]
+                if line.split()[0] in known_names
+            )
+            if len(filtered) == 1:
+                log.write("[dim]No profile containers found.[/]")
+                return
+            for line in filtered:
                 log.write(line)
 
     # ----- Actions -----

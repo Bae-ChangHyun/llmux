@@ -34,6 +34,7 @@ class Profile:
     gpu_id: str = "0"
     tensor_parallel: str = "1"
     config_name: str = ""
+    model_id: str = ""
     enable_lora: str = "false"
     max_loras: str = ""
     max_lora_rank: str = ""
@@ -120,7 +121,7 @@ def load_profile(name: str) -> Profile:
     data = _parse_env_file(path)
     known_keys = {
         "CONTAINER_NAME", "VLLM_PORT", "GPU_ID", "TENSOR_PARALLEL_SIZE",
-        "CONFIG_NAME", "ENABLE_LORA", "MAX_LORAS", "MAX_LORA_RANK", "LORA_MODULES",
+        "CONFIG_NAME", "MODEL_ID", "ENABLE_LORA", "MAX_LORAS", "MAX_LORA_RANK", "LORA_MODULES",
     }
     env_vars = {k: v for k, v in data.items() if k not in known_keys}
     return Profile(
@@ -130,6 +131,7 @@ def load_profile(name: str) -> Profile:
         gpu_id=data.get("GPU_ID", "0"),
         tensor_parallel=data.get("TENSOR_PARALLEL_SIZE", "1"),
         config_name=data.get("CONFIG_NAME", ""),
+        model_id=data.get("MODEL_ID", ""),
         enable_lora=data.get("ENABLE_LORA", "false"),
         max_loras=data.get("MAX_LORAS", ""),
         max_lora_rank=data.get("MAX_LORA_RANK", ""),
@@ -147,6 +149,7 @@ def save_profile(profile: Profile) -> None:
         f"CONTAINER_NAME={profile.container_name}",
         f"VLLM_PORT={profile.port}",
         f"CONFIG_NAME={profile.config_name}",
+        f"MODEL_ID={profile.model_id}",
         "",
         "# GPU Configuration",
         f"GPU_ID={profile.gpu_id}",

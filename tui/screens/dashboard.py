@@ -215,7 +215,12 @@ class DashboardScreen(Screen):
                     callback=self._on_profile_saved,
                 )
             else:
-                self.notify("No config linked to this profile.", severity="warning")
+                from tui.screens.config import ConfigFormScreen
+                self.notify("No config linked. Create one now or start to auto-generate a default config.", severity="warning")
+                self.app.push_screen(
+                    ConfigFormScreen(config_name=profile_name),
+                    callback=self._on_profile_saved,
+                )
         elif action == "delete":
             is_running = any(
                 s.running for s in self._statuses if s.profile_name == profile_name
