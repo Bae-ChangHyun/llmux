@@ -146,6 +146,8 @@ vLLM Compose가 자동으로:
 
 기본 소스 브랜치는 `.env.common`의 `VLLM_BRANCH`로 지정할 수 있습니다.
 
+Dev Build 화면에서 repository URL과 branch를 직접 바꿔 custom fork로 빌드할 수도 있습니다.
+
 </details>
 
 <details>
@@ -198,7 +200,7 @@ response = client.chat.completions.create(
 
 - Docker + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
 - Python 3.10+ (TUI용)
-- [uv](https://docs.astral.sh/uv/) (권장) 또는 pip
+- [uv](https://docs.astral.sh/uv/)
 - NVIDIA GPU
 
 ---
