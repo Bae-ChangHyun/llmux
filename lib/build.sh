@@ -199,6 +199,13 @@ run_build() {
     local use_official=false
     local custom_tag=""
 
+    if [[ -f "$COMMON_ENV" ]]; then
+        local env_branch=$(grep "^VLLM_BRANCH=" "$COMMON_ENV" | cut -d'=' -f2)
+        if [[ -n "$env_branch" ]]; then
+            branch="$env_branch"
+        fi
+    fi
+
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case $1 in
