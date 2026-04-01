@@ -3,19 +3,11 @@ services:
     image: vllm/vllm-openai:${VLLM_VERSION}
     container_name: ${CONTAINER_NAME}
     runtime: nvidia
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ['${GPU_ID}']
-              capabilities: [gpu]
     volumes:
       - ${HF_CACHE_PATH}:/root/.cache/huggingface
       - ./config:/config/
-      - ${LORA_BASE_PATH}:/app/lora:ro
     ports:
-      - "${VLLM_PORT}:8000"
+      - "127.0.0.1:${VLLM_PORT}:8000"
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
       - TZ=${TZ:-UTC}
@@ -24,9 +16,6 @@ services:
       - VLLM_WORKER_MULTIPROC_METHOD=spawn
       - VLLM_DISABLE_COMPILE_CACHE=1
     shm_size: "16g"
-    dns:
-      - 8.8.8.8
-      - 8.8.4.4
     command: --config /config/${CONFIG_NAME}.yaml --tensor-parallel-size=${TENSOR_PARALLEL_SIZE} --trust-remote-code ${LORA_OPTIONS:-}
     restart: unless-stopped
     healthcheck:
@@ -35,10 +24,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 600s
-    networks:
-      - vllm-network
-
-networks:
-  vllm-network:
-    name: vllm-network
-    external: true

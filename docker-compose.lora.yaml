@@ -1,0 +1,4 @@
+services:
+  vllm:
+    volumes:
+      - ${LORA_BASE_PATH}:/app/lora:ro

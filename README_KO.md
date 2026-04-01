@@ -42,7 +42,8 @@ HF_TOKEN=your_token_here
 HF_CACHE_PATH=/home/your-username/.cache/huggingface  # 절대 경로 필수
 EOF
 
-# 실행 (의존성 자동 설치)
+# 실행
+uv sync
 uv run vllm-compose    # 또는 ./run.sh
 ```
 
@@ -64,11 +65,11 @@ uv run vllm-compose    # 또는 ./run.sh
 
 ## 핵심 기능
 
-**TUI** &mdash; 모델 시작/중지/로그/설정을 한 화면에서 관리
+**TUI** &mdash; Textual 전용 인터페이스로 모델 시작/중지/로그/설정을 관리
 
 **프로필** &mdash; 모델별 설정을 독립 저장, 언제든 한 번에 전환
 
-**Config** &mdash; vLLM 파라미터를 YAML로 관리, 이미지에서 자동 추출한 파라미터 Tab 자동완성
+**Config** &mdash; vLLM 파라미터를 YAML로 관리, 로컬 vLLM 이미지에서 자동 추출한 파라미터 Tab 자동완성
 
 **GPU 모니터** &mdash; 대시보드에서 실시간 GPU 사용량 바, 5초 자동 갱신
 
@@ -76,7 +77,7 @@ uv run vllm-compose    # 또는 ./run.sh
 
 **소스 빌드** &mdash; GPU 자동 감지 Fast Build (10-30분), Fork 빌드 지원
 
-**LoRA** &mdash; 멀티 어댑터 동시 로드, 경로 자동 매핑
+**LoRA** &mdash; 활성화된 경우에만 경로를 마운트하는 멀티 어댑터 로드
 
 <br/>
 
@@ -137,6 +138,7 @@ CONFIG_NAME=my-model
 GPU_ID=0
 TENSOR_PARALLEL_SIZE=1
 ENABLE_LORA=false
+MODEL_ID=Qwen/Qwen3-30B   # 선택 사항, 기본 config 자동 생성 시 사용
 ```
 
 </details>
@@ -183,6 +185,8 @@ response = client.chat.completions.create(
 )
 ```
 
+> LoRA 마운트는 `ENABLE_LORA=true`일 때만 추가됩니다.
+
 </details>
 
 <details>
@@ -193,9 +197,11 @@ response = client.chat.completions.create(
 | 문제 | 해결 |
 |:---|:---|
 | 컨테이너 미시작 | `./run.sh {profile} logs` 로 로그 확인 |
+| API를 로컬에서만 열고 싶음 | 기본 바인드는 `127.0.0.1:${VLLM_PORT}` 이며, 원격 공개가 필요하면 프록시 뒤에 두는 것을 권장 |
 | GPU OOM | `gpu-memory-utilization: 0.7` 또는 `TENSOR_PARALLEL_SIZE=2` |
 | 포트 충돌 | `VLLM_PORT` 변경 후 `./run.sh ps` 확인 |
 | Distilled 모델 토크나이저 에러 | config YAML에 `tokenizer: 원본Org/원본Model` 추가 |
+| 추가 Python 패키지가 필요함 | 프로필에 `EXTRA_PIP_PACKAGES`를 설정하고 버전을 신중하게 pinning |
 | vLLM 인자 추가 | `config/*.yaml`에 아무 CLI 인자나 YAML로 작성 |
 | TUI 로그 복사 | Shift+드래그로 선택, Ctrl+C로 복사 ([상세](https://textual.textualize.io/FAQ/#how-can-i-select-and-copy-text-in-a-textual-app)) |
 
@@ -217,7 +223,6 @@ response = client.chat.completions.create(
 - [ ] **모델별 추천 Config** — 모델 제조사/커뮤니티 권장 vLLM 설정 (Llama, Qwen, DeepSeek, Gemma 등) `max-model-len`, `quantization`, `rope-scaling` 등 사전 설정 제공
 - [ ] **Config 프리셋/템플릿** — Quick Setup 시 모델 크기와 GPU 용량에 맞는 설정 자동 추천
 - [ ] **.env.common 설정 위자드** — 첫 실행 시 HF 토큰, 캐시 경로 대화형 설정
-- [ ] **Health 상태 표시** — 대시보드 상태 컬럼에 `healthy` / `unhealthy` / `starting` 구분
 - [ ] **API 연결 테스트** — `/v1/models` 호출로 모델 서빙 상태 즉시 확인
 - [ ] **프로필 복제** — 한 클릭으로 프로필 복사하여 A/B 테스트
 - [ ] **일괄 작업** — 여러 컨테이너 동시 시작/중지
