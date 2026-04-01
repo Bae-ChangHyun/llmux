@@ -44,7 +44,7 @@ EOF
 
 # Launch
 uv sync
-uv run vllm-compose    # or ./run.sh
+uv run vllm-compose
 ```
 
 > Quick Setup auto-generates profile + config from just a model name.
@@ -75,7 +75,7 @@ uv run vllm-compose    # or ./run.sh
 
 **Memory Estimator** &mdash; Estimate GPU memory before deploying via [hf-mem](https://github.com/alvarobartt/hf-mem), with per-GPU progress bar
 
-**Source Build** &mdash; Auto GPU detection Fast Build (10-30 min), fork support
+**Source Build** &mdash; Auto GPU detection Fast Build (10-30 min) from the TUI
 
 **LoRA** &mdash; Multi-adapter loading with conditional path mapping when enabled
 
@@ -98,22 +98,6 @@ uv run vllm-compose    # or ./run.sh
 | `c` | Configs |
 | `u` / `d` / `l` | Start / Stop / Logs (selected profile) |
 | `?` | Full shortcut help |
-
-</details>
-
-<details>
-<summary><b>CLI Usage</b></summary>
-
-<br/>
-
-```bash
-./run.sh list                    # List profiles
-./run.sh {profile} up            # Start
-./run.sh {profile} down          # Stop
-./run.sh {profile} logs          # Logs
-./run.sh build                   # Source build
-./run.sh build --repo <url>      # Fork build
-```
 
 </details>
 
@@ -149,17 +133,18 @@ MODEL_ID=Qwen/Qwen3-30B   # optional, used to auto-create a default config
 <br/>
 
 ```bash
-# Fast Build — current GPU only, 10-30 min
-./run.sh build                              # main
-./run.sh build v0.15.0                      # specific version
-./run.sh build main --repo <fork-url>       # fork
-
-# Official Build — all GPUs, 3-6 hours
-./run.sh build --official
-
-# Run with dev image
-./run.sh mymodel up --dev
+# Start the TUI
+uv run vllm-compose
 ```
+
+Then open a profile, choose `Dev Build`, and start it.
+
+vLLM Compose will:
+- clone or update the vLLM source tree
+- build a `vllm-dev:<branch>` image for your current GPU
+- start the selected profile with that dev image
+
+Set `VLLM_BRANCH` in `.env.common` to choose the default source branch.
 
 </details>
 
@@ -196,10 +181,10 @@ response = client.chat.completions.create(
 
 | Problem | Solution |
 |:---|:---|
-| Container won't start | Check logs: `./run.sh {profile} logs` |
+| Container won't start | Open the profile in TUI and inspect logs |
 | API should stay local-only | Default bind is `127.0.0.1:${VLLM_PORT}`; put it behind a proxy if remote access is needed |
 | GPU OOM | Set `gpu-memory-utilization: 0.7` or `TENSOR_PARALLEL_SIZE=2` |
-| Port conflict | Change `VLLM_PORT`, verify with `./run.sh ps` |
+| Port conflict | Change `VLLM_PORT`, then retry from the TUI |
 | Tokenizer error on distilled models | Add `tokenizer: OriginalOrg/OriginalModel` in config YAML |
 | Need extra Python packages | Set `EXTRA_PIP_PACKAGES` in the profile and pin versions carefully |
 | Add vLLM args | Write any CLI arg as YAML in `config/*.yaml` |

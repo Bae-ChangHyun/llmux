@@ -282,7 +282,7 @@ class ContainerUpScreen(Screen):
         except Exception:  # Screen may already be dismissed
             return
 
-        # Stream run.sh output in real-time
+        # Stream backend startup output in real-time
         rc = -1
         async for msg_type, data in stream_container_up(self.profile_name, use_dev=use_dev, tag=tag, pull=pull):
             if msg_type == "log":
