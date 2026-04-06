@@ -136,6 +136,7 @@ class ContainerUpScreen(Screen):
         self.profile_name = profile_name
         self._profile = load_profile(profile_name)
         self._gpu_timer = None
+        self._local_tag: str = ""
         self._release_version: str = ""
         self._dev_repo_url, self._dev_branch = get_dev_build_defaults()
 
@@ -183,16 +184,15 @@ class ContainerUpScreen(Screen):
                 yield Button("Cancel", variant="default", id="cancel-btn")
 
     def on_mount(self) -> None:
-        if self._profile.config_name:
-            self._fetch_version_info()
-            self._fetch_gpu_info()
-            # Focus the radio set for arrow key navigation
-            try:
-                self.query_one("#version-radio", RadioSet).focus()
-            except Exception:
-                pass
-            # Auto-refresh GPU bar every 3 seconds
-            self._gpu_timer = self.set_interval(3, self._fetch_gpu_info)
+        self._fetch_version_info()
+        self._fetch_gpu_info()
+        # Focus the radio set for arrow key navigation
+        try:
+            self.query_one("#version-radio", RadioSet).focus()
+        except Exception:
+            pass
+        # Auto-refresh GPU bar every 3 seconds
+        self._gpu_timer = self.set_interval(3, self._fetch_gpu_info)
 
     @work(exclusive=False)
     async def _fetch_version_info(self) -> None:
@@ -204,12 +204,15 @@ class ContainerUpScreen(Screen):
 
         # Local latest
         local_tag = await get_local_latest_tag()
+        self._local_tag = "" if local_tag == "none" else local_tag
         try:
             btn = radio_set.query_one(f"#{VER_LOCAL}", RadioButton)
             if local_tag == "none":
                 btn.label = "Local Latest  (no images)"
+                btn.disabled = True
             else:
                 btn.label = f"Local Latest  ({local_tag})"
+                btn.disabled = False
         except Exception:
             pass
 
@@ -218,7 +221,12 @@ class ContainerUpScreen(Screen):
         self._release_version = release_ver if release_ver != "unknown" else ""
         try:
             btn = radio_set.query_one(f"#{VER_OFFICIAL}", RadioButton)
-            btn.label = f"Official Release  ({release_ver})"
+            if self._release_version:
+                btn.label = f"Official Release  ({self._release_version})"
+                btn.disabled = False
+            else:
+                btn.label = "Official Release  (unavailable)"
+                btn.disabled = True
         except Exception:
             pass
 
@@ -227,6 +235,15 @@ class ContainerUpScreen(Screen):
         try:
             btn = radio_set.query_one(f"#{VER_NIGHTLY}", RadioButton)
             btn.label = f"Nightly  ({nightly_date})"
+        except Exception:
+            pass
+
+        try:
+            if not self._local_tag:
+                if self._release_version:
+                    radio_set.query_one(f"#{VER_OFFICIAL}", RadioButton).value = True
+                else:
+                    radio_set.query_one(f"#{VER_NIGHTLY}", RadioButton).value = True
         except Exception:
             pass
 
@@ -289,9 +306,14 @@ class ContainerUpScreen(Screen):
         branch = ""
 
         if selected_id == VER_LOCAL:
-            pass
+            if not self._local_tag:
+                self.app.notify("No local vLLM image is available.", severity="error")
+                return
         elif selected_id == VER_OFFICIAL:
-            tag = self._release_version or "latest"
+            if not self._release_version:
+                self.app.notify("Could not determine the latest stable release tag.", severity="error")
+                return
+            tag = self._release_version
             pull = True
         elif selected_id == VER_NIGHTLY:
             tag = "nightly"

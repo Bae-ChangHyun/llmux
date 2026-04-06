@@ -135,7 +135,12 @@ class DashboardScreen(Screen):
 
         for s in statuses:
             if not s.running:
-                status_cell = "[dim]○ stopped[/]"
+                if s.status_text == "exited":
+                    status_cell = "[red]● exited[/]"
+                elif s.status_text == "created":
+                    status_cell = "[yellow]○ created[/]"
+                else:
+                    status_cell = "[dim]○ stopped[/]"
             elif s.health == "healthy":
                 status_cell = "[green]● healthy[/]"
             elif s.health == "unhealthy":

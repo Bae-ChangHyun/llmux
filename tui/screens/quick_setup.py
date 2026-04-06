@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from textual import on, work
 from textual.app import ComposeResult
@@ -188,7 +189,7 @@ class QuickSetupScreen(ModalScreen[str]):
             safe_name = f"{original_name}-{suffix}"
 
         # Copy extra params from selected config
-        extra_params: dict[str, str] = {}
+        extra_params: dict[str, Any] = {}
         copy_select = self.query_one("#copy-config-select", Select)
         if copy_select.value and copy_select.value != Select.BLANK:
             source_cfg = load_config(str(copy_select.value))
