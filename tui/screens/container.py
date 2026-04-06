@@ -338,7 +338,7 @@ class ContainerUpScreen(Screen):
         conflict = await check_port_conflict(self._profile)
         if conflict:
             self.app.notify(
-                f"Port {self._profile.port} is already used by profile '{conflict}'.",
+                f"Port {self._profile.port} is already used by {conflict}.",
                 severity="error",
                 timeout=5,
             )
