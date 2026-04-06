@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from textual.app import ComposeResult
 from textual.screen import Screen, ModalScreen
 from textual.widgets import Button, Static, Label, Input, DataTable, Footer, Header
@@ -22,6 +24,8 @@ from tui.backend import (
     load_profile,
     validate_name as _validate_name,
     extract_vllm_params,
+    format_config_param_value,
+    parse_config_param_value,
 )
 
 
@@ -199,7 +203,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
     def on_mount(self) -> None:
         if self._edit_mode and self._initial_config:
             for key, value in self._initial_config.extra_params.items():
-                self._add_param_row(key, value)
+                self._add_param_row(key, format_config_param_value(value))
         self._load_vllm_params()
 
     @work(exclusive=False)
@@ -269,6 +273,9 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 severity="error",
             )
             return
+        if not self._edit_mode and name in list_config_names():
+            self.notify(f"Config '{name}' already exists.", severity="error")
+            return
         if gpu_mem:
             try:
                 gpu_mem_val = float(gpu_mem)
@@ -282,7 +289,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 return
 
         # --- Collect extra params ---
-        extra_params: dict[str, str] = {}
+        extra_params: dict[str, Any] = {}
         seen_keys: set[str] = set()
         for row in self.query(".param-row"):
             key_input = row.query_one(".param-key", Input)
@@ -294,7 +301,11 @@ class ConfigFormScreen(ModalScreen[str | None]):
                     self.notify(f"Duplicate parameter: {k}", severity="error")
                     return
                 seen_keys.add(k)
-                extra_params[k] = v
+                try:
+                    extra_params[k] = parse_config_param_value(v)
+                except Exception as exc:
+                    self.notify(f"Invalid value for {k}: {exc}", severity="error")
+                    return
 
         # --- Warn about unknown params ---
         unknown = [k for k in extra_params if k not in KNOWN_VLLM_PARAMS]

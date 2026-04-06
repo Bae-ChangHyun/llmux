@@ -6,8 +6,11 @@ import asyncio
 import os
 import re
 import shutil
+import socket
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -54,7 +57,7 @@ class Config:
     name: str
     model: str = ""
     gpu_memory_utilization: str = "0.9"
-    extra_params: dict[str, str] = field(default_factory=dict)
+    extra_params: dict[str, Any] = field(default_factory=dict)
 
     @property
     def path(self) -> Path:
@@ -215,7 +218,7 @@ def load_config(name: str) -> Config:
     data = yaml.safe_load(path.read_text()) or {}
     model = str(data.pop("model", ""))
     gpu_mem = str(data.pop("gpu-memory-utilization", "0.9"))
-    extra = {str(k): "" if isinstance(v, bool) else str(v) for k, v in data.items()}
+    extra = {str(k): v for k, v in data.items()}
     return Config(name=name, model=model, gpu_memory_utilization=gpu_mem, extra_params=extra)
 
 
@@ -225,6 +228,30 @@ def save_config(config: Config) -> None:
     for k, v in config.extra_params.items():
         data[k] = True if v == "" else v
     config.path.write_text(yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False))
+
+
+def parse_config_param_value(raw_value: str) -> Any:
+    """Parse a config parameter value from the UI into a YAML-safe Python value.
+
+    Blank values preserve the existing shortcut semantics for boolean flags and are
+    written back as ``true``.
+    """
+    if raw_value == "":
+        return True
+    return yaml.safe_load(raw_value)
+
+
+def format_config_param_value(value: Any) -> str:
+    """Format a config parameter value for editing in the UI."""
+    if value is True:
+        return ""
+    if value is False:
+        return "false"
+    if value is None:
+        return "null"
+    if isinstance(value, (dict, list)):
+        return yaml.safe_dump(value, default_flow_style=True, allow_unicode=True, sort_keys=False).strip()
+    return str(value)
 
 
 def delete_config(name: str) -> None:
@@ -623,37 +650,45 @@ async def is_container_running(container_name: str) -> bool:
 async def get_container_statuses() -> list[ContainerStatus]:
     """Get status for all profiles, including health check status."""
     profiles = list_profile_names()
-    # Single docker ps call to get running container names and health status
+    # Single docker ps call to get container state / health status
     rc, out = await run_command(
-        "docker", "ps", "--format", "{{.Names}}\t{{.Status}}",
+        "docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}",
         timeout=10,
     )
-    running_info: dict[str, str] = {}
+    container_info: dict[str, str] = {}
     if rc == 0:
         for line in out.strip().splitlines():
             parts = line.split("\t", 1)
             if len(parts) == 2:
-                running_info[parts[0]] = parts[1]
+                container_info[parts[0]] = parts[1]
 
     statuses = []
     for name in profiles:
         p = load_profile(name)
-        running = p.container_name in running_info
+        docker_status = container_info.get(p.container_name, "")
+        running = False
         health = ""
         status_text = "stopped"
-        if running:
-            docker_status = running_info[p.container_name]
+        if docker_status:
             if "(healthy)" in docker_status:
+                running = True
                 health = "healthy"
                 status_text = "healthy"
             elif "(unhealthy)" in docker_status:
+                running = True
                 health = "unhealthy"
                 status_text = "unhealthy"
             elif "(health: starting)" in docker_status:
+                running = True
                 health = "starting"
                 status_text = "starting"
-            else:
+            elif docker_status.startswith("Up "):
+                running = True
                 status_text = "running"
+            elif docker_status.startswith("Exited ") or docker_status.startswith("Dead "):
+                status_text = "exited"
+            else:
+                status_text = "created"
         model = ""
         if p.config_name:
             c = load_config(p.config_name)
@@ -673,16 +708,43 @@ async def get_container_statuses() -> list[ContainerStatus]:
 
 
 async def check_port_conflict(profile: Profile) -> str | None:
-    """Check if the port is used by a *running* container from another profile."""
-    rc, out = await run_command("docker", "ps", "--format", "{{.Names}}", timeout=10)
-    running_names = set(out.strip().splitlines()) if rc == 0 else set()
+    """Check whether the profile port is already occupied.
+
+    Returns a short human-readable description when a conflict is found.
+    """
+    rc, out = await run_command(
+        "docker", "ps", "--format", "{{.Names}}\t{{.Ports}}",
+        timeout=10,
+    )
+    if rc == 0:
+        for line in out.strip().splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) != 2:
+                continue
+            container_name, ports = parts
+            if container_name == profile.container_name:
+                continue
+            if re.search(rf"(^|[^\d]){re.escape(profile.port)}->", ports):
+                for name in list_profile_names():
+                    other = load_profile(name)
+                    if other.container_name == container_name:
+                        return f"profile '{name}'"
+                return f"container '{container_name}'"
 
     for name in list_profile_names():
         if name == profile.name:
             continue
         other = load_profile(name)
-        if other.port == profile.port and other.container_name in running_names:
-            return name
+        if other.port == profile.port and await is_container_running(other.container_name):
+            return f"profile '{name}'"
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", int(profile.port)))
+    except OSError:
+        return f"another local process on 127.0.0.1:{profile.port}"
+    finally:
+        sock.close()
     return None
 
 
@@ -722,7 +784,7 @@ async def stream_container_up(
 
     conflict = await check_port_conflict(profile)
     if conflict:
-        yield ("log", f"Error: Port {profile.port} is already in use by profile '{conflict}'")
+        yield ("log", f"Error: Port {profile.port} is already in use by {conflict}")
         yield ("rc", 1)
         return
 
@@ -791,7 +853,11 @@ async def stream_container_up(
         version_tag = tag or await get_local_latest_tag()
         if version_tag == "none":
             yield ("log", "Error: No local vllm/vllm-openai images found.")
-            yield ("log", "Pull an image first: docker pull vllm/vllm-openai:latest")
+            release_version = await get_dockerhub_release_version()
+            if release_version != "unknown":
+                yield ("log", f"Pull a stable version first: docker pull vllm/vllm-openai:{release_version}")
+            else:
+                yield ("log", "Pull a specific version first, or choose Official Release in the UI.")
             yield ("rc", 1)
             return
 
@@ -990,24 +1056,73 @@ async def estimate_model_memory(model_id: str) -> str:
         return f"estimation failed"
 
 
+def _parse_stable_version_tag(tag: str) -> tuple[int, int, int] | None:
+    match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def _pick_preferred_tag(tags: list[str]) -> str:
+    stable_tags = [
+        (version, tag)
+        for tag in tags
+        if (version := _parse_stable_version_tag(tag)) is not None
+    ]
+    if stable_tags:
+        return max(stable_tags)[1]
+    if "latest" in tags:
+        return "latest"
+    if "nightly" in tags:
+        return "nightly"
+    return sorted(tags)[0]
+
+
 async def get_local_latest_tag() -> str:
-    """Get the latest local vllm/vllm-openai image tag (excluding nightly)."""
+    """Get the most recent local vllm/vllm-openai tag, preferring versioned tags."""
     rc, out = await run_command(
         "docker", "images", "vllm/vllm-openai",
-        "--format", "{{.Tag}}",
-        timeout=10,
+        "--format", "{{.ID}}\t{{.Tag}}",
+        timeout=15,
     )
     if rc != 0 or not out.strip():
         return "none"
-    for tag in out.strip().splitlines():
+
+    image_tags: dict[str, list[str]] = {}
+    for line in out.strip().splitlines():
+        image_id, _, tag = line.partition("\t")
+        image_id = image_id.strip()
         tag = tag.strip()
-        if tag and tag != "<none>":
-            return tag
-    return "none"
+        if not image_id or not tag or tag == "<none>":
+            continue
+        image_tags.setdefault(image_id, []).append(tag)
+
+    latest_created: datetime | None = None
+    latest_tag = "none"
+    for image_id, tags in image_tags.items():
+        inspect_rc, created = await run_command(
+            "docker", "image", "inspect", image_id,
+            "--format", "{{.Created}}",
+            timeout=10,
+        )
+        if inspect_rc != 0 or not created.strip():
+            continue
+        try:
+            created_dt = datetime.fromisoformat(created.strip().replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        preferred_tag = _pick_preferred_tag(tags)
+        if latest_created is None or created_dt > latest_created:
+            latest_created = created_dt
+            latest_tag = preferred_tag
+        elif created_dt == latest_created:
+            latest_tag = _pick_preferred_tag([latest_tag, preferred_tag])
+
+    return latest_tag
 
 
 async def get_dockerhub_release_version() -> str:
-    """Get latest release version from Docker Hub (v0.x.x format)."""
+    """Get the latest exact stable release version from Docker Hub."""
     import json
     rc, out = await run_command(
         "curl", "-s", "--connect-timeout", "5", "--max-time", "10",
@@ -1018,10 +1133,14 @@ async def get_dockerhub_release_version() -> str:
         return "unknown"
     try:
         data = json.loads(out)
-        for result in data.get("results", []):
-            name = result.get("name", "")
-            if re.match(r"^v\d+\.\d+\.\d+", name):
-                return name
+        stable_tags = [
+            (version, name)
+            for result in data.get("results", [])
+            if (name := result.get("name", ""))
+            if (version := _parse_stable_version_tag(name)) is not None
+        ]
+        if stable_tags:
+            return max(stable_tags)[1]
     except (json.JSONDecodeError, KeyError):
         pass
     return "unknown"
