@@ -7,7 +7,7 @@ services:
       - ${HF_CACHE_PATH}:/root/.cache/huggingface
       - ./config:/config/
     ports:
-      - "127.0.0.1:${VLLM_PORT}:8000"
+      - "${VLLM_PORT}:8000"
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
       - TZ=${TZ:-UTC}
