@@ -184,7 +184,7 @@ response = client.chat.completions.create(
 | Problem | Solution |
 |:---|:---|
 | Container won't start | Open the profile in TUI and inspect logs |
-| API should stay local-only | Default bind is `127.0.0.1:${VLLM_PORT}`; put it behind a proxy if remote access is needed |
+| API should stay local-only | Default publish is `0.0.0.0:${VLLM_PORT}` (all interfaces); prefix the `ports` mapping in `docker-compose.yaml` with `127.0.0.1:` to restrict it to localhost |
 | GPU OOM | Set `gpu-memory-utilization: 0.7` or `TENSOR_PARALLEL_SIZE=2` |
 | Port conflict | Change `VLLM_PORT`, then retry from the TUI |
 | Tokenizer error on distilled models | Add `tokenizer: OriginalOrg/OriginalModel` in config YAML |
