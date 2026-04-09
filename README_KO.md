@@ -184,7 +184,7 @@ response = client.chat.completions.create(
 | 문제 | 해결 |
 |:---|:---|
 | 컨테이너 미시작 | TUI에서 해당 프로필의 로그를 열어 확인 |
-| API를 로컬에서만 열고 싶음 | 기본 바인드는 `127.0.0.1:${VLLM_PORT}` 이며, 원격 공개가 필요하면 프록시 뒤에 두는 것을 권장 |
+| API를 로컬에서만 열고 싶음 | 기본 publish 는 `0.0.0.0:${VLLM_PORT}` (모든 인터페이스) 이므로, `docker-compose.yaml` 의 `ports` 매핑 앞에 `127.0.0.1:` 을 붙여 로컬 전용으로 제한 |
 | GPU OOM | `gpu-memory-utilization: 0.7` 또는 `TENSOR_PARALLEL_SIZE=2` |
 | 포트 충돌 | `VLLM_PORT`를 변경한 뒤 다시 시작 |
 | Distilled 모델 토크나이저 에러 | config YAML에 `tokenizer: 원본Org/원본Model` 추가 |
