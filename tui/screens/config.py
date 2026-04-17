@@ -83,14 +83,19 @@ class ConfigFormScreen(ModalScreen[str | None]):
         background: $surface;
         border: round $primary;
         padding: 1 2;
-        width: 70;
-        max-height: 85%;
+        width: 90%;
+        max-width: 80;
+        min-width: 50;
+        height: 95%;
+        max-height: 40;
+        min-height: 12;
     }
     ConfigFormScreen #form-title {
         text-style: bold;
         color: $primary;
         text-align: center;
         width: 100%;
+        height: 1;
         margin-bottom: 1;
     }
     ConfigFormScreen .form-row {
@@ -132,14 +137,16 @@ class ConfigFormScreen(ModalScreen[str | None]):
         border: none;
         color: $error;
     }
-    ConfigFormScreen .form-buttons {
-        height: 1;
-        margin-top: 1;
-        align: center middle;
-    }
     ConfigFormScreen VerticalScroll {
         height: 1fr;
-        max-height: 100%;
+        min-height: 3;
+    }
+    ConfigFormScreen .form-buttons {
+        dock: bottom;
+        height: 3;
+        padding-top: 1;
+        align: center middle;
+        background: $surface;
     }
     """
 

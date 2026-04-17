@@ -26,8 +26,16 @@ class QuickSetupScreen(ModalScreen[str]):
         background: $surface;
         border: round $primary;
         padding: 1 2;
-        width: 65;
-        max-height: 90%;
+        width: 90%;
+        max-width: 70;
+        min-width: 45;
+        height: 95%;
+        max-height: 32;
+        min-height: 12;
+    }
+    QuickSetupScreen VerticalScroll {
+        height: 1fr;
+        min-height: 3;
     }
     QuickSetupScreen .title {
         text-style: bold;
@@ -49,9 +57,11 @@ class QuickSetupScreen(ModalScreen[str]):
         margin-top: 0;
     }
     QuickSetupScreen .buttons {
-        height: 1;
+        dock: bottom;
+        height: 3;
+        padding-top: 1;
         align: center middle;
-        margin-top: 1;
+        background: $surface;
     }
     """
 
