@@ -45,8 +45,16 @@ class ProfileFormScreen(ModalScreen[str | None]):
         background: $surface;
         border: round $primary;
         padding: 1 2;
-        width: 60;
-        max-height: 85%;
+        width: 90%;
+        max-width: 70;
+        min-width: 45;
+        height: 95%;
+        max-height: 36;
+        min-height: 12;
+    }
+    ProfileFormScreen VerticalScroll {
+        height: 1fr;
+        min-height: 3;
     }
     ProfileFormScreen #form-title {
         text-style: bold;
@@ -79,9 +87,11 @@ class ProfileFormScreen(ModalScreen[str | None]):
         margin-left: 2;
     }
     ProfileFormScreen .form-buttons {
-        height: 1;
-        margin-top: 1;
+        dock: bottom;
+        height: 3;
+        padding-top: 1;
         align: center middle;
+        background: $surface;
     }
     """
 

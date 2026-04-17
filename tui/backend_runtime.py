@@ -220,7 +220,7 @@ async def _clone_or_update_vllm(repo_url: str, branch: str):
             return
         if current_remote.strip() != repo_url:
             yield ("log", "Repository URL changed. Re-cloning...")
-            shutil.rmtree(VLLM_SRC_DIR)
+            await asyncio.to_thread(shutil.rmtree, VLLM_SRC_DIR)
 
     if not VLLM_SRC_DIR.exists():
         async for event in stream_command(["git", "clone", repo_url, str(VLLM_SRC_DIR)], cwd=SCRIPT_DIR):
@@ -439,7 +439,8 @@ async def get_container_statuses() -> list[ContainerStatus]:
 
 
 async def check_port_conflict(profile: Profile) -> str | None:
-    """Check whether the profile port is already occupied.
+    """Check whether the profile port is already occupied by a running container
+    or local process. Static profile-to-profile overlap (both stopped) is ignored.
 
     Returns a short human-readable description when a conflict is found.
     """
@@ -460,13 +461,6 @@ async def check_port_conflict(profile: Profile) -> str | None:
                     if other.container_name == container_name:
                         return f"profile '{name}'"
                 return f"container '{container_name}'"
-
-    for name in list_profile_names():
-        if name == profile.name:
-            continue
-        other = load_profile(name)
-        if other.port == profile.port and await is_container_running(other.container_name):
-            return f"profile '{name}'"
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
