@@ -30,6 +30,9 @@ from .backend_storage import (
 )
 
 
+_BUILD_LOCK = asyncio.Lock()
+
+
 def _common_env() -> dict[str, str]:
     return _parse_env_file(COMMON_ENV)
 
@@ -192,6 +195,11 @@ async def _gpu_conflict_messages(profile: Profile) -> list[str]:
 
 
 async def _detect_gpu_arch() -> str:
+    """Return unique GPU compute capabilities as a space-separated list.
+
+    Preserves dot form ('8.6 8.9') so PyTorch's TORCH_CUDA_ARCH_LIST and
+    CMake recognize each arch. Covers mixed-SM setups rather than only GPU 0.
+    """
     rc, out = await run_command(
         "nvidia-smi",
         "--query-gpu=compute_cap",
@@ -200,7 +208,8 @@ async def _detect_gpu_arch() -> str:
     )
     if rc != 0 or not out.strip():
         return ""
-    return out.splitlines()[0].replace(".", "").strip()
+    caps = sorted({line.strip() for line in out.splitlines() if line.strip()})
+    return " ".join(caps)
 
 
 async def _clone_or_update_vllm(repo_url: str, branch: str):
@@ -256,8 +265,14 @@ async def _clone_or_update_vllm(repo_url: str, branch: str):
     rc, out = await run_command_with_options(
         "git", "pull", "origin", branch, cwd=VLLM_SRC_DIR, timeout=120
     )
-    if rc != 0 and out.strip():
-        yield ("log", out.strip())
+    if rc != 0:
+        yield ("log", out.strip() or f"Error: git pull failed for branch {branch}")
+        yield (
+            "log",
+            "Hint: stash or reset local changes in .vllm-src/, then retry.",
+        )
+        yield ("rc", rc)
+        return
 
     rc, commit_hash = await run_command_with_options(
         "git", "rev-parse", "--short", "HEAD", cwd=VLLM_SRC_DIR, timeout=30
@@ -275,6 +290,28 @@ async def _stream_build_dev_image(
     repo_url: str = DEFAULT_VLLM_REPO_URL,
     custom_tag: str = "",
     use_official: bool = False,
+):
+    if _BUILD_LOCK.locked():
+        yield (
+            "log",
+            "Another dev build is already running. Waiting for it to finish...",
+        )
+    async with _BUILD_LOCK:
+        async for event in _do_build_dev_image(
+            branch,
+            repo_url=repo_url,
+            custom_tag=custom_tag,
+            use_official=use_official,
+        ):
+            yield event
+
+
+async def _do_build_dev_image(
+    branch: str,
+    *,
+    repo_url: str,
+    custom_tag: str,
+    use_official: bool,
 ):
     gpu_arch = ""
     gpu_name = ""
@@ -298,7 +335,7 @@ async def _stream_build_dev_image(
     if use_official:
         yield ("log", "Using official vLLM Dockerfile (ALL architectures)")
     else:
-        yield ("log", f"Detected GPU: {gpu_name} (sm_{gpu_arch})")
+        yield ("log", f"Detected GPU: {gpu_name} (compute: {gpu_arch})")
         yield ("log", "Building for your GPU only")
     yield ("log", f"Tag: vllm-dev:{main_tag}")
 
@@ -340,7 +377,10 @@ async def _stream_build_dev_image(
         cmd.extend(["--build-arg", f"torch_cuda_arch_list={gpu_arch}"])
     cmd.append(str(VLLM_SRC_DIR))
 
-    async for event in stream_command(cmd, cwd=SCRIPT_DIR):
+    build_env = os.environ.copy()
+    build_env.setdefault("DOCKER_BUILDKIT", "1")
+
+    async for event in stream_command(cmd, cwd=SCRIPT_DIR, env=build_env):
         if event[0] == "rc":
             if event[1] != 0:
                 yield event

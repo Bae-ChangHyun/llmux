@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 from tui import backend
 from tui.backend_inspect import _pick_preferred_tag
-from tui.backend_runtime import _build_lora_options, _ensure_common_env
+from tui.backend_runtime import _build_lora_options, _detect_gpu_arch, _ensure_common_env
 
 
 class LoadConfigTests(unittest.TestCase):
@@ -361,6 +361,32 @@ class EnsureCommonEnvTests(unittest.TestCase):
             ok, messages = _ensure_common_env(profile)
         self.assertFalse(ok)
         self.assertTrue(any("LORA_BASE_PATH" in m for m in messages))
+
+
+class DetectGpuArchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_single_gpu_keeps_dot_form(self) -> None:
+        async def fake_run(*args, **kwargs):
+            return 0, "8.9\n"
+
+        with patch("tui.backend_runtime.run_command", fake_run):
+            result = await _detect_gpu_arch()
+        self.assertEqual(result, "8.9")
+
+    async def test_multi_gpu_mixed_capabilities_deduped(self) -> None:
+        async def fake_run(*args, **kwargs):
+            return 0, "8.9\n8.6\n8.9\n"
+
+        with patch("tui.backend_runtime.run_command", fake_run):
+            result = await _detect_gpu_arch()
+        self.assertEqual(result, "8.6 8.9")
+
+    async def test_failure_returns_empty(self) -> None:
+        async def fake_run(*args, **kwargs):
+            return 1, ""
+
+        with patch("tui.backend_runtime.run_command", fake_run):
+            result = await _detect_gpu_arch()
+        self.assertEqual(result, "")
 
 
 class PickPreferredTagTests(unittest.TestCase):
