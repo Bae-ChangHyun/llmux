@@ -1,7 +1,7 @@
 [project]
-name = "llm-compose"
+name = "llmux"
 version = "0.1.0"
-description = "Unified Textual TUI that launches and manages both vLLM and llama.cpp model servers as Docker Compose profiles from a single dashboard."
+description = "A terminal multiplexer for LLM servers — one TUI to orchestrate vLLM and llama.cpp Docker profiles side by side."
 requires-python = ">=3.10"
 authors = [{ name = "chbae", email = "chbae624@gmail.com" }]
 license = { text = "MIT" }
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-llm-compose = "tui.app:main"
+llmux = "tui.app:main"
 
 [build-system]
 requires = ["hatchling"]

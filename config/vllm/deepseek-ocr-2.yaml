@@ -1,3 +1,0 @@
-model: deepseek-ai/DeepSeek-OCR-2
-gpu-memory-utilization: 0.55
-max-model-len: 8192

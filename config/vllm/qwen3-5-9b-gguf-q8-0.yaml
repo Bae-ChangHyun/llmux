@@ -1,4 +1,0 @@
-model: unsloth/Qwen3.5-9B-GGUF:Q8_0
-gpu-memory-utilization: 0.8
-tokenizer: Qwen/Qwen3.5-9B
-hf-config-path: Qwen/Qwen3.5-9B

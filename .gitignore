@@ -17,6 +17,16 @@ CLAUDE.local.md
 .current-profile
 .current-profile-*
 
+# User profiles & configs (템플릿 example.* 만 트래킹)
+profiles/vllm/*.env
+profiles/llamacpp/*.env
+!profiles/vllm/example.env
+!profiles/llamacpp/example.env
+config/vllm/*.yaml
+config/llamacpp/*.yaml
+!config/vllm/example.yaml
+!config/llamacpp/example.yaml
+
 # Runtime state / caches
 .env
 .env.local
