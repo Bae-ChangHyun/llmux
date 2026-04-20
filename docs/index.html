@@ -432,7 +432,7 @@
 
   <!-- HERO -->
   <section class="hero">
-    <img src="../assets/llmux.png" alt="llmux" class="hero-logo" onerror="this.style.display='none'" />
+    <img src="https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/assets/llmux.png" alt="llmux" class="hero-logo" onerror="this.style.display='none'" />
     <p class="hero-badge">open source &middot; GPU-native &middot; dual backend</p>
     <h1>
       One TUI for<br/>
@@ -461,11 +461,11 @@
         Docker
       </span>
       <span class="tech-badge">
-        <span style="font-family:var(--mono);font-weight:700;font-size:13px;color:var(--purple);">V</span>
+        <img src="https://github.com/vllm-project.png" width="16" height="16" alt="vLLM" style="border-radius:3px;" />
         vLLM
       </span>
       <span class="tech-badge">
-        <span style="font-family:var(--mono);font-weight:700;font-size:13px;color:var(--cyan);">&#129409;</span>
+        <img src="https://github.com/ggml-org.png" width="16" height="16" alt="llama.cpp" style="border-radius:3px;" />
         llama.cpp
       </span>
       <span class="tech-badge">
@@ -496,7 +496,7 @@
         <p class="problem-num">02</p>
         <h3>Port / GPU clashes</h3>
         <p>Start llama.cpp on 8080, forget that vLLM was already on it. Container crash, logs panic, you dig for the offender.</p>
-        <span class="problem-cmd">$ docker ps &mdash; who owns 8080?</span>
+        <span class="problem-cmd">$ docker ps | grep 8080</span>
       </div>
       <div class="problem-card">
         <p class="problem-num">03</p>
@@ -554,7 +554,7 @@
         <span class="terminal-dot green"></span>
         <span class="terminal-title">llmux</span>
       </div>
-      <img src="../assets/demo.gif" alt="llmux Demo" loading="lazy" onerror="this.style.display='none'" />
+      <img src="https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/assets/demo.gif" alt="llmux Demo" loading="lazy" onerror="this.style.display='none'" />
     </div>
   </section>
 
