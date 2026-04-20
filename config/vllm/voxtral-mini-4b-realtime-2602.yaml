@@ -1,0 +1,4 @@
+model: mistralai/Voxtral-Mini-4B-Realtime-2602
+gpu-memory-utilization: 0.7
+max-model-len: 8192
+compilation-config: '{"cudagraph_mode": "PIECEWISE"}'

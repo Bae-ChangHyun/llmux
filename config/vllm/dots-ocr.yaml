@@ -1,0 +1,3 @@
+model: rednote-hilab/dots.ocr
+gpu-memory-utilization: 0.7
+max-model-len: 16384

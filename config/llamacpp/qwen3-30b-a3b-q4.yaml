@@ -1,0 +1,24 @@
+# Qwen3-30B-A3B (Q4_K_M) — MoE, expert CPU offload 필수 (16GB VRAM 시나리오).
+
+model-file: Qwen3-30B-A3B-Q4_K_M.gguf
+
+ctx-size: 32768
+n-gpu-layers: 99
+
+cache-type-k: bf16
+cache-type-v: bf16
+
+# Qwen3 계열 권장 샘플링
+temp: 0.6
+top-p: 0.95
+top-k: 20
+
+alias: qwen3-30b-a3b
+
+jinja: true
+
+# MoE expert CPU offload
+override-tensors:
+  - ".ffn_.*_exps.=CPU"
+
+extra-args: []

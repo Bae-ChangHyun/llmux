@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+.Python
+build/
+dist/
+
+# uv
+.uv/
+
+# Local-only artifacts
+TODO.md
+CLAUDE.local.md
+.current-profile
+.current-profile-*
+
+# Runtime state / caches
+.env
+.env.local
+.env.common
+.env.common.vllm
+.env.common.llamacpp
+.cache/
+.hf-cache/
+*.log
+
+# Model weights (bulk)
+models/*.gguf
+models/*.safetensors
+models/*.bin
+
+# vLLM dev source checkout (bulky)
+.vllm-src/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Demo/recorded
+*.cast

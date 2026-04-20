@@ -1,0 +1,2 @@
+model: datalab-to/chandra-ocr-2
+gpu-memory-utilization: 0.9

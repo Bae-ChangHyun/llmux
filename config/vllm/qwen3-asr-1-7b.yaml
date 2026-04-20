@@ -1,0 +1,3 @@
+model: Qwen/Qwen3-ASR-1.7B
+gpu-memory-utilization: 0.8
+max-model-len: 35000

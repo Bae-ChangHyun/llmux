@@ -1,0 +1,28 @@
+# Meta-Llama-3.1-8B-Instruct (Q8_0) — dense 모델, 전체 VRAM 적재.
+
+model-file: Meta-Llama-3.1-8B-Instruct-Q8_0.gguf
+
+# Llama 3.1 네이티브 128K 지원. 16K 가 실용 기본값.
+ctx-size: 16384
+n-gpu-layers: 99
+
+# Q8 모델이므로 KV 캐시도 정밀도 유지
+cache-type-k: f16
+cache-type-v: f16
+
+# Llama 계열 기본 샘플링
+temp: 0.7
+top-p: 0.9
+top-k: 40
+
+alias: llama3.1-8b
+
+jinja: true
+
+# expert offload 불필요 (dense model)
+# override-tensors: []
+
+# Flash attention 활성화 (dense 모델에서 효과적)
+flash-attn: true
+
+extra-args: []

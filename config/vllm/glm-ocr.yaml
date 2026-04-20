@@ -1,0 +1,3 @@
+model: zai-org/GLM-OCR
+gpu-memory-utilization: 0.65
+max-model-len: 32768

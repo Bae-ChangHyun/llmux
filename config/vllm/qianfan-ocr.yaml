@@ -1,0 +1,3 @@
+model: baidu/Qianfan-OCR
+gpu-memory-utilization: 0.8
+max-model-len: 16384

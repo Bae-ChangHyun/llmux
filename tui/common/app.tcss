@@ -1,0 +1,409 @@
+/* llm-compose — unified TUI theme (merged from vllm-compose + llamacpp-compose) */
+
+/* ── Base ─────────────────────────────────────────────────────── */
+Screen {
+    background: $surface;
+}
+
+/* ── Unified dashboard ───────────────────────────────────────── */
+DashboardScreen {
+    layout: vertical;
+    padding: 1 0 0 0;
+}
+
+#status-bar {
+    height: 1;
+    padding: 0 2;
+    color: $text-muted;
+    background: $surface;
+}
+
+#profile-table {
+    height: 1fr;
+    margin: 0 2;
+    border: round $primary 30%;
+}
+
+#empty-state {
+    height: 8;
+    margin: 0 2;
+    border: round $primary 30%;
+    content-align: center middle;
+    text-align: center;
+    color: $text-muted;
+}
+
+/* ── GPU Bar ──────────────────────────────────────────────────── */
+#gpu-bar {
+    height: 1;
+    margin: 1 2 0 2;
+    padding: 0;
+    color: $text-muted;
+}
+
+/* ── Memory Estimator (vLLM dashboard) ───────────────────────── */
+#mem-search-area {
+    height: 3;
+    margin: 0 2;
+    padding: 0;
+}
+
+#search-icon {
+    width: 4;
+    height: 3;
+    content-align: center middle;
+    color: $text-muted;
+}
+
+#mem-search-area Input {
+    width: 1fr;
+    border: round gray;
+    background: $surface;
+}
+
+#mem-search-area Input:focus {
+    border: round gray;
+    background: $surface;
+    background-tint: transparent;
+}
+
+#mem-result-bar {
+    height: auto;
+    max-height: 3;
+    margin: 0 2 1 2;
+    padding: 0 1;
+    color: $text;
+}
+
+/* ── Log Screen ───────────────────────────────────────────────── */
+#log-view {
+    height: 1fr;
+}
+
+/* llama.cpp LogViewer */
+LogViewer {
+    align: center middle;
+}
+
+#log-container {
+    width: 90%;
+    height: 85%;
+    border: round $primary;
+    background: $surface;
+}
+
+#log-title {
+    dock: top;
+    height: 1;
+    background: $primary;
+    color: $text;
+    padding: 0 1;
+    text-style: bold;
+}
+
+#log-body {
+    height: 1fr;
+    padding: 0 1;
+    background: $surface;
+    scrollbar-gutter: stable;
+}
+
+/* ── Modal Screens ────────────────────────────────────────────── */
+ModalScreen {
+    align: center middle;
+}
+
+ModalScreen > Vertical {
+    background: $surface;
+    border: round $primary;
+    padding: 1 2;
+    width: 65;
+    max-height: 90%;
+}
+
+ModalScreen VerticalScroll {
+    height: 1fr;
+}
+
+/* ── Forms ─────────────────────────────────────────────────────── */
+.form-container {
+    padding: 1 2;
+    height: auto;
+    max-height: 80%;
+    width: 65;
+    align: center middle;
+}
+
+.form-container Input {
+    margin-bottom: 1;
+}
+
+.form-container Select {
+    margin-bottom: 1;
+}
+
+.form-container Label {
+    margin-bottom: 0;
+    color: $text-muted;
+}
+
+.form-row {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.form-row Label {
+    width: 22;
+    padding: 1 1 0 0;
+    color: $text-muted;
+}
+
+.form-buttons {
+    layout: horizontal;
+    height: 1;
+    align: center middle;
+    margin-top: 1;
+}
+
+/* ── Compact Buttons (form + action bars) ────────────────────── */
+.form-buttons Button,
+.buttons Button {
+    margin: 0 1;
+    min-width: 14;
+    height: 1;
+    border: none;
+    background: $surface-lighten-1;
+    color: $text-muted;
+}
+
+.form-buttons Button.-primary:hover,
+.form-buttons Button.-primary:focus,
+.buttons Button.-primary:hover,
+.buttons Button.-primary:focus {
+    background: $primary;
+    color: $text;
+    text-style: bold;
+}
+
+.form-buttons Button.-error:hover,
+.form-buttons Button.-error:focus,
+.buttons Button.-error:hover,
+.buttons Button.-error:focus {
+    background: $error;
+    color: $text;
+    text-style: bold;
+}
+
+.form-buttons Button:hover,
+.form-buttons Button:focus,
+.buttons Button:hover,
+.buttons Button:focus {
+    background: $surface-lighten-3;
+    color: $text;
+}
+
+.buttons {
+    layout: horizontal;
+    height: 1;
+    align: center middle;
+    margin-top: 1;
+}
+
+#add-param-btn {
+    height: 1;
+    border: none;
+    background: $surface-lighten-2;
+    color: $text-muted;
+    width: auto;
+    margin-top: 1;
+}
+#add-param-btn:hover,
+#add-param-btn:focus {
+    background: $primary;
+    color: $text;
+}
+
+/* ── Config / System sub-screens ─────────────────────────────── */
+#config-title {
+    padding: 1 2;
+    text-style: bold;
+    color: $primary;
+}
+
+#config-table {
+    height: 1fr;
+    margin: 0 2 1 2;
+    border: round $primary 40%;
+}
+
+.section-title {
+    margin: 1 2 0 2;
+    text-style: bold;
+    color: $primary;
+}
+
+#gpu-table {
+    height: auto;
+    max-height: 14;
+    margin: 0 2;
+    border: round $primary 40%;
+}
+
+#official-images,
+#dev-images {
+    height: auto;
+    max-height: 10;
+    margin: 0 2;
+    border: round $primary 40%;
+}
+
+/* ── TabbedContent ────────────────────────────────────────────── */
+TabbedContent {
+    height: 1fr;
+}
+
+ContentSwitcher {
+    height: 1fr;
+}
+
+TabPane {
+    padding: 1 0;
+}
+
+/* ── llama.cpp ActionModal (kept for backend-specific screens) ─ */
+ActionModal {
+    align: center middle;
+}
+
+#action-dialog {
+    width: 42;
+    height: auto;
+    max-height: 90%;
+    border: round $primary 60%;
+    background: $surface;
+    padding: 1 2;
+}
+
+#action-dialog > Label {
+    margin-bottom: 0;
+    width: 100%;
+    content-align: left middle;
+}
+
+#action-dialog .action-rule {
+    height: 1;
+    width: 100%;
+    color: $primary 40%;
+    margin: 0;
+}
+
+#action-dialog .action-section {
+    margin-top: 1;
+    height: 1;
+}
+
+#action-dialog .action-foot {
+    margin-top: 0;
+    height: 1;
+    content-align: right middle;
+    width: 100%;
+}
+
+#action-dialog Button.act {
+    width: 100%;
+    height: 1;
+    min-height: 1;
+    margin: 0;
+    padding: 0 0 0 2;
+    border: none;
+    background: transparent;
+    color: $text;
+    text-style: none;
+    content-align: left middle;
+}
+#action-dialog Button.act:hover {
+    background: $boost;
+}
+#action-dialog Button.act:focus {
+    background: $accent 25%;
+    text-style: bold;
+    border-left: outer $accent;
+    padding: 0 0 0 1;
+}
+#action-dialog Button.act.primary {
+    color: $success;
+}
+#action-dialog Button.act.danger {
+    color: $error;
+}
+#action-dialog Button.act:disabled {
+    color: $text-muted 60%;
+    background: transparent;
+    text-style: none;
+}
+
+/* ── Common state classes ─────────────────────────────────────── */
+.running {
+    color: $success;
+    text-style: bold;
+}
+
+.stopped {
+    color: $text-muted;
+}
+
+.current {
+    text-style: bold;
+    color: $accent;
+}
+
+.missing {
+    color: $warning;
+}
+
+/* ── Backend accent colors (Dashboard 'Backend' column) ──────── */
+.backend-vllm {
+    color: #a78bfa;     /* purple-400 */
+    text-style: bold;
+}
+
+.backend-llamacpp {
+    color: #34d399;     /* green-400 */
+    text-style: bold;
+}
+
+/* ── Backend picker modal (new profile) ──────────────────────── */
+BackendPickerModal > Vertical {
+    width: 50;
+    height: auto;
+    padding: 1 2;
+    background: $surface;
+    border: round $primary;
+}
+
+BackendPickerModal #picker-title {
+    text-style: bold;
+    width: 100%;
+    content-align: center middle;
+    margin-bottom: 1;
+}
+
+BackendPickerModal OptionList {
+    height: auto;
+    max-height: 8;
+}
+
+/* ── Confirm modal ───────────────────────────────────────────── */
+ConfirmModal > Vertical {
+    width: 52;
+    height: auto;
+    padding: 1 2;
+    background: $surface;
+    border: round $error;
+}
+
+ConfirmModal #confirm-message {
+    text-align: center;
+    width: 100%;
+    margin-bottom: 1;
+}

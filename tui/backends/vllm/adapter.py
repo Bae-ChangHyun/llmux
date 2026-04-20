@@ -1,0 +1,74 @@
+"""VllmAdapter — vllm backend 를 통합 Dashboard 규격으로 노출."""
+
+from __future__ import annotations
+
+from tui.backends.vllm import backend as vbackend
+from tui.common.adapter import DashboardRow
+
+
+class VllmAdapter:
+    name = "vllm"
+    display_name = "vLLM"
+    accent_color = "#7c3aed"   # purple-600
+
+    def rows(self) -> list[DashboardRow]:
+        out: list[DashboardRow] = []
+        running = _running_container_names()
+        for name in vbackend.list_profile_names():
+            p = vbackend.load_profile(name)
+            if p is None:
+                continue
+            port = _parse_port(getattr(p, "port", "") or "")
+            container = getattr(p, "container_name", "") or name
+            model = getattr(p, "config_name", "") or ""
+            detail_parts: list[str] = []
+            tp = getattr(p, "tensor_parallel_size", "") or ""
+            if tp and tp != "1":
+                detail_parts.append(f"tp={tp}")
+            if (getattr(p, "enable_lora", "") or "").lower() == "true":
+                detail_parts.append("lora")
+            detail = " ".join(detail_parts)
+            out.append(
+                DashboardRow(
+                    backend=self.name,
+                    profile_name=name,
+                    container_name=container,
+                    port=port,
+                    running=container in running,
+                    model=model,
+                    detail=detail,
+                    gpu_id=getattr(p, "gpu_id", "") or "",
+                    raw=p,
+                )
+            )
+        return out
+
+    def resolve_container(self, profile_name: str) -> str:
+        p = vbackend.load_profile(profile_name)
+        return (getattr(p, "container_name", "") or profile_name) if p else profile_name
+
+
+def _parse_port(value: str) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _running_container_names() -> set[str]:
+    """동기 헬퍼 — adapter.rows() 가 블로킹이라 subprocess 사용.
+    비동기 경로는 tui.common.docker.running_container_names 를 사용."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return set()
+    if out.returncode != 0:
+        return set()
+    return {line.strip() for line in out.stdout.splitlines() if line.strip()}

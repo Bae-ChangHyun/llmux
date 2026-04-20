@@ -1,0 +1,3 @@
+model: nanonets/Nanonets-OCR-s
+gpu-memory-utilization: 0.7
+max-model-len: 16384
