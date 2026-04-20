@@ -33,8 +33,9 @@ class BackendAdapter(Protocol):
     display_name: str         # "vLLM" | "llama.cpp"
     accent_color: str         # CSS color — backend 컬럼 강조용
 
-    def rows(self) -> list[DashboardRow]:
-        """모든 프로필을 DashboardRow 로 변환 (실행 상태 포함)."""
+    def rows(self, running: set[str]) -> list[DashboardRow]:
+        """모든 프로필을 DashboardRow 로 변환. `running` 은 현재 실행 중인
+        컨테이너 이름 집합 — 이벤트 루프 블로킹 방지를 위해 호출자가 주입."""
         ...
 
     def resolve_container(self, profile_name: str) -> str:

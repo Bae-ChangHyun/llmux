@@ -1,6 +1,6 @@
 # Development compose file - uses vLLM built from source
 # Usage:
-#   1. Launch the TUI: uv run vllm-compose
+#   1. Launch the TUI: uv run llmux
 #   2. Choose "Dev Build" when starting a profile
 
 services:

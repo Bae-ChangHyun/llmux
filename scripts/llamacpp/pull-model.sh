@@ -7,6 +7,10 @@
 source "$(dirname "$0")/_common.sh"
 
 PROFILE=${1:?"사용법: pull-model.sh <profile-name>"}
+# 프로필 이름은 파일명 stem 으로 사용되므로 path traversal 차단.
+if [[ ! "$PROFILE" =~ ^[A-Za-z0-9._-]+$ ]] || [[ "$PROFILE" == *".."* ]]; then
+  die "잘못된 프로필 이름: '$PROFILE' (허용: A-Z a-z 0-9 . _ -)"
+fi
 require_env_common
 require_profile "$PROFILE" > /dev/null
 

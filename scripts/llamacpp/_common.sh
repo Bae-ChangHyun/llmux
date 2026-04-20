@@ -1,5 +1,5 @@
 # llamacpp 전용 공용 함수. 다른 스크립트에서 source.
-# 새 구조 (llm-compose 통합 후) 기준 경로:
+# 새 구조 (llmux 통합 후) 기준 경로:
 #   scripts/llamacpp/_common.sh  ← 여기
 #   profiles/llamacpp/*.env
 #   config/llamacpp/*.yaml
@@ -30,7 +30,7 @@ require_profile() {
 }
 
 compose_cmd() {
-  # profile 인자 → base + override compose 파일 + .env.common + profiles/llamacpp/<p>.env 로드한 docker compose 명령 반환.
+  # Deprecated: 공백 포함 경로를 안전하게 전달할 수 없음. run_compose 를 사용할 것.
   local profile=${1:?프로필 이름 필요}
   echo docker compose \
     -f "$COMPOSE_DIR/docker-compose.yaml" \
@@ -38,4 +38,29 @@ compose_cmd() {
     --project-directory "$ROOT" \
     --env-file "$ROOT/.env.common" \
     --env-file "$PROFILES_DIR/${profile}.env"
+}
+
+run_compose() {
+  # 안전판: 인자 분리 유지. profile 이름 + compose 서브명령/옵션을 넘긴다.
+  local profile=${1:?프로필 이름 필요}
+  shift
+  docker compose \
+    -f "$COMPOSE_DIR/docker-compose.yaml" \
+    -f "$COMPOSE_DIR/docker-compose.override.yaml" \
+    --project-directory "$ROOT" \
+    --env-file "$ROOT/.env.common" \
+    --env-file "$PROFILES_DIR/${profile}.env" \
+    "$@"
+}
+
+exec_compose() {
+  local profile=${1:?프로필 이름 필요}
+  shift
+  exec docker compose \
+    -f "$COMPOSE_DIR/docker-compose.yaml" \
+    -f "$COMPOSE_DIR/docker-compose.override.yaml" \
+    --project-directory "$ROOT" \
+    --env-file "$ROOT/.env.common" \
+    --env-file "$PROFILES_DIR/${profile}.env" \
+    "$@"
 }

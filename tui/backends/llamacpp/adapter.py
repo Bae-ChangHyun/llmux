@@ -11,9 +11,9 @@ class LlamacppAdapter:
     display_name = "llama.cpp"
     accent_color = "#16a34a"   # green-600
 
-    def rows(self) -> list[DashboardRow]:
+    def rows(self, running: set[str]) -> list[DashboardRow]:
         out: list[DashboardRow] = []
-        profiles = lbackend.list_profiles()
+        profiles = lbackend.list_profiles(running=running)
         for p in profiles:
             detail = ""
             if p.model_size_gb is not None:
@@ -37,4 +37,4 @@ class LlamacppAdapter:
 
     def resolve_container(self, profile_name: str) -> str:
         p = lbackend.load_profile(profile_name)
-        return (p.container_name or profile_name) if p else profile_name
+        return p.container_name or profile_name

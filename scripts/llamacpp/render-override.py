@@ -15,6 +15,7 @@ render-override.py — profile + config 를 읽어 docker-compose.override.yaml 
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -24,6 +25,17 @@ ROOT = Path(__file__).resolve().parents[2]
 PROFILES_DIR = ROOT / "profiles" / "llamacpp"
 CONFIG_DIR = ROOT / "config" / "llamacpp"
 COMPOSE_DIR = ROOT / "compose" / "llamacpp"
+
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _validate_name(name: str, kind: str) -> str:
+    """filename stem 은 영문/숫자/._- 만 허용. path traversal 방지."""
+    if not name or not _SAFE_NAME.match(name) or ".." in name:
+        raise SystemExit(
+            f"잘못된 {kind} 이름: {name!r} (허용: A-Z a-z 0-9 . _ -)"
+        )
+    return name
 
 
 def parse_env_file(path: Path) -> dict[str, str]:
@@ -82,14 +94,14 @@ def main() -> int:
         print(f"사용법: {sys.argv[0]} <profile-name>", file=sys.stderr)
         return 2
 
-    profile = sys.argv[1]
+    profile = _validate_name(sys.argv[1], "profile")
     profile_path = PROFILES_DIR / f"{profile}.env"
     if not profile_path.exists():
         print(f"프로필 파일 없음: {profile_path}", file=sys.stderr)
         return 1
 
     env = parse_env_file(profile_path)
-    config_name = env.get("CONFIG_NAME", profile)
+    config_name = _validate_name(env.get("CONFIG_NAME") or profile, "config")
     config_path = CONFIG_DIR / f"{config_name}.yaml"
     if not config_path.exists():
         print(f"config 파일 없음: {config_path}", file=sys.stderr)

@@ -364,6 +364,13 @@ class QuickSetupScreen(ModalScreen[str]):
         if not name_raw:
             self.notify("이름 생성 실패", severity="error")
             return
+        # 파일명 stem 으로 직접 쓰이므로 path traversal / 특수문자 차단.
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", name_raw) or ".." in name_raw:
+            self.notify(
+                "이름 은 A-Z a-z 0-9 . _ - 만 가능 (.. 금지)",
+                severity="error",
+            )
+            return
 
         # 충돌 시 suffix
         existing = set(list_profile_names()) | set(list_config_names())

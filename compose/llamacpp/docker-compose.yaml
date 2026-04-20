@@ -1,7 +1,7 @@
-# llamacpp-compose base compose
+# llmux llama.cpp base compose
 #
 # 사용법:
-#   ./scripts/switch.sh <profile-name>
+#   uv run llmux  # 또는 ./scripts/llamacpp/switch.sh <profile-name>
 #
 # 동작:
 #   1. scripts/render-override.py 가 profiles/<name>.env + config/<name>.yaml 를

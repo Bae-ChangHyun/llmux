@@ -1,4 +1,4 @@
-"""llm-compose — unified TUI for vLLM + llama.cpp."""
+"""llmux — unified TUI for vLLM + llama.cpp."""
 
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ from tui.backends.vllm.screens.system import SystemScreen as VllmSystemScreen
 from tui.screens.dashboard import DashboardScreen
 
 
-class LlmComposeApp(App):
+class LlmuxApp(App):
     """Unified vLLM + llama.cpp launcher."""
 
-    TITLE = "llm-compose"
+    TITLE = "llmux"
     SUB_TITLE = "vLLM + llama.cpp"
     CSS_PATH = "common/app.tcss"
 
@@ -51,13 +51,13 @@ class LlmComposeApp(App):
             "  Enter action menu · u/d/l start/stop/logs\n"
             "  e/c/x edit profile/config, delete\n"
             "  n new · s system · r refresh · q quit",
-            title="llm-compose",
+            title="llmux",
             timeout=10,
         )
 
 
 def main() -> None:
-    LlmComposeApp().run()
+    LlmuxApp().run()
 
 
 if __name__ == "__main__":

@@ -14,7 +14,8 @@ class BackendPickerModal(ModalScreen[str]):
     """새 프로필 생성 시 backend 선택 모달. 반환값: 'vllm' | 'llamacpp' | ''."""
 
     BINDINGS = [
-        Binding("escape,q", "cancel", "Cancel", show=False),
+        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("q", "cancel", "Cancel", show=False),
         Binding("1", "pick('vllm')", show=False),
         Binding("2", "pick('llamacpp')", show=False),
     ]

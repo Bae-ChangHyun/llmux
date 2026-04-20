@@ -94,8 +94,39 @@ def format_gpu_bar(gpus: list[GpuInfo], bar_width: int = 8) -> str:
     return "  [dim]│[/dim]  ".join(parts)
 
 
+GPU_WILDCARD = "*"
+"""모든 GPU 를 의미하는 토큰. `all`, `-1` 같은 특수값 정규화 시 사용."""
+
+
 def parse_gpu_ids(raw: str) -> set[str]:
-    """'0,1' or '0' or '' → set of GPU index strings."""
+    """GPU 지정 문자열 → 정규화된 set.
+
+    - '0,1', '0' → {'0'} / {'0','1'}
+    - '' (공백/None) → set() — '지정 없음'. 충돌 검사에서 conservative(검출 안 함) 로 동작.
+    - 'all' / '-1' (대소문자 무관) → {GPU_WILDCARD}. 다른 어떤 GPU 사용과도 교집합 있다고 본다.
+    """
     if not raw:
         return set()
-    return {part.strip() for part in raw.split(",") if part.strip()}
+    out: set[str] = set()
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        lower = token.lower()
+        if lower in {"all", "-1"}:
+            out.add(GPU_WILDCARD)
+        else:
+            out.add(token)
+    return out
+
+
+def gpu_sets_overlap(a: set[str], b: set[str]) -> set[str]:
+    """두 GPU 셋의 교집합. wildcard 가 한쪽이라도 있으면 상대 셋 전체를 돌려준다.
+    양쪽 모두 wildcard 면 {GPU_WILDCARD} 반환."""
+    if GPU_WILDCARD in a and GPU_WILDCARD in b:
+        return {GPU_WILDCARD}
+    if GPU_WILDCARD in a:
+        return set(b) if b else {GPU_WILDCARD}
+    if GPU_WILDCARD in b:
+        return set(a) if a else {GPU_WILDCARD}
+    return a & b

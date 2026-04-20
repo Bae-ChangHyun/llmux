@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # switch.sh — 프로필 기동: GGUF 확인 → override 렌더 → compose up.
-# (과거 single-active 시절 이름. llm-compose 에서는 기존 컨테이너 건드리지 않음.)
+# (과거 single-active 시절 이름. llmux 에서는 기존 컨테이너 건드리지 않음.)
 #
 # 사용법:
 #   ./scripts/llamacpp/switch.sh <profile-name>
@@ -26,7 +26,7 @@ python3 "$SCRIPT_DIR/render-override.py" "$PROFILE"
 
 # 기동
 info "'${PROFILE}' 프로필로 기동"
-$(compose_cmd "$PROFILE") up -d
+run_compose "$PROFILE" up -d
 
 echo "$PROFILE" > "$CURRENT_PROFILE_FILE"
 

@@ -26,7 +26,7 @@ async def chat_completion_bench(
         }
     ).encode()
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _do() -> dict:
         req = urllib.request.Request(
@@ -46,7 +46,7 @@ async def chat_completion_bench(
 
 async def list_served_models(port: int | str, timeout: int = 5) -> list[str]:
     """GET /v1/models → id 리스트. 실패 시 []."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _do() -> list[str]:
         try:

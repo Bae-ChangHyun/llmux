@@ -6,7 +6,6 @@ import asyncio
 import json
 import os
 import re
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -185,13 +184,18 @@ def delete_profile(name: str, delete_config_too: bool = False) -> None:
         path.unlink()
 
 
-def list_profiles() -> list[Profile]:
-    """스캔: 실행 상태 + 다운로드 여부까지 조립."""
+def list_profiles(running: set[str] | None = None) -> list[Profile]:
+    """스캔: 실행 상태 + 다운로드 여부까지 조립.
+
+    `running` 은 호출자가 주입한 실행 중 컨테이너 이름 집합. 이벤트 루프 블로킹을
+    피하기 위해 동기 subprocess 를 내부에서 호출하지 않는다. None 이면 빈 집합
+    으로 취급하므로 TUI 는 Phase 마다 `tui.common.docker.running_container_names`
+    를 한 번 await 해서 넘겨야 한다."""
     if not PROFILES_DIR.is_dir():
         return []
     model_dir = _get_model_dir()
     current = read_current_profile()
-    running_containers = _running_container_names()
+    running_containers: set[str] = running or set()
 
     result: list[Profile] = []
     for name in list_profile_names():
@@ -211,21 +215,6 @@ def read_current_profile() -> str | None:
     if not CURRENT_PROFILE_FILE.exists():
         return None
     return CURRENT_PROFILE_FILE.read_text().strip() or None
-
-
-def _running_container_names() -> set[str]:
-    try:
-        out = subprocess.run(
-            ["docker", "ps", "--format", "{{.Names}}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return set()
-    if out.returncode != 0:
-        return set()
-    return {line.strip() for line in out.stdout.splitlines() if line.strip()}
 
 
 # ---------------------------------------------------------------------------
@@ -330,8 +319,14 @@ async def extract_llama_server_flags() -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-async def run_script(script: str, *args: str) -> tuple[int, str]:
-    """스크립트 실행, (exitcode, combined_output) 반환."""
+async def run_script(
+    script: str, *args: str, timeout: float | None = 1800.0
+) -> tuple[int, str]:
+    """스크립트 실행, (exitcode, combined_output) 반환.
+
+    기본 timeout 30분 — HF GGUF 다운로드는 수십 GB 규모라 긴 여유를 둔다.
+    타임아웃 시 프로세스를 kill 하고 (124, '<stdout+...TIMED OUT>') 를 돌려준다.
+    """
     proc = await asyncio.create_subprocess_exec(
         str(SCRIPTS_DIR / script),
         *args,
@@ -339,7 +334,21 @@ async def run_script(script: str, *args: str) -> tuple[int, str]:
         stderr=asyncio.subprocess.STDOUT,
         cwd=str(PROJECT_ROOT),
     )
-    stdout, _ = await proc.communicate()
+    try:
+        if timeout is None:
+            stdout, _ = await proc.communicate()
+        else:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            pass
+        return 124, f"✗ '{script}' timed out after {timeout}s"
     return proc.returncode or 0, stdout.decode("utf-8", errors="replace")
 
 
@@ -350,7 +359,8 @@ async def stream_logs(container_name: str, lines: int = 200):
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
-    assert proc.stdout is not None
+    if proc.stdout is None:
+        return
     try:
         while True:
             chunk = await proc.stdout.readline()
@@ -364,6 +374,7 @@ async def stream_logs(container_name: str, lines: int = 200):
                 await asyncio.wait_for(proc.wait(), timeout=2)
             except asyncio.TimeoutError:
                 proc.kill()
+                await proc.wait()
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -451,11 +462,11 @@ async def list_hf_repo_files(repo: str) -> list[dict]:
     """HF API 로 repo 의 파일 목록 가져오기. GGUF 파일만 필터링하지는 않음."""
     import urllib.request
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _do():
         url = f"https://huggingface.co/api/models/{repo}/tree/main"
-        req = urllib.request.Request(url, headers={"User-Agent": "llamacpp-compose"})
+        req = urllib.request.Request(url, headers={"User-Agent": "llmux"})
         with urllib.request.urlopen(req, timeout=15) as r:
             return json.loads(r.read().decode())
 

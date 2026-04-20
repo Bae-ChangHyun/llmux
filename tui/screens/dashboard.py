@@ -17,7 +17,11 @@ from tui.backends.vllm import backend as vbackend
 from tui.backends.vllm.adapter import VllmAdapter
 from tui.common import docker as common_docker
 from tui.common.adapter import DashboardRow
-from tui.common.conflicts import gpu_conflicts, port_conflicts
+from tui.common.conflicts import (
+    external_port_conflicts,
+    gpu_conflicts,
+    port_conflicts,
+)
 from tui.common.http import chat_completion_bench, list_served_models
 from tui.common.mem import estimate_model_memory
 from tui.common.widgets import BackendPickerModal, ConfirmModal
@@ -79,7 +83,7 @@ class DashboardScreen(Screen):
         table = self.query_one("#profile-table", DataTable)
         table.add_columns("Backend", "Profile", "Status", "Port", "Model", "Detail")
         self._reload()
-        self._refresh_timer = self.set_interval(5.0, self._reload)
+        self._refresh_timer = self.set_interval(5.0, lambda: self._reload())
         self._poll_gpu()
 
     def on_screen_suspend(self) -> None:
@@ -95,8 +99,25 @@ class DashboardScreen(Screen):
     # Data refresh
     # ------------------------------------------------------------------
 
-    def _reload(self) -> None:
-        rows = [*self._vllm.rows(), *self._llamacpp.rows()]
+    @work(exclusive=True, group="dashboard-reload")
+    async def _reload(self) -> None:
+        """모든 backend 프로필 재스캔. `docker ps` 는 단 한 번만 호출해 두 adapter 에 주입.
+
+        Adapter 하나가 실패해도 다른 쪽 상태가 유지되도록 예외를 분리한다."""
+        try:
+            running = await common_docker.running_container_names()
+        except Exception:
+            running = set()
+
+        rows: list[DashboardRow] = []
+        try:
+            rows.extend(self._vllm.rows(running))
+        except Exception as exc:
+            self.notify(f"vLLM scan failed: {exc}", severity="error")
+        try:
+            rows.extend(self._llamacpp.rows(running))
+        except Exception as exc:
+            self.notify(f"llama.cpp scan failed: {exc}", severity="error")
         rows.sort(key=lambda r: (r.backend, r.profile_name))
         self._rows = rows
         self._render_rows(rows)
@@ -226,8 +247,7 @@ class DashboardScreen(Screen):
         from tui.backends.llamacpp.screens.dashboard import ActionModal
 
         profile = lbackend.load_profile(row.profile_name)
-        running_set = _llamacpp_running_names()
-        profile.running = profile.container_name in running_set
+        profile.running = row.running
 
         def after(action: str | None) -> None:
             if action:
@@ -242,18 +262,32 @@ class DashboardScreen(Screen):
     def _confirm_conflicts_before_start(
         self, row: DashboardRow, on_ok
     ) -> None:
-        """start 실행 전 다른 backend 포함 port/gpu 충돌 체크.
-        - 충돌 없음 → on_ok() 즉시 실행.
-        - 충돌 있음 → ConfirmModal 로 사용자 판단 받아 진행."""
+        """start 실행 전 다른 backend 포함 port/gpu 충돌 체크 (비동기 external 감지 포함)."""
+        self._check_and_confirm(row, on_ok)
+
+    @work(exclusive=False, group="conflict-check")
+    async def _check_and_confirm(self, row: DashboardRow, on_ok) -> None:
         port_msgs = port_conflicts(row, self._rows)
         gpu_msgs = gpu_conflicts(row, self._rows)
-        if not port_msgs and not gpu_msgs:
+        try:
+            ext_ports = await common_docker.running_container_ports()
+        except Exception:
+            ext_ports = {}
+        ext_msgs = external_port_conflicts(row, self._rows, ext_ports)
+
+        if not port_msgs and not gpu_msgs and not ext_msgs:
             on_ok()
             return
-        lines = []
+
+        lines: list[str] = []
         if port_msgs:
-            lines.append("[b]Port conflict:[/b]")
+            lines.append("[b]Port conflict (llmux):[/b]")
             lines += [f"  • {m}" for m in port_msgs]
+        if ext_msgs:
+            if lines:
+                lines.append("")
+            lines.append("[b]Port conflict (external):[/b]")
+            lines += [f"  • {m}" for m in ext_msgs]
         if gpu_msgs:
             if lines:
                 lines.append("")
@@ -380,7 +414,7 @@ class DashboardScreen(Screen):
             self._confirm_conflicts_before_start(row, launch)
             return
         elif action == "stop":
-            self._run_llamacpp_stop(name)
+            self._confirm_llamacpp_stop(name)
         elif action == "logs":
             from tui.backends.llamacpp.screens.dashboard import LogViewer
 
@@ -404,20 +438,38 @@ class DashboardScreen(Screen):
 
     @work(exclusive=True)
     async def _run_llamacpp_switch(self, name: str) -> None:
-        code, _ = await lbackend.run_script("switch.sh", name)
+        code, out = await lbackend.run_script("switch.sh", name)
         if code == 0:
             self.notify(f"✓ '{name}' 활성화")
         else:
-            self.notify(f"✗ switch 실패 ({code})", severity="error")
+            tail = out.splitlines()[-3:] if out else []
+            msg = " / ".join(tail) if tail else f"code={code}"
+            self.notify(f"✗ switch 실패: {msg}", severity="error")
         self._reload()
 
-    @work(exclusive=True)
+    def _confirm_llamacpp_stop(self, name: str) -> None:
+        def on_ok(ok: bool) -> None:
+            if ok:
+                self._run_llamacpp_stop(name)
+
+        self.app.push_screen(
+            ConfirmModal(
+                f"Stop llama.cpp container [b]{name}[/b]?",
+                confirm_label="Yes, stop",
+            ),
+            on_ok,
+        )
+
+    @work(exclusive=False)
     async def _run_llamacpp_stop(self, name: str) -> None:
-        code, _ = await lbackend.run_script("stop.sh")
+        self.notify(f"Stopping {name}...")
+        code, out = await lbackend.run_script("stop.sh", name)
         if code == 0:
             self.notify(f"✓ '{name}' 중지")
         else:
-            self.notify(f"✗ stop 실패 ({code})", severity="error")
+            tail = out.splitlines()[-3:] if out else []
+            msg = " / ".join(tail) if tail else f"code={code}"
+            self.notify(f"✗ stop 실패: {msg}", severity="error")
         self._reload()
 
     @work(exclusive=True)
@@ -466,7 +518,7 @@ class DashboardScreen(Screen):
         if row.backend == "vllm":
             self._confirm_vllm_stop(row.profile_name)
         else:
-            self._run_llamacpp_stop(row.profile_name)
+            self._confirm_llamacpp_stop(row.profile_name)
 
     def action_view_logs(self) -> None:
         row = self._selected_row()
@@ -538,7 +590,21 @@ class DashboardScreen(Screen):
         self.app.push_screen(BackendPickerModal(), after)
 
     def action_system_info(self) -> None:
-        self.app.push_screen("vllm_system")
+        """현재 커서 위치의 backend 에 맞는 System 화면으로 이동.
+        선택된 row 가 없으면 backend picker 로 사용자 선택."""
+        row = self._selected_row()
+        if row is not None:
+            screen_id = "vllm_system" if row.backend == "vllm" else "llamacpp_system"
+            self.app.push_screen(screen_id)
+            return
+
+        def after(backend_name: str) -> None:
+            if backend_name == "vllm":
+                self.app.push_screen("vllm_system")
+            elif backend_name == "llamacpp":
+                self.app.push_screen("llamacpp_system")
+
+        self.app.push_screen(BackendPickerModal(), after)
 
     def action_help(self) -> None:
         self.notify(
@@ -628,25 +694,3 @@ class DashboardScreen(Screen):
                 result_bar.update(f"  📦 [bold]{model_short}[/bold]  {result}")
         except Exception:
             pass
-
-
-# ---------------------------------------------------------------------------
-# helpers (llama.cpp 상태 주입용)
-# ---------------------------------------------------------------------------
-
-
-def _llamacpp_running_names() -> set[str]:
-    import subprocess
-
-    try:
-        out = subprocess.run(
-            ["docker", "ps", "--format", "{{.Names}}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return set()
-    if out.returncode != 0:
-        return set()
-    return {line.strip() for line in out.stdout.splitlines() if line.strip()}
