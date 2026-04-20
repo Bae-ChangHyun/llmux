@@ -93,7 +93,6 @@ LLAMA_SERVER_FLAGS: dict[str, tuple[str, str]] = {
     # 기타 고급
     "host":             ("bind host (docker override 에 의해 강제됨)", "0.0.0.0"),
     "port":             ("bind port (docker override 에 의해 강제됨)", "8080"),
-    "extra-args":       ("render 스크립트가 verbatim 으로 붙이는 추가 인자 리스트", "[]"),
 }
 
 

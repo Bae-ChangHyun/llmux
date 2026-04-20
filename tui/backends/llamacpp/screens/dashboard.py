@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
-from textual import work
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Button, DataTable, Footer, Header, Label, RichLog, Static
+from textual.widgets import (
+    Button,
+    DataTable,
+    Footer,
+    Header,
+    Label,
+    OptionList,
+    RichLog,
+    Static,
+)
+from textual.widgets.option_list import Option
 
 from tui.backends.llamacpp import backend
 
@@ -28,22 +38,32 @@ def _model_cell(p: backend.Profile) -> str:
 
 
 class ActionModal(ModalScreen[str]):
-    """프로필 액션 선택 모달. 미니멀 리스트 스타일 + hotkey."""
+    """프로필 액션 선택 모달. vLLM ProfileActionScreen 과 동일한 OptionList 스타일."""
 
-    BINDINGS = [
-        Binding("escape,q", "cancel", "Close"),
-        # priority=True 로 Button 위젯보다 먼저 받아 focus 이동
-        Binding("up,k", "nav_prev", "Prev", show=False, priority=True),
-        Binding("down,j", "nav_next", "Next", show=False, priority=True),
-        Binding("u", "act('start')", "Start", show=False),
-        Binding("d", "act('stop')", "Stop", show=False),
-        Binding("l", "act('logs')", "Logs", show=False),
-        Binding("b", "act('benchmark')", "Benchmark", show=False),
-        Binding("p", "act('pull')", "Pull", show=False),
-        Binding("c", "act('edit-config')", "Config", show=False),
-        Binding("e", "act('edit-profile')", "Profile", show=False),
-        Binding("X", "act('delete-profile')", "Delete", show=False),
-    ]
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    DEFAULT_CSS = """
+    ActionModal {
+        align: center middle;
+    }
+    ActionModal > Vertical {
+        background: $surface;
+        border: round $primary;
+        padding: 1 2;
+        width: 42;
+        height: auto;
+    }
+    ActionModal #action-title {
+        text-style: bold;
+        text-align: center;
+        width: 100%;
+        margin-bottom: 1;
+    }
+    ActionModal OptionList {
+        height: auto;
+        max-height: 14;
+    }
+    """
 
     def __init__(self, profile: backend.Profile) -> None:
         super().__init__()
@@ -55,115 +75,32 @@ class ActionModal(ModalScreen[str]):
         downloaded = p.downloaded
 
         if running:
-            status = "[b $success]●[/] running"
-        elif not downloaded:
-            status = "[$warning]○[/] stopped · no GGUF"
+            status = "[green]● running[/]"
         else:
-            status = "[dim]○[/] stopped"
-        current = "  [dim $accent]★[/]" if p.is_current else ""
+            status = "[dim]○ stopped[/]"
 
-        with Vertical(id="action-dialog"):
-            yield Label(f"[b]{p.name}[/b]  {status}{current}")
-            yield Static("[dim]─────────────[/dim]", classes="action-rule")
-
-            yield Static("[dim]▸ 실행[/dim]", classes="action-section")
-            yield Button(
-                self._row("u", "Start / Switch", "이미 실행 중" if running else None),
-                id="start", classes="act primary", disabled=running,
-            )
-            yield Button(
-                self._row("d", "Stop"),
-                id="stop", classes="act danger", disabled=not running,
-            )
-            yield Button(
-                self._row("l", "Logs"),
-                id="logs", classes="act", disabled=not running,
-            )
-            yield Button(
-                self._row("b", "Benchmark"),
-                id="benchmark", classes="act", disabled=not running,
-            )
-
-            yield Static("[dim]▸ 모델[/dim]", classes="action-section")
-            yield Button(
-                self._row("p", "Download GGUF", "완료됨" if downloaded else None),
-                id="pull", classes="act", disabled=downloaded,
-            )
-
-            yield Static("[dim]▸ 편집[/dim]", classes="action-section")
-            yield Button(
-                self._row("c", "Edit Config"),
-                id="edit-config", classes="act",
-            )
-            yield Button(
-                self._row("e", "Edit Profile"),
-                id="edit-profile", classes="act",
-            )
-            yield Button(
-                self._row("X", "Delete Profile", "실행 중 — 먼저 중지" if running else None),
-                id="delete-profile", classes="act danger", disabled=running,
-            )
-
-            yield Static("[dim]─────────────[/dim]", classes="action-rule")
-            yield Static(
-                "[dim]↑↓/j/k: 이동   Enter: 실행   esc/q: 닫기[/dim]",
-                classes="action-foot",
-            )
-
-    def on_mount(self) -> None:
-        """첫 enabled 버튼에 자동 focus."""
-        for btn in self.query("Button.act"):
-            if not btn.disabled:
-                btn.focus()
-                break
-
-    def _enabled_buttons(self) -> list[Button]:
-        return [b for b in self.query("Button.act") if not b.disabled]
-
-    def action_nav_next(self) -> None:
-        buttons = self._enabled_buttons()
-        if not buttons:
-            return
-        try:
-            idx = buttons.index(self.focused)  # type: ignore[arg-type]
-        except (ValueError, TypeError):
-            idx = -1
-        buttons[(idx + 1) % len(buttons)].focus()
-
-    def action_nav_prev(self) -> None:
-        buttons = self._enabled_buttons()
-        if not buttons:
-            return
-        try:
-            idx = buttons.index(self.focused)  # type: ignore[arg-type]
-        except (ValueError, TypeError):
-            idx = 0
-        buttons[(idx - 1) % len(buttons)].focus()
-
-    @staticmethod
-    def _row(key: str, label: str, note: str | None = None) -> str:
-        suffix = f"  [dim]— {note}[/dim]" if note else ""
-        return f"[b $accent]\\[{key}][/] {label}{suffix}"
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel" or event.button.id is None:
-            self.dismiss(None)
+        options: list[Option] = []
+        if running:
+            options.append(Option("■ Stop Container", id="stop"))
+            options.append(Option("◉ View Logs", id="logs"))
+            options.append(Option("⚡ Benchmark", id="benchmark"))
         else:
-            self.dismiss(event.button.id)
+            options.append(Option("▶ Start Container", id="start"))
+        options.append(Option("✎ Edit Profile", id="edit-profile"))
+        options.append(Option("⚙ Edit Config", id="edit-config"))
+        if not running:
+            options.append(Option("✗ Delete Profile", id="delete-profile"))
+
+        with Vertical():
+            yield Static(f"{p.name}  {status}", id="action-title")
+            yield OptionList(*options, id="action-list")
+
+    @on(OptionList.OptionSelected, "#action-list")
+    def _on_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option.id or "")
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def action_act(self, action_id: str) -> None:
-        """단축키로 해당 액션 dismiss. disabled 상태면 무시."""
-        try:
-            btn = self.query_one(f"#{action_id}", Button)
-        except Exception:
-            return
-        if btn.disabled:
-            self.notify("현재 상태에서 사용할 수 없음", severity="warning", timeout=2)
-            return
-        self.dismiss(action_id)
+        self.dismiss("")
 
 
 class LogViewer(ModalScreen[None]):

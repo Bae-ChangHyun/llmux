@@ -18,6 +18,7 @@ from tui.backends.vllm.adapter import VllmAdapter
 from tui.common import docker as common_docker
 from tui.common.adapter import DashboardRow
 from tui.common.conflicts import gpu_conflicts, port_conflicts
+from tui.common.http import chat_completion_bench, list_served_models
 from tui.common.mem import estimate_model_memory
 from tui.common.widgets import BackendPickerModal, ConfirmModal
 
@@ -225,16 +226,8 @@ class DashboardScreen(Screen):
         from tui.backends.llamacpp.screens.dashboard import ActionModal
 
         profile = lbackend.load_profile(row.profile_name)
-        # 상태 주입 (ActionModal 은 Profile.running/downloaded 를 본다)
         running_set = _llamacpp_running_names()
         profile.running = profile.container_name in running_set
-        if profile.model_file:
-            from pathlib import Path
-
-            mp = _llamacpp_model_dir() / profile.model_file
-            if mp.exists():
-                profile.downloaded = True
-                profile.model_size_gb = round(mp.stat().st_size / 1024**3, 1)
 
         def after(action: str | None) -> None:
             if action:
@@ -298,6 +291,8 @@ class DashboardScreen(Screen):
 
             p = vbackend.load_profile(name)
             self.app.push_screen(LogScreen(p.container_name))
+        elif action == "benchmark":
+            self._run_vllm_bench(row)
         elif action == "edit_profile":
             from tui.backends.vllm.screens.profile import ProfileFormScreen
 
@@ -335,6 +330,32 @@ class DashboardScreen(Screen):
             on_ok,
         )
 
+    @work(exclusive=True)
+    async def _run_vllm_bench(self, row: DashboardRow) -> None:
+        """vLLM /v1/chat/completions 한 번 쏴서 tok/s 측정."""
+        if not row.port:
+            self.notify("포트 정보 없음", severity="error")
+            return
+        models = await list_served_models(row.port)
+        model = models[0] if models else (row.model or "")
+        if not model:
+            self.notify("서빙 모델 식별 실패 (/v1/models 응답 없음)", severity="error")
+            return
+        self.notify(f"벤치마크 실행 ({model})...")
+        try:
+            r = await chat_completion_bench(row.port, model)
+            u = r["usage"]
+            ct = u.get("completion_tokens", 0)
+            elapsed = r["elapsed"]
+            tps = ct / elapsed if elapsed > 0 else 0
+            self.notify(
+                f"✓ {ct} tok / {elapsed:.2f}s = [b]{tps:.1f} tok/s[/b]",
+                title=row.profile_name,
+                timeout=10,
+            )
+        except Exception as exc:
+            self.notify(f"✗ 벤치마크 실패: {exc}", severity="error")
+
     @work(exclusive=False)
     async def _run_vllm_stop(self, name: str) -> None:
         self.notify(f"Stopping {name}...")
@@ -364,9 +385,6 @@ class DashboardScreen(Screen):
             from tui.backends.llamacpp.screens.dashboard import LogViewer
 
             self.app.push_screen(LogViewer(profile.container_name))
-        elif action == "pull":
-            self.notify(f"'{name}' 모델 다운로드 (수십 GB, 시간 소요)...", timeout=8)
-            self._run_llamacpp_pull(name)
         elif action == "benchmark":
             self._run_llamacpp_bench(profile)
         elif action == "edit-config":
@@ -400,16 +418,6 @@ class DashboardScreen(Screen):
             self.notify(f"✓ '{name}' 중지")
         else:
             self.notify(f"✗ stop 실패 ({code})", severity="error")
-        self._reload()
-
-    @work(exclusive=True)
-    async def _run_llamacpp_pull(self, name: str) -> None:
-        code, out = await lbackend.run_script("pull-model.sh", name)
-        if code == 0:
-            self.notify(f"✓ '{name}' GGUF 다운로드 완료")
-        else:
-            tail = out.splitlines()[-3:] if out else []
-            self.notify("✗ 다운로드 실패: " + " / ".join(tail), severity="error")
         self._reload()
 
     @work(exclusive=True)
@@ -642,19 +650,3 @@ def _llamacpp_running_names() -> set[str]:
     if out.returncode != 0:
         return set()
     return {line.strip() for line in out.stdout.splitlines() if line.strip()}
-
-
-def _llamacpp_model_dir():
-    from pathlib import Path
-
-    env_common = lbackend.COMMON_ENV
-    default = lbackend.PROJECT_ROOT / "models"
-    if not env_common.exists():
-        return default
-    env = lbackend._parse_env_file(env_common)
-    raw = env.get("MODEL_DIR")
-    if not raw:
-        return default
-    import os
-
-    return Path(os.path.expanduser(os.path.expandvars(raw)))

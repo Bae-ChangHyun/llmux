@@ -23,8 +23,8 @@ class BackendPickerModal(ModalScreen[str]):
         with Vertical():
             yield Static("Select backend", id="picker-title")
             yield OptionList(
-                Option("[1] vLLM       — HF Transformers / LoRA / TP", id="vllm"),
-                Option("[2] llama.cpp  — GGUF / CUDA offload", id="llamacpp"),
+                Option("vLLM", id="vllm"),
+                Option("llama.cpp", id="llamacpp"),
                 id="picker-list",
             )
             yield Static(

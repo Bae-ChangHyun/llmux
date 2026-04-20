@@ -387,39 +387,7 @@ async def quick_health(port: int) -> bool:
         return False
 
 
-async def chat_completion(
-    port: int, model: str, prompt: str, max_tokens: int = 200
-) -> dict:
-    """벤치마크용 단일 /v1/chat/completions 호출."""
-    import time
-    import urllib.request
-
-    payload = json.dumps(
-        {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "stream": False,
-            "chat_template_kwargs": {"enable_thinking": False},
-        }
-    ).encode()
-
-    loop = asyncio.get_event_loop()
-
-    def _do():
-        req = urllib.request.Request(
-            f"http://localhost:{port}/v1/chat/completions",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-        )
-        t0 = time.time()
-        with urllib.request.urlopen(req, timeout=600) as r:
-            raw = r.read().decode()
-        elapsed = time.time() - t0
-        d = json.loads(raw, strict=False)
-        return {"elapsed": elapsed, "usage": d.get("usage", {})}
-
-    return await loop.run_in_executor(None, _do)
+from tui.common.http import chat_completion_bench as chat_completion  # re-export
 
 
 # ---------------------------------------------------------------------------

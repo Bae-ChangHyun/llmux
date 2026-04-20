@@ -437,6 +437,7 @@ class ProfileActionScreen(ModalScreen[str]):
         if self._profile_running:
             options.append(Option("■ Stop Container", id="stop"))
             options.append(Option("◉ View Logs", id="logs"))
+            options.append(Option("⚡ Benchmark", id="benchmark"))
         else:
             options.append(Option("▶ Start Container", id="start"))
         options.append(Option("✎ Edit Profile", id="edit_profile"))

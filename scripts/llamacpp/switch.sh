@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# switch.sh — 프로필 전환: 현재 컨테이너 중지 → 렌더 → 새 프로필로 기동.
+# switch.sh — 프로필 기동: GGUF 확인 → override 렌더 → compose up.
+# (과거 single-active 시절 이름. llm-compose 에서는 기존 컨테이너 건드리지 않음.)
 #
 # 사용법:
 #   ./scripts/llamacpp/switch.sh <profile-name>
@@ -9,15 +10,6 @@ source "$(dirname "$0")/_common.sh"
 PROFILE=${1:?"사용법: switch.sh <profile-name>"}
 require_env_common
 require_profile "$PROFILE" > /dev/null
-
-# 이전 프로필 있으면 down
-if [[ -f "$CURRENT_PROFILE_FILE" ]]; then
-  PREV=$(cat "$CURRENT_PROFILE_FILE")
-  if [[ -f "$PROFILES_DIR/${PREV}.env" ]]; then
-    info "이전 프로필 '${PREV}' 중지"
-    $(compose_cmd "$PREV") down 2>/dev/null || true
-  fi
-fi
 
 # shellcheck disable=SC1091
 set -a; source "$ROOT/.env.common"; source "$PROFILES_DIR/${PROFILE}.env"; set +a

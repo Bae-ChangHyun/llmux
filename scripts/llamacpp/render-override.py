@@ -43,11 +43,15 @@ def parse_env_file(path: Path) -> dict[str, str]:
 
 def render_command(cfg: dict) -> list[str]:
     """config yaml → llama-server CLI 인자 리스트."""
-    args: list[str] = ["--host", "0.0.0.0", "--port", "8080"]
+    args: list[str] = ["--host", "0.0.0.0", "--port", "8080", "--no-webui"]
 
     # 특수 키 먼저 처리
     if "model-file" in cfg:
         args.extend(["--model", f"/models/{cfg.pop('model-file')}"])
+
+    # WebUI 는 강제 off. 사용자가 webui 활성화하려 해도 무시.
+    cfg.pop("no-webui", None)
+    cfg.pop("webui", None)
 
     override_tensors = cfg.pop("override-tensors", None) or []
     extra_args = cfg.pop("extra-args", None) or []

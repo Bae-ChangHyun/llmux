@@ -9,7 +9,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Collapsible, Input, Label, Select, Static
+from textual.widgets import Button, Input, Label, Select, Static
 
 from tui.backends.llamacpp.backend import (
     Profile,
@@ -140,43 +140,6 @@ class ProfileFormScreen(ModalScreen[str | None]):
                         select_kwargs["value"] = p.config_name
                     yield Select(config_options, **select_kwargs)
 
-                has_hf = bool(p and (p.model_file or p.hf_repo or p.hf_file))
-                with Collapsible(
-                    title="HuggingFace 자동 다운로드 (선택)",
-                    collapsed=not has_hf,
-                    id="hf-collapsible",
-                ):
-                    yield Static(
-                        "[dim]이 값들은 scripts/pull-model.sh 전용입니다. "
-                        "설정하면 'Download GGUF' 액션이 HF_REPO/HF_FILE 로 자동 다운로드합니다. "
-                        "실제 서빙에 사용될 GGUF 경로는 Config YAML 의 'model-file' 이 결정합니다.[/dim]",
-                        id="section-hint",
-                    )
-
-                    with Horizontal(classes="form-row"):
-                        yield Label("Model File")
-                        yield Input(
-                            value=p.model_file if p else "",
-                            placeholder="My-Model-Q4_K_M.gguf",
-                            id="model-file-input",
-                        )
-
-                    with Horizontal(classes="form-row"):
-                        yield Label("HF Repo")
-                        yield Input(
-                            value=p.hf_repo if p else "",
-                            placeholder="unsloth/My-Model-GGUF",
-                            id="hf-repo-input",
-                        )
-
-                    with Horizontal(classes="form-row"):
-                        yield Label("HF File")
-                        yield Input(
-                            value=p.hf_file if p else "",
-                            placeholder="(비우면 Model File 과 동일)",
-                            id="hf-file-input",
-                        )
-
             with Horizontal(classes="form-buttons"):
                 yield Button("Save", id="save-btn", variant="primary")
                 yield Button("Close", id="cancel-btn", variant="default")
@@ -187,9 +150,6 @@ class ProfileFormScreen(ModalScreen[str | None]):
         container = self.query_one("#container-input", Input).value.strip()
         port = self.query_one("#port-input", Input).value.strip()
         gpu_id = self.query_one("#gpu-input", Input).value.strip()
-        model_file = self.query_one("#model-file-input", Input).value.strip()
-        hf_repo = self.query_one("#hf-repo-input", Input).value.strip()
-        hf_file = self.query_one("#hf-file-input", Input).value.strip()
 
         config_select = self.query_one("#config-select", Select)
         config_name = (
@@ -222,20 +182,13 @@ class ProfileFormScreen(ModalScreen[str | None]):
             self.notify("GPU ID 는 숫자/콤마 (예: 0 또는 0,1)", severity="error")
             return
 
-        # hf_file 기본값 = model_file
-        if model_file and not hf_file:
-            hf_file = model_file
-
-        # --- Build ---
+        # --- Build --- (HF 필드는 quick_setup 에서 설정, 편집 시 보존)
         if self._edit_mode and self._profile is not None:
             p = self._profile
             p.container_name = container or name
             p.port = port_int
             p.gpu_id = gpu_id or "0"
             p.config_name = config_name or name
-            p.model_file = model_file
-            p.hf_repo = hf_repo
-            p.hf_file = hf_file
         else:
             p = Profile(
                 name=name,
@@ -243,9 +196,6 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 port=port_int,
                 gpu_id=gpu_id or "0",
                 config_name=config_name or name,
-                model_file=model_file,
-                hf_repo=hf_repo,
-                hf_file=hf_file,
             )
 
         save_profile(p)
