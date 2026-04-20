@@ -54,3 +54,4 @@ models/*.bin
 
 # Demo/recorded
 *.cast
+compose/llamacpp/docker-compose.override.yaml
