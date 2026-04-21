@@ -29,17 +29,6 @@ require_profile() {
   echo "$path"
 }
 
-compose_cmd() {
-  # Deprecated: 공백 포함 경로를 안전하게 전달할 수 없음. run_compose 를 사용할 것.
-  local profile=${1:?프로필 이름 필요}
-  echo docker compose \
-    -f "$COMPOSE_DIR/docker-compose.yaml" \
-    -f "$COMPOSE_DIR/docker-compose.override.yaml" \
-    --project-directory "$ROOT" \
-    --env-file "$ROOT/.env.common" \
-    --env-file "$PROFILES_DIR/${profile}.env"
-}
-
 run_compose() {
   # 안전판: 인자 분리 유지. profile 이름 + compose 서브명령/옵션을 넘긴다.
   local profile=${1:?프로필 이름 필요}

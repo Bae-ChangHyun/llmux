@@ -423,7 +423,6 @@ class CheckPortConflictTests(unittest.IsolatedAsyncioTestCase):
                 "run_command": fake_run_command,
                 "list_profile_names": lambda: ["current", "other"],
                 "load_profile": fake_load_profile,
-                "is_container_running": AsyncMock(return_value=False),
             },
         ):
             conflict = await backend.check_port_conflict(profile)

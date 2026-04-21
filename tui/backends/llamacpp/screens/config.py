@@ -12,7 +12,6 @@ from textual.screen import ModalScreen, Screen
 from textual.suggester import SuggestFromList
 from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static
 
-from tui.backends.llamacpp import backend
 from tui.backends.llamacpp.backend import (
     Config,
     delete_config,

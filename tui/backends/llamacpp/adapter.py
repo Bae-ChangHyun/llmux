@@ -34,7 +34,3 @@ class LlamacppAdapter:
                 )
             )
         return out
-
-    def resolve_container(self, profile_name: str) -> str:
-        p = lbackend.load_profile(profile_name)
-        return p.container_name or profile_name

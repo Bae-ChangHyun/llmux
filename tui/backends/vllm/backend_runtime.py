@@ -414,13 +414,6 @@ async def _dev_image_matches(image_tag: str, repo_url: str, branch: str) -> bool
     return saved_repo == repo_url and saved_branch == branch
 
 
-async def is_container_running(container_name: str) -> bool:
-    rc, out = await run_command("docker", "ps", "--format", "{{.Names}}", timeout=10)
-    if rc != 0:
-        return False
-    return container_name in out.strip().splitlines()
-
-
 async def get_container_statuses() -> list[ContainerStatus]:
     """Get status for all profiles, including health check status."""
     profiles = list_profile_names()
@@ -513,29 +506,6 @@ async def check_port_conflict(profile: Profile) -> str | None:
     finally:
         sock.close()
     return None
-
-
-async def container_up(
-    profile_name: str,
-    use_dev: bool = False,
-    tag: str = "",
-    repo_url: str = "",
-    branch: str = "",
-) -> tuple[int, str]:
-    lines: list[str] = []
-    rc = 0
-    async for msg_type, data in stream_container_up(
-        profile_name,
-        use_dev=use_dev,
-        tag=tag,
-        repo_url=repo_url,
-        branch=branch,
-    ):
-        if msg_type == "log":
-            lines.append(data)
-        elif msg_type == "rc":
-            rc = int(data)
-    return rc, "\n".join(lines)
 
 
 async def stream_container_up(

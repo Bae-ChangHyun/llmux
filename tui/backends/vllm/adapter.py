@@ -42,10 +42,6 @@ class VllmAdapter:
             )
         return out
 
-    def resolve_container(self, profile_name: str) -> str:
-        p = vbackend.load_profile(profile_name)
-        return (getattr(p, "container_name", "") or profile_name) if p else profile_name
-
 
 def _parse_port(value: str) -> int | None:
     try:

@@ -12,7 +12,6 @@ SCRIPT_DIR = PROJECT_ROOT
 PROFILES_DIR = PROJECT_ROOT / "profiles" / "vllm"
 CONFIG_DIR = PROJECT_ROOT / "config" / "vllm"
 COMPOSE_DIR = PROJECT_ROOT / "compose" / "vllm"
-SCRIPTS_DIR = PROJECT_ROOT / "scripts" / "vllm"
 COMMON_ENV = PROJECT_ROOT / ".env.common"
 VLLM_SRC_DIR = PROJECT_ROOT / ".vllm-src"
 DEFAULT_VLLM_REPO_URL = "https://github.com/vllm-project/vllm.git"

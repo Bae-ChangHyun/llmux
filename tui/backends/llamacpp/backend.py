@@ -16,7 +16,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ROOT = PROJECT_ROOT
 PROFILES_DIR = PROJECT_ROOT / "profiles" / "llamacpp"
 CONFIG_DIR = PROJECT_ROOT / "config" / "llamacpp"
-COMPOSE_DIR = PROJECT_ROOT / "compose" / "llamacpp"
 SCRIPTS_DIR = PROJECT_ROOT / "scripts" / "llamacpp"
 COMMON_ENV = PROJECT_ROOT / ".env.common"
 CURRENT_PROFILE_FILE = PROJECT_ROOT / ".current-profile.llamacpp"
@@ -382,20 +381,6 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 def strip_ansi(s: str) -> str:
     return _ANSI_RE.sub("", s)
-
-
-async def quick_health(port: int) -> bool:
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "curl", "-sf", "--max-time", "2",
-            f"http://localhost:{port}/health",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
-        return proc.returncode == 0
-    except FileNotFoundError:
-        return False
 
 
 from tui.common.http import chat_completion_bench as chat_completion  # re-export

@@ -31,10 +31,8 @@ from .backend_process import run_command, run_command_with_options, stream_comma
 from .backend_runtime import (
     check_port_conflict,
     container_down,
-    container_up,
     get_container_statuses,
     get_dev_build_defaults,
-    is_container_running,
     stream_container_logs,
     stream_container_up,
 )
@@ -67,7 +65,6 @@ __all__ = [
     "_parse_env_file",
     "check_port_conflict",
     "container_down",
-    "container_up",
     "delete_config",
     "delete_profile",
     "estimate_model_memory",
@@ -82,7 +79,6 @@ __all__ = [
     "get_dockerhub_release_version",
     "get_gpu_info",
     "get_local_latest_tag",
-    "is_container_running",
     "list_config_names",
     "list_profile_names",
     "load_config",
