@@ -53,7 +53,13 @@ def _parse_stable_version_tag(tag: str) -> tuple[int, int, int] | None:
     return tuple(int(part) for part in match.groups())
 
 
-def _pick_preferred_tag(tags: list[str]) -> str:
+def _pick_preferred_tag(tags: list[str]) -> str | None:
+    """Pick the highest semantic-version tag (e.g. v0.19.1). Returns None if the
+    image has only moving tags like `latest` / `nightly` / `<none>`.
+
+    We deliberately ignore `latest` and `nightly` because they don't describe
+    the actual image contents — they're just aliases that upstream rewrites.
+    """
     stable_tags = [
         (version, tag)
         for tag in tags
@@ -61,15 +67,17 @@ def _pick_preferred_tag(tags: list[str]) -> str:
     ]
     if stable_tags:
         return max(stable_tags)[1]
-    if "latest" in tags:
-        return "latest"
-    if "nightly" in tags:
-        return "nightly"
-    return sorted(tags)[0]
+    return None
 
 
 async def get_local_latest_tag() -> str:
-    """Get the most recent local vllm/vllm-openai tag, preferring versioned tags."""
+    """Return the highest-version local vllm/vllm-openai tag.
+
+    Only semver-style tags (e.g. `v0.19.1`) are considered. `latest` and
+    `nightly` are skipped because they don't self-describe. If no versioned
+    tag exists locally, returns "none" so the UI can prompt the user to pull
+    a specific version.
+    """
     rc, out = await run_command(
         "docker",
         "images",
@@ -90,32 +98,20 @@ async def get_local_latest_tag() -> str:
             continue
         image_tags.setdefault(image_id, []).append(tag)
 
-    latest_created: datetime | None = None
-    latest_tag = "none"
-    for image_id, tags in image_tags.items():
-        inspect_rc, created = await run_command(
-            "docker",
-            "image",
-            "inspect",
-            image_id,
-            "--format",
-            "{{.Created}}",
-            timeout=10,
-        )
-        if inspect_rc != 0 or not created.strip():
+    best_version: tuple[int, int, int] | None = None
+    best_tag = "none"
+    for tags in image_tags.values():
+        preferred = _pick_preferred_tag(tags)
+        if preferred is None:
             continue
-        try:
-            created_dt = datetime.fromisoformat(created.strip().replace("Z", "+00:00"))
-        except ValueError:
+        version = _parse_stable_version_tag(preferred)
+        if version is None:
             continue
-        preferred_tag = _pick_preferred_tag(tags)
-        if latest_created is None or created_dt > latest_created:
-            latest_created = created_dt
-            latest_tag = preferred_tag
-        elif created_dt == latest_created:
-            latest_tag = _pick_preferred_tag([latest_tag, preferred_tag])
+        if best_version is None or version > best_version:
+            best_version = version
+            best_tag = preferred
 
-    return latest_tag
+    return best_tag
 
 
 async def get_dockerhub_release_version() -> str:

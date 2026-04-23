@@ -9,10 +9,10 @@ source "$(dirname "$0")/_common.sh"
 
 PROFILE=${1:?"사용법: switch.sh <profile-name>"}
 require_env_common
-require_profile "$PROFILE" > /dev/null
+ENV_FILE="$(render_profile "$PROFILE")"
 
 # shellcheck disable=SC1091
-set -a; source "$ROOT/.env.common"; source "$PROFILES_DIR/${PROFILE}.env"; set +a
+set -a; source "$ROOT/.env.common"; source "$ENV_FILE"; set +a
 
 # 모델 파일 존재 확인 (없으면 다운로드)
 if [[ ! -f "${MODEL_DIR}/${MODEL_FILE}" ]]; then

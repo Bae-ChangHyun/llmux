@@ -174,10 +174,10 @@ class ParseEnvFileTests(unittest.TestCase):
 class SaveLoadProfileRoundTripTests(unittest.TestCase):
     def setUp(self) -> None:
         self._name = "__test_roundtrip_profile__"
-        self._path = backend.PROFILES_DIR / f"{self._name}.env"
+        self._path = backend.RUNTIME_DIR / f"{self._name}.env"
 
     def tearDown(self) -> None:
-        self._path.unlink(missing_ok=True)
+        backend.delete_profile(self._name)
 
     def test_save_then_load_preserves_fields(self) -> None:
         profile = backend.Profile(
@@ -215,13 +215,13 @@ class DeleteProfileTests(unittest.TestCase):
     def setUp(self) -> None:
         self._profile_name = "__test_del_profile__"
         self._config_name = "__test_del_shared_config__"
-        self._profile_path = backend.PROFILES_DIR / f"{self._profile_name}.env"
+        self._profile_path = backend.RUNTIME_DIR / f"{self._profile_name}.env"
         self._config_path = backend.CONFIG_DIR / f"{self._config_name}.yaml"
-        self._other_profile_path = backend.PROFILES_DIR / "__test_del_other__.env"
+        self._other_profile_path = backend.RUNTIME_DIR / "__test_del_other__.env"
 
     def tearDown(self) -> None:
-        self._profile_path.unlink(missing_ok=True)
-        self._other_profile_path.unlink(missing_ok=True)
+        backend.delete_profile(self._profile_name)
+        backend.delete_profile("__test_del_other__")
         self._config_path.unlink(missing_ok=True)
 
     def test_delete_removes_profile_file(self) -> None:
@@ -393,15 +393,20 @@ class PickPreferredTagTests(unittest.TestCase):
     def test_prefers_highest_stable_version(self) -> None:
         self.assertEqual(_pick_preferred_tag(["v0.6.0", "v0.8.2", "v0.7.3"]), "v0.8.2")
 
-    def test_falls_back_to_latest(self) -> None:
-        self.assertEqual(_pick_preferred_tag(["latest", "random-tag"]), "latest")
+    def test_returns_versioned_over_latest(self) -> None:
+        self.assertEqual(_pick_preferred_tag(["v0.8.2", "latest"]), "v0.8.2")
 
-    def test_falls_back_to_nightly(self) -> None:
-        self.assertEqual(_pick_preferred_tag(["nightly", "random-tag"]), "nightly")
+    def test_ignores_latest_alone(self) -> None:
+        self.assertIsNone(_pick_preferred_tag(["latest", "random-tag"]))
 
-    def test_returns_first_sorted_when_no_known_tag(self) -> None:
-        result = _pick_preferred_tag(["zeta", "alpha", "mu"])
-        self.assertEqual(result, "alpha")
+    def test_ignores_nightly_alone(self) -> None:
+        self.assertIsNone(_pick_preferred_tag(["nightly", "random-tag"]))
+
+    def test_returns_none_when_no_versioned_tag(self) -> None:
+        self.assertIsNone(_pick_preferred_tag(["zeta", "alpha", "mu"]))
+
+    def test_returns_none_for_empty(self) -> None:
+        self.assertIsNone(_pick_preferred_tag([]))
 
 
 class CheckPortConflictTests(unittest.IsolatedAsyncioTestCase):

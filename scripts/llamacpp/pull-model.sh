@@ -12,14 +12,14 @@ if [[ ! "$PROFILE" =~ ^[A-Za-z0-9._-]+$ ]] || [[ "$PROFILE" == *".."* ]]; then
   die "잘못된 프로필 이름: '$PROFILE' (허용: A-Z a-z 0-9 . _ -)"
 fi
 require_env_common
-require_profile "$PROFILE" > /dev/null
+ENV_FILE="$(render_profile "$PROFILE")"
 
 # shellcheck disable=SC1091
-set -a; source "$ROOT/.env.common"; source "$PROFILES_DIR/${PROFILE}.env"; set +a
+set -a; source "$ROOT/.env.common"; source "$ENV_FILE"; set +a
 
 : "${MODEL_DIR:?MODEL_DIR 미설정 (.env.common 확인)}"
-: "${HF_REPO:?HF_REPO 미설정 (profiles/llamacpp/${PROFILE}.env 확인)}"
-: "${HF_FILE:?HF_FILE 미설정 (profiles/llamacpp/${PROFILE}.env 확인)}"
+: "${HF_REPO:?HF_REPO 미설정 (profiles.yaml 의 ${PROFILE} 확인)}"
+: "${HF_FILE:?HF_FILE 미설정 (profiles.yaml 의 ${PROFILE} 확인)}"
 
 mkdir -p "$MODEL_DIR"
 TARGET="$MODEL_DIR/$HF_FILE"

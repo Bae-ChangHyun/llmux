@@ -9,7 +9,7 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_DIR = PROJECT_ROOT
-PROFILES_DIR = PROJECT_ROOT / "profiles" / "vllm"
+RUNTIME_DIR = PROJECT_ROOT / ".runtime" / "vllm"
 CONFIG_DIR = PROJECT_ROOT / "config" / "vllm"
 COMPOSE_DIR = PROJECT_ROOT / "compose" / "vllm"
 COMMON_ENV = PROJECT_ROOT / ".env.common"
@@ -40,7 +40,8 @@ class Profile:
 
     @property
     def path(self) -> Path:
-        return PROFILES_DIR / f"{self.name}.env"
+        """Runtime .env path rendered from profiles.yaml."""
+        return RUNTIME_DIR / f"{self.name}.env"
 
 
 @dataclass
