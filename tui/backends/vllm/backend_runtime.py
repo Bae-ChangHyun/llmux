@@ -105,7 +105,7 @@ def _ensure_profile_config(profile: Profile) -> tuple[bool, list[str]]:
                 f"Error: config/{profile.config_name}.yaml does not have a valid model configured yet.",
                 (
                     f"Set the model field in config/{profile.config_name}.yaml or set MODEL_ID "
-                    f"in profiles/{profile.name}.env, then start again."
+                    f"in profiles.yaml for '{profile.name}', then start again."
                 ),
             ]
         )
@@ -133,7 +133,7 @@ def _ensure_profile_config(profile: Profile) -> tuple[bool, list[str]]:
         [
             f"Created config/{profile.config_name}.yaml but MODEL_ID is not set for profile '{profile.name}'.",
             (
-                f"Edit the config model field or set MODEL_ID in profiles/{profile.name}.env, "
+                f"Edit the config model field or set MODEL_ID in profiles.yaml for '{profile.name}', "
                 "then start again."
             ),
         ]
@@ -599,16 +599,38 @@ async def stream_container_up(
         ]
     else:
         version_tag = tag or await get_local_latest_tag()
+        if version_tag == "latest":
+            # Refuse the `:latest` alias outright. It doesn't describe the image's
+            # real contents and clicking "Local Latest" / "Official Release" should
+            # always resolve to a specific semver tag before reaching here.
+            yield (
+                "log",
+                "Error: `:latest` is an ambiguous alias and is not allowed. "
+                "Pick Local Latest (resolves to your highest local versioned tag) "
+                "or Official Release (pulls DockerHub's latest stable by explicit "
+                "version), or enter a specific tag in Custom.",
+            )
+            yield ("rc", 1)
+            return
         if version_tag == "none":
-            yield ("log", "Error: No local vllm/vllm-openai images found.")
+            yield (
+                "log",
+                "Error: no versioned vllm/vllm-openai image found locally. "
+                "llmux refuses to start from `:latest` aliases because they don't "
+                "describe their actual contents.",
+            )
             release_version = await get_dockerhub_release_version()
             if release_version != "unknown":
                 yield (
                     "log",
-                    f"Pull a stable version first: docker pull vllm/vllm-openai:{release_version}",
+                    f"Pull a specific version first, e.g.: docker pull vllm/vllm-openai:{release_version}",
                 )
             else:
-                yield ("log", "Pull a specific version first, or choose Official Release in the UI.")
+                yield (
+                    "log",
+                    "Pull a specific version first (docker pull vllm/vllm-openai:<version>), "
+                    "or choose Official Release in the UI.",
+                )
             yield ("rc", 1)
             return
 
@@ -627,15 +649,69 @@ async def stream_container_up(
             "up",
             "-d",
         ]
-        if pull or version_tag in {"latest", "nightly"}:
+        # Force-pull when:
+        #   (a) the UI explicitly requested it (Official Release → pulls the
+        #       resolved semver tag from DockerHub; the tag itself is a version,
+        #       never the bare `:latest` alias), or
+        #   (b) the tag is `:nightly` — it's an intentionally-rolling target
+        #       with no versioned alternative, so we always want the freshest.
+        # `:latest` is rejected above and never reaches this point.
+        if pull or version_tag == "nightly":
             compose_cmd.extend(["--pull", "always"])
 
     async for event in stream_command(compose_cmd, cwd=SCRIPT_DIR, env=env):
         yield event
         if event[0] == "rc":
-            if int(event[1]) == 0:
+            rc = int(event[1])
+            if rc == 0:
                 yield ("log", f"{profile.name} started successfully!")
+                if not use_dev:
+                    async for evt in _verify_vllm_version(profile.container_name, version_tag):
+                        yield evt
             return
+
+
+async def _verify_vllm_version(container_name: str, expected_tag: str):
+    """Compare the tag we told docker to run against the vllm version actually
+    running inside the container. Warn (but don't fail) on mismatch — tag names
+    can lie about contents if someone ran `docker tag` by hand or pulled the
+    same `latest` alias at different times.
+    """
+    from .backend_inspect import _parse_stable_version_tag
+
+    expected = _parse_stable_version_tag(expected_tag)
+    if expected is None:
+        # Only verify for versioned tags — `latest`/`nightly` wouldn't be reached
+        # under the new Local-Latest logic anyway.
+        return
+
+    # Query the running container. Give vllm a moment to print its banner, but
+    # don't block the UI — we fall back silently on timeout.
+    rc, out = await run_command(
+        "docker",
+        "exec",
+        container_name,
+        "python3",
+        "-c",
+        "import vllm; print(vllm.__version__)",
+        timeout=15,
+    )
+    if rc != 0 or not out.strip():
+        return
+
+    actual_str = out.strip().splitlines()[-1].strip()
+    actual = _parse_stable_version_tag("v" + actual_str if not actual_str.startswith("v") else actual_str)
+    if actual is None:
+        return
+
+    if actual != expected:
+        yield (
+            "log",
+            f"⚠ Warning: image tag says v{expected[0]}.{expected[1]}.{expected[2]}, "
+            f"but the container reports vllm {actual_str}. The tag may have been "
+            f"retagged or pulled at a different time — consider re-pulling the "
+            f"specific version you want.",
+        )
 
 
 async def container_down(profile_name: str) -> tuple[int, str]:

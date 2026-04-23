@@ -1,0 +1,49 @@
+# profiles.example.yaml — template. Copy to `profiles.yaml` and edit.
+#
+# `profiles.yaml` is the single source of truth for model profiles across both
+# backends. At launch time llmux renders each profile into
+# `.runtime/<backend>/<name>.env` and passes it to `docker compose --env-file`.
+#
+# Minimal profile = just `name` + `backend`. Anything omitted inherits from
+# `defaults.<backend>`. Config flags per model live under `config/<backend>/<name>.yaml`
+# (same CONFIG_NAME convention as before).
+
+version: 1
+
+defaults:
+  vllm:
+    port: 8000
+    gpu_id: "0"
+    tensor_parallel_size: 1
+    enable_lora: false
+  llamacpp:
+    port: 8080
+    gpu_id: "0"
+
+profiles:
+  # ── vllm example ────────────────────────────────────────────
+  - name: qwen3-0-6b
+    backend: vllm
+    container_name: qwen3-0-6b
+    port: 8000
+    config_name: qwen3-0-6b       # → config/vllm/qwen3-0-6b.yaml
+    model_id: Qwen/Qwen3-0.6B     # used by auto-config on first launch
+    gpu_id: "0"
+    # enable_lora: true
+    # max_loras: 2
+    # max_lora_rank: 16
+    # lora_modules: adapter1=/app/lora/path1,adapter2=/app/lora/path2
+    # extra_pip_packages: flash-attn==2.7.4.post1
+    # env_vars:
+    #   VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8: "1"
+
+  # ── llamacpp example ────────────────────────────────────────
+  - name: gemma-3-4b
+    backend: llamacpp
+    container_name: gemma-3-4b
+    port: 8080
+    config_name: gemma-3-4b       # → config/llamacpp/gemma-3-4b.yaml
+    gpu_id: "0"
+    model_file: gemma-3-4b-it-q4_k_m.gguf
+    hf_repo: unsloth/gemma-3-4b-it-GGUF
+    hf_file: gemma-3-4b-it-q4_k_m.gguf

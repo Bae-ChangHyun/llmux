@@ -554,7 +554,7 @@
         <span class="terminal-dot green"></span>
         <span class="terminal-title">llmux</span>
       </div>
-      <img src="https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/assets/demo.gif" alt="llmux Demo" loading="lazy" onerror="this.style.display='none'" />
+      <img src="https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/demo/llamacpp.gif" alt="llmux Demo" loading="lazy" onerror="this.style.display='none'" />
     </div>
   </section>
 
@@ -671,6 +671,49 @@
     </div>
   </section>
 
+  <!-- ROADMAP -->
+  <section class="fade-in">
+    <div class="section-header">
+      <p class="section-label">what's next</p>
+      <h2 class="section-title">Roadmap</h2>
+    </div>
+    <div class="faq-list">
+      <div class="faq-item open">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          Recipe-based config recommender
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          Give llmux a HuggingFace model ID and a target GPU, and let it auto-generate a
+          <code>config/vllm/&lt;name&gt;.yaml</code> from
+          <a href="https://recipes.vllm.ai/">recipes.vllm.ai</a> — the same engine that powers the
+          official vLLM deployment guides. No more hand-tuning <code>gpu-memory-utilization</code>,
+          <code>max-model-len</code>, and <code>tensor-parallel-size</code> by feel.
+        </div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          Profile clone across backends
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          Duplicate a vLLM profile as its llama.cpp GGUF equivalent in one keystroke — pair with the
+          built-in OpenAI-compatible bench for apples-to-apples throughput/latency.
+        </div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          Batch operations &middot; Bundle export/import &middot; Quantization recommender
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          Start/stop multiple profiles at once · ship a full profile + config bundle between machines ·
+          suggest <code>Q4_K_M</code> vs <code>Q8_0</code> given target GPU and the built-in memory estimator.
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- FAQ -->
   <section id="faq" class="fade-in">
     <div class="section-header">
@@ -696,7 +739,7 @@
         </div>
         <div class="faq-a">
           Yes &mdash; as long as they don't share a port or GPU. The cross-backend conflict gate warns you pre-start if they do.
-          Independent profiles with different <code>GPU_ID</code> and ports run simultaneously.
+          Each profile declares its own <code>gpu_id</code> and <code>port</code> in <code>profiles.yaml</code>.
         </div>
       </div>
       <div class="faq-item">
@@ -705,7 +748,7 @@
           <span class="faq-arrow">+</span>
         </div>
         <div class="faq-a">
-          Supported for vLLM profiles (multi-adapter loading via <code>ENABLE_LORA=true</code> + <code>LORA_BASE_PATH</code>).
+          Supported for vLLM profiles (multi-adapter loading via <code>enable_lora: true</code> in <code>profiles.yaml</code> + <code>LORA_BASE_PATH</code> in <code>.env.common</code>).
           llama.cpp LoRA support is on the roadmap.
         </div>
       </div>

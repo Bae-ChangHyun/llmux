@@ -1,117 +1,110 @@
-"""Profile/config file parsing and persistence helpers."""
+"""vLLM backend profile/config I/O — delegates profiles to the shared YAML store."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import yaml
 
-from .backend_common import CONFIG_DIR, PROFILES_DIR, Config, Profile
+from tui.common import profile_store
+
+from .backend_common import CONFIG_DIR, Config, Profile
 
 
-def _parse_env_file(path) -> dict[str, str]:
-    """Parse a .env file into a dict, ignoring comments and blank lines."""
+def _parse_env_file(path: Path | str) -> dict[str, str]:
+    """Parse a .env file into a dict (comments and blanks skipped). Missing file = {}."""
+    path = Path(path)
     data: dict[str, str] = {}
     if not path.exists():
         return data
     for line in path.read_text().splitlines():
         line = line.strip()
-        if not line or line.startswith("#"):
+        if not line or line.startswith("#") or "=" not in line:
             continue
-        if "=" in line:
-            key, _, value = line.partition("=")
-            value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
-                value = value[1:-1]
-            else:
-                if " #" in value:
-                    value = value[:value.index(" #")].rstrip()
-            data[key.strip()] = value
+        key, _, value = line.partition("=")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1]
+        else:
+            if " #" in value:
+                value = value[: value.index(" #")].rstrip()
+        data[key.strip()] = value
     return data
 
 
-def load_profile(name: str) -> Profile:
-    path = PROFILES_DIR / f"{name}.env"
-    data = _parse_env_file(path)
-    known_keys = {
-        "CONTAINER_NAME", "VLLM_PORT", "GPU_ID", "TENSOR_PARALLEL_SIZE",
-        "CONFIG_NAME", "MODEL_ID", "ENABLE_LORA", "MAX_LORAS", "MAX_LORA_RANK", "LORA_MODULES",
-    }
-    env_vars = {k: v for k, v in data.items() if k not in known_keys}
+def _to_profile(stored: profile_store.StoredProfile) -> Profile:
     return Profile(
-        name=name,
-        container_name=data.get("CONTAINER_NAME", name),
-        port=data.get("VLLM_PORT", "8000"),
-        gpu_id=data.get("GPU_ID", "0"),
-        tensor_parallel=data.get("TENSOR_PARALLEL_SIZE", "1"),
-        config_name=data.get("CONFIG_NAME", ""),
-        model_id=data.get("MODEL_ID", ""),
-        enable_lora=data.get("ENABLE_LORA", "false"),
-        max_loras=data.get("MAX_LORAS", ""),
-        max_lora_rank=data.get("MAX_LORA_RANK", ""),
-        lora_modules=data.get("LORA_MODULES", ""),
+        name=stored.name,
+        container_name=stored.container_name or stored.name,
+        port=str(stored.port),
+        gpu_id=stored.gpu_id,
+        tensor_parallel=str(stored.tensor_parallel_size),
+        config_name=stored.config_name,
+        model_id=stored.model_id,
+        enable_lora="true" if stored.enable_lora else "false",
+        max_loras=str(stored.max_loras) if stored.max_loras is not None else "",
+        max_lora_rank=str(stored.max_lora_rank) if stored.max_lora_rank is not None else "",
+        lora_modules=stored.lora_modules,
+        env_vars={
+            **({"EXTRA_PIP_PACKAGES": stored.extra_pip_packages} if stored.extra_pip_packages else {}),
+            **stored.env_vars,
+        },
+    )
+
+
+def _to_stored(profile: Profile) -> profile_store.StoredProfile:
+    env_vars = dict(profile.env_vars)
+    extra_pip = env_vars.pop("EXTRA_PIP_PACKAGES", "").strip()
+    return profile_store.StoredProfile(
+        name=profile.name,
+        backend="vllm",
+        container_name=profile.container_name or profile.name,
+        port=int(profile.port or 8000),
+        gpu_id=profile.gpu_id or "0",
+        config_name=profile.config_name or profile.name,
+        tensor_parallel_size=int(profile.tensor_parallel or 1),
+        model_id=profile.model_id,
+        enable_lora=(profile.enable_lora or "false").lower() == "true",
+        max_loras=int(profile.max_loras) if str(profile.max_loras).strip() else None,
+        max_lora_rank=int(profile.max_lora_rank) if str(profile.max_lora_rank).strip() else None,
+        lora_modules=profile.lora_modules,
+        extra_pip_packages=extra_pip,
         env_vars=env_vars,
     )
 
 
+def load_profile(name: str) -> Profile:
+    stored = profile_store.load_profile(name, "vllm")
+    if stored is None:
+        return Profile(name=name)
+    profile_store.render_env(stored)
+    return _to_profile(stored)
+
+
 def save_profile(profile: Profile) -> None:
-    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-    lines = [
-        f"# Profile: {profile.name}",
-        f"# GPU: {profile.gpu_id}, Port: {profile.port}",
-        "",
-        f"CONTAINER_NAME={profile.container_name}",
-        f"VLLM_PORT={profile.port}",
-        f"CONFIG_NAME={profile.config_name}",
-        f"MODEL_ID={profile.model_id}",
-        "",
-        "# GPU Configuration",
-        f"GPU_ID={profile.gpu_id}",
-        f"TENSOR_PARALLEL_SIZE={profile.tensor_parallel}",
-        "",
-        "# LoRA Configuration",
-        f"ENABLE_LORA={profile.enable_lora}",
-    ]
-    if profile.max_loras:
-        lines.append(f"MAX_LORAS={profile.max_loras}")
-    if profile.max_lora_rank:
-        lines.append(f"MAX_LORA_RANK={profile.max_lora_rank}")
-    if profile.lora_modules:
-        lines.append(f"LORA_MODULES={profile.lora_modules}")
-    if profile.env_vars:
-        lines.append("")
-        lines.append("# Extra environment variables")
-        for key, value in profile.env_vars.items():
-            lines.append(f"{key}={value}")
-    lines.append("")
-    profile.path.write_text("\n".join(lines))
+    profile_store.save_profile(_to_stored(profile))
 
 
 def delete_profile(name: str, delete_config: bool = False) -> None:
-    path = PROFILES_DIR / f"{name}.env"
-    if delete_config and path.exists():
-        data = _parse_env_file(path)
-        config_name = data.get("CONFIG_NAME", "")
+    if delete_config:
+        stored = profile_store.load_profile(name, "vllm")
+        config_name = stored.config_name if stored else ""
         if config_name:
             other_refs = [
-                profile_name for profile_name in list_profile_names()
-                if profile_name != name and load_profile(profile_name).config_name == config_name
+                n for n in profile_store.list_profile_names("vllm")
+                if n != name and (profile_store.load_profile(n, "vllm") or None)
+                and profile_store.load_profile(n, "vllm").config_name == config_name  # type: ignore[union-attr]
             ]
             if not other_refs:
                 config_path = CONFIG_DIR / f"{config_name}.yaml"
                 if config_path.exists():
                     config_path.unlink()
-    if path.exists():
-        path.unlink()
+    profile_store.delete_profile(name, "vllm")
 
 
 def list_profile_names() -> list[str]:
-    if not PROFILES_DIR.exists():
-        return []
-    return sorted(
-        path.stem for path in PROFILES_DIR.glob("*.env")
-        if path.stem != "example"
-    )
+    return profile_store.list_profile_names("vllm")
 
 
 def load_config(name: str) -> Config:
@@ -147,18 +140,12 @@ def save_config(config: Config) -> None:
 
 
 def parse_config_param_value(raw_value: str) -> Any:
-    """Parse a config parameter value from the UI into a YAML-safe Python value.
-
-    Blank values preserve the existing shortcut semantics for boolean flags and are
-    written back as ``true``.
-    """
     if raw_value == "":
         return True
     return yaml.safe_load(raw_value)
 
 
 def format_config_param_value(value: Any) -> str:
-    """Format a config parameter value for editing in the UI."""
     if value is True:
         return ""
     if value is False:

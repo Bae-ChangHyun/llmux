@@ -3,14 +3,14 @@
 render-override.py — profile + config 를 읽어 docker-compose.override.yaml 을 생성.
 
 입력:
-  - profiles/<profile>.env  (CONFIG_NAME, MODEL_FILE 등)
-  - config/<CONFIG_NAME>.yaml  (llama-server 플래그)
+  - profiles.yaml 의 llamacpp/<profile> (CONFIG_NAME, MODEL_FILE 등)
+  - config/llamacpp/<CONFIG_NAME>.yaml  (llama-server 플래그)
 
 출력:
   - docker-compose.override.yaml  (services.llama-server.command 블록)
 
 사용:
-  python3 scripts/render-override.py <profile-name>
+  python3 scripts/llamacpp/render-override.py <profile-name>
 """
 
 from __future__ import annotations
@@ -22,9 +22,11 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-PROFILES_DIR = ROOT / "profiles" / "llamacpp"
 CONFIG_DIR = ROOT / "config" / "llamacpp"
 COMPOSE_DIR = ROOT / "compose" / "llamacpp"
+
+sys.path.insert(0, str(ROOT))
+from tui.common import profile_store  # noqa: E402
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
@@ -95,13 +97,12 @@ def main() -> int:
         return 2
 
     profile = _validate_name(sys.argv[1], "profile")
-    profile_path = PROFILES_DIR / f"{profile}.env"
-    if not profile_path.exists():
-        print(f"프로필 파일 없음: {profile_path}", file=sys.stderr)
+    stored = profile_store.load_profile(profile, "llamacpp")
+    if stored is None:
+        print(f"프로필 없음: llamacpp/{profile} (profiles.yaml 확인)", file=sys.stderr)
         return 1
 
-    env = parse_env_file(profile_path)
-    config_name = _validate_name(env.get("CONFIG_NAME") or profile, "config")
+    config_name = _validate_name(stored.config_name or profile, "config")
     config_path = CONFIG_DIR / f"{config_name}.yaml"
     if not config_path.exists():
         print(f"config 파일 없음: {config_path}", file=sys.stderr)

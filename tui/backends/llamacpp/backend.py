@@ -12,9 +12,11 @@ from typing import Any
 
 import yaml
 
+from tui.common import profile_store
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ROOT = PROJECT_ROOT
-PROFILES_DIR = PROJECT_ROOT / "profiles" / "llamacpp"
+RUNTIME_DIR = PROJECT_ROOT / ".runtime" / "llamacpp"
 CONFIG_DIR = PROJECT_ROOT / "config" / "llamacpp"
 SCRIPTS_DIR = PROJECT_ROOT / "scripts" / "llamacpp"
 COMMON_ENV = PROJECT_ROOT / ".env.common"
@@ -95,7 +97,8 @@ class Profile:
 
     @property
     def path(self) -> Path:
-        return PROFILES_DIR / f"{self.name}.env"
+        """Runtime .env path rendered from profiles.yaml."""
+        return RUNTIME_DIR / f"{self.name}.env"
 
 
 @dataclass
@@ -118,69 +121,64 @@ class Config:
 # ---------------------------------------------------------------------------
 
 
-def list_profile_names() -> list[str]:
-    if not PROFILES_DIR.exists():
-        return []
-    return sorted(
-        path.stem for path in PROFILES_DIR.glob("*.env") if path.stem != "example"
+def _to_profile(stored: profile_store.StoredProfile) -> Profile:
+    return Profile(
+        name=stored.name,
+        container_name=stored.container_name or stored.name,
+        port=stored.port,
+        gpu_id=stored.gpu_id,
+        config_name=stored.config_name or stored.name,
+        model_file=stored.model_file,
+        hf_repo=stored.hf_repo,
+        hf_file=stored.hf_file,
     )
+
+
+def _to_stored(profile: Profile) -> profile_store.StoredProfile:
+    return profile_store.StoredProfile(
+        name=profile.name,
+        backend="llamacpp",
+        container_name=profile.container_name or profile.name,
+        port=int(profile.port),
+        gpu_id=profile.gpu_id or "0",
+        config_name=profile.config_name or profile.name,
+        model_file=profile.model_file,
+        hf_repo=profile.hf_repo,
+        hf_file=profile.hf_file,
+    )
+
+
+def list_profile_names() -> list[str]:
+    return profile_store.list_profile_names("llamacpp")
 
 
 def load_profile(name: str) -> Profile:
-    path = PROFILES_DIR / f"{name}.env"
-    env = _parse_env_file(path)
-    return Profile(
-        name=name,
-        container_name=env.get("CONTAINER_NAME", name),
-        port=int(env.get("LLAMA_PORT", "8080") or "8080"),
-        gpu_id=env.get("GPU_ID", "0"),
-        config_name=env.get("CONFIG_NAME", name),
-        model_file=env.get("MODEL_FILE", ""),
-        hf_repo=env.get("HF_REPO", ""),
-        hf_file=env.get("HF_FILE", ""),
-    )
+    stored = profile_store.load_profile(name, "llamacpp")
+    if stored is None:
+        return Profile(name=name)
+    profile_store.render_env(stored)
+    return _to_profile(stored)
 
 
 def save_profile(profile: Profile) -> None:
-    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-    lines = [
-        f"# Profile: {profile.name}",
-        "",
-        f"CONTAINER_NAME={profile.container_name or profile.name}",
-        f"LLAMA_PORT={profile.port}",
-        f"CONFIG_NAME={profile.config_name or profile.name}",
-        f"GPU_ID={profile.gpu_id}",
-    ]
-    if profile.model_file or profile.hf_repo or profile.hf_file:
-        lines += [
-            "",
-            "# 자동 다운로드 (pull-model.sh 가 사용)",
-        ]
-        if profile.model_file:
-            lines.append(f"MODEL_FILE={profile.model_file}")
-        if profile.hf_repo:
-            lines.append(f"HF_REPO={profile.hf_repo}")
-        if profile.hf_file:
-            lines.append(f"HF_FILE={profile.hf_file}")
-    lines.append("")
-    profile.path.write_text("\n".join(lines))
+    profile_store.save_profile(_to_stored(profile))
 
 
 def delete_profile(name: str, delete_config_too: bool = False) -> None:
-    path = PROFILES_DIR / f"{name}.env"
-    if delete_config_too and path.exists():
-        config_name = load_profile(name).config_name
-        if config_name:
+    if delete_config_too:
+        stored = profile_store.load_profile(name, "llamacpp")
+        if stored and stored.config_name:
             other_refs = [
-                n for n in list_profile_names()
-                if n != name and load_profile(n).config_name == config_name
+                n for n in profile_store.list_profile_names("llamacpp")
+                if n != name
+                and (other := profile_store.load_profile(n, "llamacpp"))
+                and other.config_name == stored.config_name
             ]
             if not other_refs:
-                cfg_path = CONFIG_DIR / f"{config_name}.yaml"
+                cfg_path = CONFIG_DIR / f"{stored.config_name}.yaml"
                 if cfg_path.exists():
                     cfg_path.unlink()
-    if path.exists():
-        path.unlink()
+    profile_store.delete_profile(name, "llamacpp")
 
 
 def list_profiles(running: set[str] | None = None) -> list[Profile]:
@@ -190,8 +188,6 @@ def list_profiles(running: set[str] | None = None) -> list[Profile]:
     피하기 위해 동기 subprocess 를 내부에서 호출하지 않는다. None 이면 빈 집합
     으로 취급하므로 TUI 는 Phase 마다 `tui.common.docker.running_container_names`
     를 한 번 await 해서 넘겨야 한다."""
-    if not PROFILES_DIR.is_dir():
-        return []
     model_dir = _get_model_dir()
     current = read_current_profile()
     running_containers: set[str] = running or set()

@@ -13,20 +13,27 @@ dist/
 
 # Local-only artifacts
 TODO.md
+todo.md
 CLAUDE.local.md
 HANDOFF.md
 .current-profile
 .current-profile-*
+.current-profile.*
 
-# User profiles & configs (템플릿 example.* 만 트래킹)
-profiles/vllm/*.env
-profiles/llamacpp/*.env
-!profiles/vllm/example.env
-!profiles/llamacpp/example.env
+# vLLM param cache (auto-populated from image introspection)
+config/vllm/.vllm-params-*.json
+
+# User configs (템플릿 example.* 만 트래킹. 프로필은 profiles.yaml 참고)
 config/vllm/*.yaml
 config/llamacpp/*.yaml
 !config/vllm/example.yaml
 !config/llamacpp/example.yaml
+
+# Runtime-rendered .env files from profiles.yaml
+.runtime/
+
+# User-defined profiles (트래킹하려면 profiles.example.yaml 을 참고)
+profiles.yaml
 
 # Runtime state / caches
 .env
