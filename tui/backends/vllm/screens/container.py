@@ -131,10 +131,13 @@ class ContainerUpScreen(Screen):
     }
     """
 
-    def __init__(self, profile_name: str) -> None:
+    def __init__(
+        self, profile_name: str, *, skip_port_conflict_check: bool = False
+    ) -> None:
         super().__init__()
         self.profile_name = profile_name
         self._profile = load_profile(profile_name)
+        self._skip_port_conflict_check = skip_port_conflict_check
         self._gpu_timer = None
         self._local_tag: str = ""
         self._release_version: str = ""
@@ -177,7 +180,14 @@ class ContainerUpScreen(Screen):
                         )
             with Vertical(id="startup-area"):
                 yield Static("", id="startup-status")
-                yield RichLog(highlight=True, auto_scroll=True, id="startup-log")
+                yield RichLog(
+                    highlight=False,
+                    markup=False,
+                    wrap=False,
+                    auto_scroll=True,
+                    max_lines=5000,
+                    id="startup-log",
+                )
             yield Static("", id="gpu-bar")
             with Horizontal(classes="buttons"):
                 yield Button("Start", variant="primary", id="start-btn")
@@ -334,15 +344,17 @@ class ContainerUpScreen(Screen):
                 self.app.notify("Please enter a custom tag.", severity="error")
                 return
 
-        # Check port conflict before starting
-        conflict = await check_port_conflict(self._profile)
-        if conflict:
-            self.app.notify(
-                f"Port {self._profile.port} is already used by {conflict}.",
-                severity="error",
-                timeout=5,
-            )
-            return
+        # Dashboard already performs the cross-backend conflict gate. When the
+        # user chooses "Start anyway", avoid blocking them a second time here.
+        if not self._skip_port_conflict_check:
+            conflict = await check_port_conflict(self._profile)
+            if conflict:
+                self.app.notify(
+                    f"Port {self._profile.port} is already used by {conflict}.",
+                    severity="error",
+                    timeout=5,
+                )
+                return
 
         # Switch to startup log view
         try:
@@ -364,6 +376,7 @@ class ContainerUpScreen(Screen):
             pull=pull,
             repo_url=repo_url,
             branch=branch,
+            skip_port_conflict_check=self._skip_port_conflict_check,
         ):
             if msg_type == "log":
                 try:
@@ -418,6 +431,7 @@ class LogScreen(Screen):
     BINDINGS = [
         Binding("q", "go_back", "Back"),
         Binding("escape", "go_back", "Back"),
+        Binding("f", "toggle_follow", "Follow on/off"),
     ]
 
     def __init__(self, container_name: str) -> None:
@@ -427,10 +441,18 @@ class LogScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         yield Static(
-            f"Logs: [b]{self.container_name}[/b]  (press [b]q[/b] or [b]Esc[/b] to go back)",
+            f"Logs: [b]{self.container_name}[/b]  "
+            "[dim](q/Esc:back  f:auto-follow  ↑↓/PgUp/PgDn:scroll)[/dim]",
             id="log-header",
         )
-        yield RichLog(highlight=True, markup=True, auto_scroll=True, id="log-view")
+        yield RichLog(
+            highlight=False,
+            markup=False,
+            wrap=False,
+            auto_scroll=True,
+            max_lines=5000,
+            id="log-view",
+        )
 
     def on_mount(self) -> None:
         self._stream_logs()
@@ -443,7 +465,16 @@ class LogScreen(Screen):
             async for line in stream_container_logs(self.container_name):
                 log_widget.write(line)
         except Exception as exc:
-            log_widget.write(f"\n[red]Log stream error: {exc}[/red]")
+            log_widget.write(f"\nLog stream error: {exc}")
+
+    def action_toggle_follow(self) -> None:
+        log_widget = self.query_one(RichLog)
+        log_widget.auto_scroll = not log_widget.auto_scroll
+        if log_widget.auto_scroll:
+            log_widget.scroll_end(animate=False)
+        self.notify(
+            f"auto-follow: {'ON' if log_widget.auto_scroll else 'OFF'}", timeout=2
+        )
 
     def action_go_back(self) -> None:
         self.workers.cancel_all()

@@ -66,7 +66,8 @@ class ProfileActionScreen(ModalScreen[str]):
             options.append(Option("▶ Start Container", id="start"))
         options.append(Option("✎ Edit Profile", id="edit_profile"))
         options.append(Option("⚙ Edit Config", id="edit_config"))
-        options.append(Option("✗ Delete Profile", id="delete"))
+        if not self._profile_running:
+            options.append(Option("✗ Delete Profile", id="delete"))
 
         with Vertical():
             yield Static(

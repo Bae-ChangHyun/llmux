@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 from tui.backends.vllm import backend
 from tui.backends.vllm.backend_inspect import _pick_preferred_tag
 from tui.backends.vllm.backend_runtime import _build_lora_options, _detect_gpu_arch, _ensure_common_env
+from tui.common import profile_store
 
 
 class LoadConfigTests(unittest.TestCase):
@@ -209,6 +210,119 @@ class SaveLoadProfileRoundTripTests(unittest.TestCase):
         self.assertEqual(loaded.lora_modules, "alpha=/path/a,beta=/path/b")
         self.assertEqual(loaded.env_vars["EXTRA_PIP_PACKAGES"], "pkg-a pkg-b")
         self.assertEqual(loaded.env_vars["CUSTOM"], "x")
+
+
+class ProfileStoreYamlTests(unittest.TestCase):
+    def test_user_defaults_are_applied_when_profile_omits_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = root / "profiles.yaml"
+            profiles_yaml.write_text(
+                "version: 1\n"
+                "defaults:\n"
+                "  vllm:\n"
+                "    port: 9100\n"
+                "    gpu_id: '2'\n"
+                "    tensor_parallel_size: 2\n"
+                "    enable_lora: false\n"
+                "profiles:\n"
+                "  - name: p\n"
+                "    backend: vllm\n"
+                "    model_id: org/model\n"
+            )
+
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
+            ):
+                stored = profile_store.load_profile("p", "vllm")
+
+            self.assertIsNotNone(stored)
+            assert stored is not None
+            self.assertEqual(stored.port, 9100)
+            self.assertEqual(stored.gpu_id, "2")
+            self.assertEqual(stored.tensor_parallel_size, 2)
+
+    def test_string_false_is_parsed_as_false(self) -> None:
+        stored = profile_store._to_profile(
+            {
+                "name": "p",
+                "backend": "vllm",
+                "enable_lora": "false",
+            }
+        )
+
+        self.assertFalse(stored.enable_lora)
+
+    def test_render_env_quotes_shell_sensitive_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = profile_store.StoredProfile(
+                name="p",
+                backend="llamacpp",
+                model_file="$(touch /tmp/llmux-pwned) model.gguf",
+            )
+
+            with patch("tui.common.profile_store.RUNTIME_DIR", root / ".runtime"):
+                path = profile_store.render_env(profile)
+
+            rendered = path.read_text()
+            self.assertIn("MODEL_FILE='$(touch /tmp/llmux-pwned) model.gguf'", rendered)
+
+    def test_render_env_rejects_invalid_env_var_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = profile_store.StoredProfile(
+                name="p",
+                backend="vllm",
+                env_vars={"BAD-NAME": "value"},
+            )
+
+            with patch("tui.common.profile_store.RUNTIME_DIR", Path(tmp) / ".runtime"):
+                with self.assertRaises(ValueError):
+                    profile_store.render_env(profile)
+
+    def test_save_profile_does_not_write_yaml_when_env_render_validation_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = root / "profiles.yaml"
+            profiles_yaml.write_text("version: 1\ndefaults: {}\nprofiles: []\n")
+            profile = profile_store.StoredProfile(
+                name="p",
+                backend="vllm",
+                env_vars={"BAD-NAME": "value"},
+            )
+
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
+            ):
+                with self.assertRaises(ValueError):
+                    profile_store.save_profile(profile)
+
+            self.assertEqual(
+                profiles_yaml.read_text(), "version: 1\ndefaults: {}\nprofiles: []\n"
+            )
+
+    def test_vllm_env_parser_round_trips_single_quote_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = profile_store.StoredProfile(
+                name="p",
+                backend="vllm",
+                model_id="O'Reilly model",
+            )
+
+            with patch("tui.common.profile_store.RUNTIME_DIR", root / ".runtime"):
+                env_path = profile_store.render_env(profile)
+
+            parsed = backend._parse_env_file(env_path)
+            self.assertEqual(parsed["MODEL_ID"], "O'Reilly model")
+
+    def test_invalid_backend_raises_value_error(self) -> None:
+        with self.assertRaises(ValueError):
+            profile_store.list_profiles("bogus")  # type: ignore[arg-type]
+
+    def test_profile_store_cli_invalid_backend_returns_usage_error(self) -> None:
+        with patch("sys.argv", ["profile_store", "list", "bogus"]):
+            self.assertEqual(profile_store._cli(), 2)
 
 
 class DeleteProfileTests(unittest.TestCase):
@@ -479,6 +593,51 @@ class CheckPortConflictTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(conflict)
         self.assertIn(str(bound_port), conflict)
+
+
+class StreamContainerUpSkipPortConflictTests(unittest.IsolatedAsyncioTestCase):
+    async def test_skip_port_conflict_false_stops_before_preflight(self) -> None:
+        profile = backend.Profile(name="p", container_name="p", port="8000")
+
+        async def fake_check_port_conflict(_profile):
+            return "another process"
+
+        globals_dict = backend.stream_container_up.__globals__
+        with patch.dict(
+            globals_dict,
+            {
+                "load_profile": lambda _: profile,
+                "check_port_conflict": fake_check_port_conflict,
+            },
+        ):
+            events = [event async for event in backend.stream_container_up("p")]
+
+        self.assertEqual(events[-1], ("rc", 1))
+        self.assertIn("Port 8000 is already in use", events[0][1])
+
+    async def test_skip_port_conflict_true_continues_to_next_preflight(self) -> None:
+        profile = backend.Profile(name="p", container_name="p", port="8000")
+
+        async def fake_check_port_conflict(_profile):
+            return "another process"
+
+        globals_dict = backend.stream_container_up.__globals__
+        with patch.dict(
+            globals_dict,
+            {
+                "load_profile": lambda _: profile,
+                "check_port_conflict": fake_check_port_conflict,
+                "_ensure_common_env": lambda _profile: (False, ["common env missing"]),
+            },
+        ):
+            events = [
+                event
+                async for event in backend.stream_container_up(
+                    "p", skip_port_conflict_check=True
+                )
+            ]
+
+        self.assertEqual(events, [("log", "common env missing"), ("rc", 1)])
 
 
 class QuickSetupSuffixLogicTests(unittest.TestCase):

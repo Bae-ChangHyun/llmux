@@ -8,6 +8,8 @@ each profile is rendered into `.runtime/<backend>/<name>.env` for
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
+import shlex
 from pathlib import Path
 from typing import Any, Literal
 
@@ -31,6 +33,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "gpu_id": "0",
     },
 }
+
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass
@@ -68,6 +72,18 @@ def _load_yaml() -> dict:
     return raw
 
 
+def _backend_defaults(data: dict, backend: str) -> dict[str, Any]:
+    if backend not in DEFAULTS:
+        raise ValueError(f"Invalid backend: {backend!r}")
+    defaults = dict(DEFAULTS[backend])
+    user_defaults = data.get("defaults", {})
+    if isinstance(user_defaults, dict) and isinstance(
+        user_defaults.get(backend), dict
+    ):
+        defaults.update(user_defaults[backend])
+    return defaults
+
+
 def _write_yaml(data: dict) -> None:
     PROFILES_YAML.write_text(
         yaml.safe_dump(
@@ -80,11 +96,19 @@ def _write_yaml(data: dict) -> None:
     )
 
 
-def _to_profile(entry: dict) -> StoredProfile:
+def _parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _to_profile(entry: dict, defaults: dict[str, Any] | None = None) -> StoredProfile:
     backend = entry.get("backend")
     if backend not in ("vllm", "llamacpp"):
         raise ValueError(f"Invalid backend {backend!r} in profile {entry.get('name')}")
-    defaults = DEFAULTS[backend]
+    defaults = defaults or DEFAULTS[backend]
     merged: dict[str, Any] = dict(defaults)
     merged.update(entry)
     name = merged["name"]
@@ -97,7 +121,7 @@ def _to_profile(entry: dict) -> StoredProfile:
         config_name=merged.get("config_name", name),
         tensor_parallel_size=int(merged.get("tensor_parallel_size", 1)),
         model_id=merged.get("model_id", ""),
-        enable_lora=bool(merged.get("enable_lora", False)),
+        enable_lora=_parse_bool(merged.get("enable_lora", False)),
         max_loras=merged.get("max_loras"),
         max_lora_rank=merged.get("max_lora_rank"),
         lora_modules=merged.get("lora_modules", ""),
@@ -109,8 +133,10 @@ def _to_profile(entry: dict) -> StoredProfile:
     )
 
 
-def _profile_to_entry(profile: StoredProfile) -> dict[str, Any]:
-    defaults = DEFAULTS[profile.backend]
+def _profile_to_entry(
+    profile: StoredProfile, defaults: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    defaults = defaults or DEFAULTS[profile.backend]
     out: dict[str, Any] = {"name": profile.name, "backend": profile.backend}
     if profile.container_name and profile.container_name != profile.name:
         out["container_name"] = profile.container_name
@@ -150,7 +176,12 @@ def _profile_to_entry(profile: StoredProfile) -> dict[str, Any]:
 
 def list_profiles(backend: str) -> list[StoredProfile]:
     data = _load_yaml()
-    return [_to_profile(p) for p in data.get("profiles", []) if p.get("backend") == backend]
+    defaults = _backend_defaults(data, backend)
+    return [
+        _to_profile(p, defaults)
+        for p in data.get("profiles", [])
+        if p.get("backend") == backend
+    ]
 
 
 def list_profile_names(backend: str) -> list[str]:
@@ -167,9 +198,13 @@ def load_profile(name: str, backend: str) -> StoredProfile | None:
 def save_profile(profile: StoredProfile) -> None:
     data = _load_yaml()
     profiles = data.get("profiles", [])
-    entry = _profile_to_entry(profile)
+    _render_env_lines(profile)
+    entry = _profile_to_entry(profile, _backend_defaults(data, profile.backend))
     for idx, existing in enumerate(profiles):
-        if existing.get("name") == profile.name and existing.get("backend") == profile.backend:
+        if (
+            existing.get("name") == profile.name
+            and existing.get("backend") == profile.backend
+        ):
             profiles[idx] = entry
             break
     else:
@@ -200,9 +235,13 @@ def runtime_env_path(name: str, backend: str) -> Path:
     return RUNTIME_DIR / backend / f"{name}.env"
 
 
-def render_env(profile: StoredProfile) -> Path:
-    out_path = runtime_env_path(profile.name, profile.backend)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+def _env_line(key: str, value: Any) -> str:
+    if not _ENV_KEY_RE.match(key):
+        raise ValueError(f"Invalid environment variable name: {key!r}")
+    return f"{key}={shlex.quote(str(value))}"
+
+
+def _render_env_lines(profile: StoredProfile) -> list[str]:
     lines: list[str] = [
         "# Auto-rendered from profiles.yaml — do not edit directly.",
         f"# Profile: {profile.name} ({profile.backend})",
@@ -210,38 +249,45 @@ def render_env(profile: StoredProfile) -> Path:
     ]
     if profile.backend == "vllm":
         lines += [
-            f"CONTAINER_NAME={profile.container_name or profile.name}",
-            f"VLLM_PORT={profile.port}",
-            f"GPU_ID={profile.gpu_id}",
-            f"TENSOR_PARALLEL_SIZE={profile.tensor_parallel_size}",
-            f"CONFIG_NAME={profile.config_name or profile.name}",
-            f"MODEL_ID={profile.model_id}",
-            f"ENABLE_LORA={'true' if profile.enable_lora else 'false'}",
+            _env_line("CONTAINER_NAME", profile.container_name or profile.name),
+            _env_line("VLLM_PORT", profile.port),
+            _env_line("GPU_ID", profile.gpu_id),
+            _env_line("TENSOR_PARALLEL_SIZE", profile.tensor_parallel_size),
+            _env_line("CONFIG_NAME", profile.config_name or profile.name),
+            _env_line("MODEL_ID", profile.model_id),
+            _env_line("ENABLE_LORA", "true" if profile.enable_lora else "false"),
         ]
         if profile.max_loras is not None:
-            lines.append(f"MAX_LORAS={profile.max_loras}")
+            lines.append(_env_line("MAX_LORAS", profile.max_loras))
         if profile.max_lora_rank is not None:
-            lines.append(f"MAX_LORA_RANK={profile.max_lora_rank}")
+            lines.append(_env_line("MAX_LORA_RANK", profile.max_lora_rank))
         if profile.lora_modules:
-            lines.append(f"LORA_MODULES={profile.lora_modules}")
+            lines.append(_env_line("LORA_MODULES", profile.lora_modules))
         if profile.extra_pip_packages:
-            lines.append(f"EXTRA_PIP_PACKAGES={profile.extra_pip_packages}")
+            lines.append(_env_line("EXTRA_PIP_PACKAGES", profile.extra_pip_packages))
         for k, v in profile.env_vars.items():
-            lines.append(f"{k}={v}")
+            lines.append(_env_line(k, v))
     else:
         lines += [
-            f"CONTAINER_NAME={profile.container_name or profile.name}",
-            f"LLAMA_PORT={profile.port}",
-            f"GPU_ID={profile.gpu_id}",
-            f"CONFIG_NAME={profile.config_name or profile.name}",
+            _env_line("CONTAINER_NAME", profile.container_name or profile.name),
+            _env_line("LLAMA_PORT", profile.port),
+            _env_line("GPU_ID", profile.gpu_id),
+            _env_line("CONFIG_NAME", profile.config_name or profile.name),
         ]
         if profile.model_file:
-            lines.append(f"MODEL_FILE={profile.model_file}")
+            lines.append(_env_line("MODEL_FILE", profile.model_file))
         if profile.hf_repo:
-            lines.append(f"HF_REPO={profile.hf_repo}")
+            lines.append(_env_line("HF_REPO", profile.hf_repo))
         if profile.hf_file:
-            lines.append(f"HF_FILE={profile.hf_file}")
+            lines.append(_env_line("HF_FILE", profile.hf_file))
     lines.append("")
+    return lines
+
+
+def render_env(profile: StoredProfile) -> Path:
+    out_path = runtime_env_path(profile.name, profile.backend)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = _render_env_lines(profile)
     out_path.write_text("\n".join(lines))
     return out_path
 
@@ -261,6 +307,9 @@ def _cli() -> int:
     argv = sys.argv[1:]
     if len(argv) == 3 and argv[0] == "render":
         backend, name = argv[1], argv[2]
+        if backend not in DEFAULTS:
+            print(f"Invalid backend: {backend}", file=sys.stderr)
+            return 2
         stored = load_profile(name, backend)
         if stored is None:
             print(f"Profile not found: {backend}/{name}", file=sys.stderr)
@@ -270,6 +319,9 @@ def _cli() -> int:
         return 0
     if len(argv) == 2 and argv[0] == "list":
         backend = argv[1]
+        if backend not in DEFAULTS:
+            print(f"Invalid backend: {backend}", file=sys.stderr)
+            return 2
         for name in list_profile_names(backend):
             print(name)
         return 0
