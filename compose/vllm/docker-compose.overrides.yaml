@@ -1,0 +1,10 @@
+services:
+  vllm:
+    volumes:
+      - ./scripts/vllm:/scripts:ro
+    entrypoint: ["/bin/bash", "/scripts/entrypoint-wrapper.sh"]
+    environment:
+      - EXTRA_PIP_PACKAGES=${EXTRA_PIP_PACKAGES:-}
+    env_file:
+      - path: ${PROFILE_PATH}
+        required: false

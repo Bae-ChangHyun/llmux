@@ -1,25 +1,57 @@
-# Environment files with secrets
-.env.common
-
-# Profile files (contain local settings)
-profiles/*.env
-!profiles/example.env
-
-# Temporary files
-*.tmp
-*.log
-todo.md
-
-# Config files (new additions only - existing examples remain tracked)
-config/
-
-# vLLM source directory (cloned for dev build)
-.vllm-src/
-
-# Claude Code settings
-.claude/
-
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.egg-info/
 .venv/
+.Python
+build/
+dist/
+
+# uv
+.uv/
+
+# Local-only artifacts
+TODO.md
+CLAUDE.local.md
+HANDOFF.md
+.current-profile
+.current-profile-*
+
+# User profiles & configs (템플릿 example.* 만 트래킹)
+profiles/vllm/*.env
+profiles/llamacpp/*.env
+!profiles/vllm/example.env
+!profiles/llamacpp/example.env
+config/vllm/*.yaml
+config/llamacpp/*.yaml
+!config/vllm/example.yaml
+!config/llamacpp/example.yaml
+
+# Runtime state / caches
+.env
+.env.local
+.env.common
+.env.common.vllm
+.env.common.llamacpp
+.cache/
+.hf-cache/
+*.log
+
+# Model weights (bulk)
+models/*.gguf
+models/*.safetensors
+models/*.bin
+
+# vLLM dev source checkout (bulky)
+.vllm-src/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Demo/recorded
+*.cast
+compose/llamacpp/docker-compose.override.yaml

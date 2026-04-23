@@ -1,0 +1,53 @@
+# config 템플릿 — llama-server 플래그 세트.
+# ─────────────────────────────────────────────────────────────
+# 키 이름 규칙: llama-server 의 `--` 롱플래그를 그대로 사용.
+#   예: --ctx-size 32768   →  ctx-size: 32768
+#       --jinja            →  jinja: true
+#       --temp 0.6         →  temp: 0.6
+
+# ═══ 필수 ═══
+
+# GGUF 파일명 (models/ 기준 상대경로). --model /models/<파일명> 로 렌더됨.
+model-file: your-model.gguf
+
+# ═══ 자주 쓰는 플래그 ═══
+
+# 컨텍스트 길이
+ctx-size: 8192
+
+# GPU 에 올릴 레이어 수. 99 = 전체.
+n-gpu-layers: 99
+
+# KV 캐시 정밀도: f16 / bf16 / q8_0 / q4_0 등.
+cache-type-k: bf16
+cache-type-v: bf16
+
+# 샘플링 파라미터
+temp: 0.7
+top-p: 0.9
+top-k: 40
+
+# /v1/models 에서 보여질 이름
+alias: your-model
+
+# Jinja chat template (Qwen/Llama3 등 최신 모델 권장)
+jinja: true
+
+# ═══ MoE expert CPU offload (A3B 류 모델) ═══
+# 정규식으로 tensor 이름 매칭 → 해당 tensor를 CPU 로 offload.
+# 예: ffn_*_exps 만 CPU 에 두고, attention/embedding 은 GPU 유지.
+# override-tensors:
+#   - ".ffn_.*_exps.=CPU"
+
+# ═══ 보안 (선택) ═══
+# api-key: sk-your-key
+
+# ═══ 성능 추가 옵션 (선택) ═══
+# flash-attn: true           # flash attention 활성화
+# parallel: 4                # 병렬 요청 슬롯
+# cont-batching: true        # continuous batching
+# metrics: true              # /metrics 엔드포인트 활성화
+
+# ═══ render-override.py 가 verbatim 으로 붙이는 인자 ═══
+# llama-server 최신 플래그 중 위 스키마로 표현 못 하는 것.
+extra-args: []

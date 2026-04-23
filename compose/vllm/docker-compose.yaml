@@ -1,0 +1,30 @@
+services:
+  vllm:
+    image: vllm/vllm-openai:${VLLM_VERSION}
+    container_name: ${CONTAINER_NAME}
+    runtime: nvidia
+    volumes:
+      - ${HF_CACHE_PATH}:/root/.cache/huggingface
+      - ./config/vllm:/config/
+    ports:
+      - "${VLLM_PORT}:8000"
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
+      - TZ=${TZ:-UTC}
+      - NVIDIA_VISIBLE_DEVICES=${GPU_ID}
+      - VLLM_ENABLE_V1_MULTIPROCESSING=0
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - VLLM_DISABLE_COMPILE_CACHE=1
+    shm_size: "16g"
+    command: --config /config/${CONFIG_NAME}.yaml --tensor-parallel-size=${TENSOR_PARALLEL_SIZE} --trust-remote-code ${LORA_OPTIONS:-}
+    restart: unless-stopped
+    # NOTE: llama.cpp 는 `deploy.resources.reservations.devices` 를 쓰지만,
+    # 해당 포맷은 comma-separated GPU_ID (예: `0,1`) 를 list 로 풀 수 없어 multi-GPU TP 구성이
+    # 깨진다. vLLM 은 tensor parallel 이 핵심 기능이므로 `runtime: nvidia` + `NVIDIA_VISIBLE_DEVICES`
+    # 조합을 유지해 multi-GPU 를 안전하게 지원. (둘을 동일 포맷으로 강제하지 않음)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 600s
