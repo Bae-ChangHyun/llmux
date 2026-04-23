@@ -1,0 +1,35 @@
+# llmux llama.cpp base compose
+#
+# 사용법:
+#   uv run llmux  # 또는 ./scripts/llamacpp/switch.sh <profile-name>
+#
+# 동작:
+#   1. scripts/render-override.py 가 profiles/<name>.env + config/<name>.yaml 를
+#      읽어 docker-compose.override.yaml 를 생성 (command: 블록 주입).
+#   2. docker compose up -d 가 base + override 를 병합해 기동.
+
+services:
+  llama-server:
+    image: ${LLAMACPP_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda}
+    container_name: ${CONTAINER_NAME}
+    restart: unless-stopped
+    ports:
+      - "${LLAMA_PORT:-8080}:8080"
+    volumes:
+      - ${MODEL_DIR}:/models:ro
+    environment:
+      - TZ=${TZ:-UTC}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['${GPU_ID:-0}']
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+    # command 은 docker-compose.override.yaml (render-override.py 생성) 에서 주입됨.

@@ -1,13 +1,14 @@
 <div align="center">
 
-<img src="assets/vllm-compose.png" alt="vLLM Compose" width="240"/>
+<img src="assets/llmux.png" alt="llmux" width="240"/>
 
-# vLLM Compose
+# llmux
 
-**Juggling multiple LLMs? Manage them all from one terminal.**
+**One TUI. Two backends. Zero config headaches.**
 
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)](https://docs.docker.com/compose/)
 [![vLLM](https://img.shields.io/badge/vLLM-Latest-green?style=flat-square)](https://github.com/vllm-project/vllm)
+[![llama.cpp](https://img.shields.io/badge/llama.cpp-Latest-8A2BE2?style=flat-square)](https://github.com/ggerganov/llama.cpp)
 [![NVIDIA](https://img.shields.io/badge/NVIDIA-GPU-76B900?style=flat-square&logo=nvidia)](https://www.nvidia.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
@@ -15,17 +16,17 @@
 
 ---
 
-Testing Qwen, switching to Llama, spinning up DeepSeek, tearing it down...
+vLLM for HF Transformers. llama.cpp for GGUF.
 <br/>
-**Each model needs its own config, its own container, and you have to remember it all.**
+**Two different toolchains, two different configs, two different terminals.**
 <br/><br/>
-vLLM Compose saves per-model settings as profiles.
+llmux unifies both under a single Docker Compose dashboard.
 <br/>
-**Just pick one in the TUI and hit Enter to spin it up or down.**
+**Pick a profile, press Enter &mdash; whichever engine it belongs to just runs.**
 
 <br/>
 
-<img src="assets/demo.gif" alt="vLLM Compose Demo" width="700"/>
+<img src="assets/demo.gif" alt="llmux Demo" width="700"/>
 
 </div>
 
@@ -34,50 +35,50 @@ vLLM Compose saves per-model settings as profiles.
 ## Get Started in 30 Seconds
 
 ```bash
-git clone https://github.com/Bae-ChangHyun/vllm-compose.git && cd vllm-compose
+git clone https://github.com/Bae-ChangHyun/llmux.git && cd llmux
 
-# Set HuggingFace token
+# Set HuggingFace token (shared by both backends)
 cat > .env.common << 'EOF'
 HF_TOKEN=your_token_here
-HF_CACHE_PATH=/home/your-username/.cache/huggingface  # absolute path required
+HF_CACHE_PATH=/home/your-username/.cache/huggingface
 EOF
 
 # Launch
 uv sync
-uv run vllm-compose
+uv run llmux
 ```
 
-> Quick Setup auto-generates profile + config from just a model name.
+> Press `n` to create a profile for either **vLLM** or **llama.cpp** &mdash; llmux figures out the rest.
 
 <br/>
 
-## Why vLLM Compose?
+## Why llmux?
 
-| | Manual | vLLM Compose |
+| | Manual | llmux |
 |:---|:---|:---|
-| **Switch models** | Repeat docker commands, re-enter configs | Select profile, press Enter |
-| **Manage configs** | Remember long CLI args every time | Per-model YAML + Tab autocomplete |
-| **Multi-model** | Edit compose files by hand | Independent profiles, run simultaneously |
-| **Monitor status** | Repeat docker ps, nvidia-smi | Real-time dashboard |
-| **Version selection** | Track image tags manually | Latest / Official / Nightly picker with version-tagged pulls |
+| **Switch engines** | Different CLI, different compose, different TUI per engine | One dashboard for both vLLM and llama.cpp |
+| **Port / GPU conflicts** | Find out when the container crashes | Pre-start conflict gate across both backends |
+| **Benchmark** | `curl` the endpoint, eyeball the timing | Built-in `/v1/chat/completions` bench for either engine |
+| **Memory sizing** | Guess and hope it fits | Per-model HF memory estimator (`m` key) |
+| **GGUF setup** | `hf download` &rarr; edit compose &rarr; mount | Auto-download on start, paths resolved by profile |
 
 <br/>
 
 ## Core Features
 
-**TUI** &mdash; Textual-only interface for start, stop, logs, and config management
+**Unified TUI** &mdash; Single Textual dashboard lists every vLLM and llama.cpp profile side by side
 
-**Profiles** &mdash; Save per-model settings independently, switch instantly
+**Cross-backend conflict gate** &mdash; Detects port + GPU clashes between engines before spin-up
 
-**Config** &mdash; Manage vLLM params as YAML, Tab autocomplete auto-extracted from your local vLLM image
+**OpenAI-compatible bench** &mdash; One-shot `/v1/chat/completions` benchmark for vLLM *and* llama.cpp
 
-**GPU Monitor** &mdash; Real-time GPU usage bar on dashboard, auto-refresh every 5s
+**Quick Setup** &mdash; Type a HuggingFace model name &rarr; profile + config auto-generated (either backend)
 
-**Memory Estimator** &mdash; Estimate GPU memory before deploying via [hf-mem](https://github.com/alvarobartt/hf-mem), with per-GPU progress bar
+**GGUF auto-download** &mdash; llama.cpp profiles pull the file on first start, no manual `hf download`
 
-**Source Build** &mdash; Auto GPU detection Fast Build (10-30 min) from the TUI
+**Memory Estimator** &mdash; [hf-mem](https://github.com/alvarobartt/hf-mem) integration with per-GPU progress
 
-**LoRA** &mdash; Multi-adapter loading with conditional path mapping when enabled
+**Real-time monitors** &mdash; GPU usage bar, container status, logs follow, all from keyboard
 
 <br/>
 
@@ -90,10 +91,10 @@ uv run vllm-compose
 
 | Key | Action |
 |:---|:---|
-| `Enter` | Profile action menu (start/stop/logs/edit/delete) |
-| `w` | Quick Setup |
-| `n` | New profile |
-| `m` | Memory estimator (focus search bar) |
+| `Enter` | Profile action menu (start / stop / logs / bench / edit / delete) |
+| `n` | New profile (backend picker: vLLM or llama.cpp) |
+| `w` | Quick Setup (backend picker) |
+| `m` | Memory estimator |
 | `s` | System info |
 | `c` | Configs |
 | `u` / `d` / `l` | Start / Stop / Logs (selected profile) |
@@ -106,73 +107,39 @@ uv run vllm-compose
 
 <br/>
 
+```
+profiles/vllm/*.env         # vLLM container settings
+profiles/llamacpp/*.env     # llama.cpp container settings
+config/vllm/*.yaml          # vLLM serving config (per profile)
+config/llamacpp/*.yaml      # llama-server flags (per profile)
+```
+
 ```yaml
-# config/my-model.yaml — vLLM serving config
-model: Qwen/Qwen3-30B
+# config/vllm/my-model.yaml
+model: Qwen/Qwen3-30B-A3B
 gpu-memory-utilization: 0.9
 max-model-len: 32768
-enable-auto-tool-choice: true   # boolean flags: empty value → auto true
 ```
 
-```bash
-# profiles/my-model.env — Container settings
-CONTAINER_NAME=my-model
-VLLM_PORT=8000
-CONFIG_NAME=my-model
-GPU_ID=0
-TENSOR_PARALLEL_SIZE=1
-ENABLE_LORA=false
-MODEL_ID=Qwen/Qwen3-30B   # optional, used to auto-create a default config
+```yaml
+# config/llamacpp/my-model.yaml
+# Flags map 1:1 to llama-server CLI args
+n-gpu-layers: 99
+ctx-size: 16384
+parallel: 4
 ```
 
 </details>
 
 <details>
-<summary><b>Source Build</b></summary>
+<summary><b>Cross-backend conflict gate</b></summary>
 
 <br/>
 
-```bash
-# Start the TUI
-uv run vllm-compose
-```
+Start a llama.cpp profile on port `8080` while a vLLM profile is already bound to it?
+llmux catches that **before** launching docker, showing exactly which profile owns the port or GPU.
 
-Then open a profile, choose `Dev Build`, and start it.
-
-vLLM Compose will:
-- clone or update the vLLM source tree
-- build a `vllm-dev:<branch>` image for your current GPU
-- start the selected profile with that dev image
-
-Set `VLLM_BRANCH` in `.env.common` to choose the default source branch.
-
-You can also override the repository URL and branch directly from the Dev Build screen to build from your own fork.
-
-</details>
-
-<details>
-<summary><b>LoRA Adapters</b></summary>
-
-<br/>
-
-```bash
-# .env.common
-LORA_BASE_PATH=/home/user/lora-adapters
-
-# profiles/mymodel.env
-ENABLE_LORA=true
-MAX_LORAS=2
-LORA_MODULES=ko=/app/lora/ko_adapter,en=/app/lora/en_adapter
-```
-
-```python
-response = client.chat.completions.create(
-    model="ko",  # LoRA adapter name
-    messages=[...]
-)
-```
-
-> LoRA mount is added only when `ENABLE_LORA=true`.
+The same check runs across engines &mdash; starting `vllm/qwen` won't silently collide with `llamacpp/qwen-q4` if they share `GPU_ID=0`.
 
 </details>
 
@@ -184,12 +151,10 @@ response = client.chat.completions.create(
 | Problem | Solution |
 |:---|:---|
 | Container won't start | Open the profile in TUI and inspect logs |
-| API should stay local-only | Default publish is `0.0.0.0:${VLLM_PORT}` (all interfaces); prefix the `ports` mapping in `docker-compose.yaml` with `127.0.0.1:` to restrict it to localhost |
-| GPU OOM | Set `gpu-memory-utilization: 0.7` or `TENSOR_PARALLEL_SIZE=2` |
-| Port conflict | Change `VLLM_PORT`, then retry from the TUI |
-| Tokenizer error on distilled models | Add `tokenizer: OriginalOrg/OriginalModel` in config YAML |
-| Need extra Python packages | Set `EXTRA_PIP_PACKAGES` in the profile and pin versions carefully |
-| Add vLLM args | Write any CLI arg as YAML in `config/*.yaml` |
+| GPU OOM (vLLM) | Lower `gpu-memory-utilization` or raise `TENSOR_PARALLEL_SIZE` |
+| GPU OOM (llama.cpp) | Lower `n-gpu-layers` in config YAML |
+| Port conflict | TUI will warn pre-start; change `VLLM_PORT` or `LLAMACPP_PORT` in profile |
+| GGUF download stuck | Check `HF_TOKEN` in `.env.common`; retry from TUI &mdash; `switch.sh` auto-calls `pull-model.sh` on start |
 | Copy logs in TUI | Shift+drag to select, Ctrl+C to copy ([details](https://textual.textualize.io/FAQ/#how-can-i-select-and-copy-text-in-a-textual-app)) |
 
 </details>
@@ -207,14 +172,21 @@ response = client.chat.completions.create(
 
 ## Roadmap
 
-- [ ] **Model-specific recommended configs** — Curated vLLM configs per model family (Llama, Qwen, DeepSeek, Gemma, etc.) with vendor-recommended settings for `max-model-len`, `quantization`, `rope-scaling`, and more
-- [ ] **Config presets / templates** — Select from ready-made configs during Quick Setup based on model size and GPU capacity
-- [ ] **.env.common setup wizard** — Interactive first-run setup for HF token and cache path
-- [ ] **API connectivity test** — Quick `/v1/models` call to verify the model is serving
-- [ ] **Profile clone** — Duplicate a profile with one click for A/B testing configs
-- [ ] **Batch operations** — Start/stop multiple containers at once
-- [ ] **Export/Import** — Share profile + config bundles across servers
-- [ ] **Web UI** — Optional browser-based dashboard for team access
+- [ ] **Profile clone across backends** &mdash; Duplicate a vLLM profile as a llama.cpp GGUF version for quick A/B testing
+- [ ] **Batch operations** &mdash; Start/stop multiple profiles across both backends at once
+- [ ] **Export/Import bundles** &mdash; Share full profile + config sets between machines
+- [ ] **Quantization recommender** &mdash; Suggest `Q4_K_M` vs `Q8_0` based on target GPU + memory estimator
+- [ ] **Web UI** &mdash; Optional browser-based dashboard for remote access
+- [ ] **Model-specific presets** &mdash; Curated configs per family (Llama, Qwen, DeepSeek) for both engines
+
+---
+
+## Credits
+
+llmux absorbs and unifies two prior projects by the same author:
+
+- [`vllm-compose`](https://github.com/Bae-ChangHyun/vllm-compose) &mdash; vLLM profiles
+- [`llamacpp-compose`](https://github.com/Bae-ChangHyun/llamacpp-compose) &mdash; llama.cpp profiles
 
 ---
 

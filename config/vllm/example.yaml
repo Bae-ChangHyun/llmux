@@ -1,0 +1,14 @@
+# vLLM config 템플릿 — 원하는 이름으로 복사해 쓰세요 (cp example.yaml my-model.yaml)
+# 이 파일의 키들은 vllm serve 의 CLI 플래그와 1:1 대응.
+# 사용 가능한 모든 키: https://docs.vllm.ai/en/latest/serving/engine_args.html
+
+model: Qwen/Qwen3-8B               # HuggingFace repo id 또는 로컬 경로
+
+# ---- 메모리 / 병렬 ----
+gpu-memory-utilization: 0.90       # 0.0–1.0, GPU 당 vLLM 이 쓸 VRAM 비율
+max-model-len: 32768               # context 길이 (모델 기본보다 작게 잡으면 메모리 절감)
+# tensor-parallel-size: 2          # multi-GPU 시 (profile 의 GPU_ID 와 일치)
+
+# ---- 샘플링 기본값 (request 가 덮어씀) ----
+# dtype: bfloat16
+# trust-remote-code: true

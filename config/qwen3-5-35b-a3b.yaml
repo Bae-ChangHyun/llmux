@@ -1,8 +1,0 @@
-model: Qwen/Qwen3.5-35B-A3B
-gpu-memory-utilization: '0.9'
-reasoning-parser: qwen3
-mm-encoder-tp-mode: data
-enable-expert-parallel: true
-mm-processor-cache-type: shm
-enable-auto-tool-choice: true
-tool-call-parser: qwen3_coder

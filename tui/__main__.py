@@ -1,4 +1,4 @@
-"""Allow running as: python -m tui"""
 from tui.app import main
 
-main()
+if __name__ == "__main__":
+    main()

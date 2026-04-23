@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>vLLM Compose — Manage multiple LLMs from one terminal</title>
-  <meta name="description" content="Save per-model settings as profiles. Pick one in the TUI and hit Enter to spin it up or down." />
+  <title>llmux — One TUI for vLLM and llama.cpp</title>
+  <meta name="description" content="A terminal multiplexer for LLM servers. Run vLLM and llama.cpp side by side from a single Textual dashboard." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -46,7 +46,7 @@
       line-height: 1.6;
     }
 
-    /* ── NAV ── */
+    /* NAV */
     nav {
       position: fixed; top: 0; left: 0; right: 0; z-index: 50;
       background: rgba(17,17,16,0.9);
@@ -63,10 +63,9 @@
       font-family: var(--mono); font-size: 18px; font-weight: 700;
       color: var(--text); text-decoration: none; letter-spacing: -0.03em;
     }
+    .nav-brand .brand-accent { color: var(--purple); }
     .nav-links { display: flex; align-items: center; gap: 32px; }
-    .nav-links-desktop {
-      display: flex; align-items: center; gap: 32px;
-    }
+    .nav-links-desktop { display: flex; align-items: center; gap: 32px; }
     .nav-links a {
       font-size: 14px; color: var(--text-dim); text-decoration: none;
       font-family: var(--mono); transition: color 0.2s;
@@ -85,11 +84,11 @@
       color: var(--text); font-weight: 600;
     }
 
-    /* ── LAYOUT ── */
+    /* LAYOUT */
     .page-wrap { max-width: var(--max-w); margin: 0 auto; padding: 0 32px; }
     section { padding-bottom: var(--section-gap); }
 
-    /* ── SECTION LABEL ── */
+    /* SECTION LABEL */
     .section-label {
       font-family: var(--mono); font-size: 10px;
       letter-spacing: 0.1em; text-transform: uppercase;
@@ -106,7 +105,7 @@
     }
     .section-header { margin-bottom: 48px; }
 
-    /* ── HERO ── */
+    /* HERO */
     .hero {
       text-align: center;
       padding-top: clamp(7rem, 13vh, 10rem);
@@ -123,10 +122,11 @@
       line-height: 1.08; letter-spacing: -0.04em;
       margin-bottom: 20px;
     }
-    .hero h1 .accent { color: var(--cyan); }
+    .hero h1 .accent { color: var(--purple); }
+    .hero h1 .accent-alt { color: var(--cyan); }
     .hero-sub {
       font-size: clamp(15px, 2vw, 17px); color: var(--text-dim);
-      max-width: 480px; margin: 0 auto 40px; line-height: 1.7;
+      max-width: 520px; margin: 0 auto 40px; line-height: 1.7;
     }
     .hero-cmd {
       display: inline-flex; align-items: center; gap: 12px;
@@ -162,11 +162,11 @@
     }
     .hero-links a:hover { color: var(--text); }
 
-    /* ── HERO LOGO ── */
+    /* HERO LOGO */
     .hero-logo {
       display: block; margin: 0 auto 24px auto;
-      width: 160px; height: auto;
-      filter: drop-shadow(0 0 30px rgba(120, 220, 232, 0.3));
+      width: 180px; height: auto;
+      filter: drop-shadow(0 0 30px rgba(171, 157, 242, 0.3));
       animation: float 3s ease-in-out infinite;
     }
     @keyframes float {
@@ -174,7 +174,7 @@
       50% { transform: translateY(-8px); }
     }
 
-    /* ── TECH STACK BADGES ── */
+    /* TECH STACK */
     .tech-stack {
       display: flex; gap: 20px; justify-content: center;
       align-items: center; margin-top: 32px;
@@ -192,7 +192,7 @@
     .tech-badge:hover { border-color: var(--border-light); }
     .tech-badge svg { width: 16px; height: 16px; flex-shrink: 0; }
 
-    /* ── DEMO GIF ── */
+    /* DEMO */
     .demo-section { text-align: center; }
     .demo-wrap {
       max-width: 720px; margin: 0 auto;
@@ -200,11 +200,9 @@
       border: 1px solid var(--border);
       background: var(--bg-code);
     }
-    .demo-wrap img {
-      width: 100%; height: auto; display: block;
-    }
+    .demo-wrap img { width: 100%; height: auto; display: block; }
 
-    /* ── PROBLEMS ── */
+    /* PROBLEMS */
     .problems-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -234,7 +232,7 @@
       padding: 6px 12px; border-radius: 6px;
     }
 
-    /* ── STEPS ── */
+    /* STEPS */
     .steps-grid {
       display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
       gap: 24px;
@@ -261,7 +259,7 @@
       color: var(--text);
     }
 
-    /* ── TERMINAL ── */
+    /* TERMINAL */
     .terminal-section { text-align: center; }
     .terminal {
       max-width: 640px; margin: 0 auto;
@@ -272,9 +270,7 @@
       display: flex; align-items: center; gap: 8px;
       padding: 12px 16px; border-bottom: 1px solid var(--border);
     }
-    .terminal-dot {
-      width: 10px; height: 10px; border-radius: 50%;
-    }
+    .terminal-dot { width: 10px; height: 10px; border-radius: 50%; }
     .terminal-dot.red { background: #ff5f57; }
     .terminal-dot.yellow { background: #ffbd2e; }
     .terminal-dot.green { background: #28c840; }
@@ -293,8 +289,9 @@
     .terminal-body .success { color: var(--green); }
     .terminal-body .info { color: var(--text-dim); }
     .terminal-body .highlight { color: var(--cyan); }
+    .terminal-body .warn { color: var(--yellow); }
 
-    /* ── BEFORE / AFTER ── */
+    /* COMPARISON */
     .comparison-grid {
       display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
     }
@@ -321,7 +318,7 @@
     .comp-value.dim { color: var(--text-muted); }
     .comp-value.good { color: var(--green); }
 
-    /* ── FEATURES ── */
+    /* FEATURES */
     .features-grid {
       display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
       gap: 20px;
@@ -346,8 +343,13 @@
     .feature-card:nth-child(6) .feature-icon { background: rgba(171,157,242,0.12); color: var(--purple); }
     .feature-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
     .feature-card p { font-size: 13px; color: var(--text-dim); line-height: 1.6; }
+    .feature-card p code {
+      font-family: var(--mono); font-size: 12px;
+      background: var(--bg-code); padding: 2px 6px;
+      border-radius: 4px; color: var(--green);
+    }
 
-    /* ── FAQ ── */
+    /* FAQ */
     .faq-list { max-width: 700px; }
     .faq-item {
       border-bottom: 1px solid var(--border); padding: 20px 0;
@@ -357,7 +359,7 @@
       display: flex; justify-content: space-between; align-items: center;
       color: var(--text); transition: color 0.2s;
     }
-    .faq-q:hover { color: var(--cyan); }
+    .faq-q:hover { color: var(--purple); }
     .faq-arrow {
       font-size: 18px; color: var(--text-muted);
       transition: transform 0.3s;
@@ -368,14 +370,14 @@
       transition: max-height 0.3s ease, padding 0.3s ease;
       font-size: 13px; color: var(--text-dim); line-height: 1.7;
     }
-    .faq-item.open .faq-a { max-height: 300px; padding-top: 12px; }
+    .faq-item.open .faq-a { max-height: 360px; padding-top: 12px; }
     .faq-a code {
       font-family: var(--mono); font-size: 12px;
       background: var(--bg-code); padding: 2px 6px;
       border-radius: 4px; color: var(--green);
     }
 
-    /* ── FOOTER ── */
+    /* FOOTER */
     footer {
       border-top: 1px solid var(--border);
       padding: 32px 0; text-align: center;
@@ -385,14 +387,12 @@
     footer a { color: var(--text-dim); text-decoration: none; }
     footer a:hover { color: var(--text); }
 
-    /* ── RESPONSIVE ── */
+    /* RESPONSIVE */
     @media (max-width: 768px) {
       .nav-inner { padding: 12px 20px; }
       .nav-links-desktop { display: none; }
       .page-wrap { padding: 0 20px; }
       .comparison-grid { grid-template-columns: 1fr; }
-      .compare-table { font-size: 12px; }
-      .compare-table th, .compare-table td { padding: 10px 12px; }
     }
     @media (max-width: 480px) {
       .hero h1 { font-size: 28px; }
@@ -401,7 +401,7 @@
       }
     }
 
-    /* ── ANIMATIONS ── */
+    /* ANIMATIONS */
     .fade-in {
       opacity: 0; transform: translateY(20px);
       transition: opacity 0.6s ease, transform 0.6s ease;
@@ -414,13 +414,13 @@
 <!-- NAV -->
 <nav>
   <div class="nav-inner">
-    <a href="#" class="nav-brand">vllm-compose</a>
+    <a href="#" class="nav-brand">llm<span class="brand-accent">ux</span></a>
     <div class="nav-links">
       <span class="nav-links-desktop">
         <a href="#features">Features</a>
         <a href="#faq">FAQ</a>
       </span>
-      <a href="https://github.com/Bae-ChangHyun/vllm-compose" class="nav-github" target="_blank">
+      <a href="https://github.com/Bae-ChangHyun/llmux" class="nav-github" target="_blank">
         <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
         <span class="nav-github-stars" id="starCount">GitHub</span>
       </a>
@@ -432,19 +432,19 @@
 
   <!-- HERO -->
   <section class="hero">
-    <img src="assets/vllm-compose.png" alt="vLLM Compose" class="hero-logo" />
-    <p class="hero-badge">open source &middot; free &middot; GPU-native</p>
+    <img src="https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/assets/llmux.png" alt="llmux" class="hero-logo" onerror="this.style.display='none'" />
+    <p class="hero-badge">open source &middot; GPU-native &middot; dual backend</p>
     <h1>
-      The simplest way<br/>
-      to <span class="accent">serve vLLM.</span>
+      One TUI for<br/>
+      <span class="accent">vLLM</span> and <span class="accent-alt">llama.cpp</span>.
     </h1>
     <p class="hero-sub">
-      Save per-model settings as profiles.<br/>
-      Pick one in the TUI and hit Enter to spin it up or down.
+      Two engines. One dashboard. Zero config headaches.<br/>
+      Pick a profile in the TUI and hit Enter &mdash; llmux runs the right engine for you.
     </p>
     <div class="hero-cmd" onclick="copyCmd(this)">
       <span class="prompt">$</span>
-      <span class="cmd-text">git clone https://github.com/Bae-ChangHyun/vllm-compose.git</span>
+      <span class="cmd-text">git clone https://github.com/Bae-ChangHyun/llmux.git</span>
       <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
         <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
@@ -452,18 +452,21 @@
       <span class="copied-tooltip">Copied!</span>
     </div>
     <div class="hero-links">
-      <a href="https://github.com/Bae-ChangHyun/vllm-compose">GitHub</a>
-      <a href="https://github.com/Bae-ChangHyun/vllm-compose#get-started-in-30-seconds">Docs</a>
+      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a>
+      <a href="https://github.com/Bae-ChangHyun/llmux#get-started-in-30-seconds">Docs</a>
     </div>
-    <!-- Tech Stack Badges -->
     <div class="tech-stack">
       <span class="tech-badge">
         <svg viewBox="0 0 640 512" fill="#2496ED" width="18" height="18"><path d="M349.9 236.3h-66.1v-59.4h66.1v59.4zm0-204.3h-66.1v60.7h66.1V32zm78.2 144.8H362v59.4h66.1v-59.4zm-156.3-72.1h-66.1v60.1h66.1v-60.1zm78.1 0h-66.1v60.1h66.1v-60.1zm276.8 100c-14.4-9.7-47.6-13.2-73.1-8.4-3.3-24-16.7-44.9-41.1-63.7l-14-9.3-9.3 14c-18.4 27.8-23.4 73.6-3.7 103.8-8.7 4.7-25.8 11.1-48.4 10.7H2.4c-8.7 50.8 5.8 116.8 44 162.1 37.1 43.9 92.7 66.2 165.4 66.2 157.4 0 273.9-72.5 328.4-204.2 21.4.4 67.6.1 91.3-45.2 1.5-2.5 6.6-13.2 8.5-17.1l-13.3-8.9zm-511.1-27.9h-66v59.4h66.1v-59.4zm78.1 0h-66.1v59.4h66.1v-59.4zm78.1 0h-66.1v59.4h66.1v-59.4zm-78.1-72.1h-66.1v60.1h66.1v-60.1z"/></svg>
         Docker
       </span>
       <span class="tech-badge">
-        <span style="font-family:var(--mono);font-weight:700;font-size:13px;color:var(--cyan);">V</span>
+        <img src="https://github.com/vllm-project.png" width="16" height="16" alt="vLLM" style="border-radius:3px;" />
         vLLM
+      </span>
+      <span class="tech-badge">
+        <img src="https://github.com/ggml-org.png" width="16" height="16" alt="llama.cpp" style="border-radius:3px;" />
+        llama.cpp
       </span>
       <span class="tech-badge">
         <img src="https://cdn.simpleicons.org/nvidia/76B900" width="16" height="16" alt="NVIDIA" />
@@ -480,32 +483,32 @@
   <section class="fade-in">
     <div class="section-header">
       <p class="section-label">the problem</p>
-      <h2 class="section-title">Every ML engineer hits these walls</h2>
+      <h2 class="section-title">Two backends. Twice the toolchain.</h2>
     </div>
     <div class="problems-grid">
       <div class="problem-card">
         <p class="problem-num">01</p>
-        <h3>Config chaos</h3>
-        <p>Different models need different GPU settings, memory limits, and serving params. You end up copy-pasting docker commands every time.</p>
-        <span class="problem-cmd">$ docker run --gpus ... -e ... vllm/vllm ...</span>
+        <h3>Different tooling per engine</h3>
+        <p>vLLM wants HF Transformer weights. llama.cpp wants GGUF. Different images, different flags, different compose files.</p>
+        <span class="problem-cmd">$ vllm serve &mdash; or &mdash; $ llama-server --model ...</span>
       </div>
       <div class="problem-card">
         <p class="problem-num">02</p>
-        <h3>Switching models is painful</h3>
-        <p>Testing Qwen, then Llama, then DeepSeek? Each switch means stopping, reconfiguring, and restarting manually.</p>
-        <span class="problem-cmd">$ docker stop && docker rm && docker run ...</span>
+        <h3>Port / GPU clashes</h3>
+        <p>Start llama.cpp on 8080, forget that vLLM was already on it. Container crash, logs panic, you dig for the offender.</p>
+        <span class="problem-cmd">$ docker ps | grep 8080</span>
       </div>
       <div class="problem-card">
         <p class="problem-num">03</p>
-        <h3>No visibility</h3>
-        <p>Which container is running? How much GPU memory is left? You're constantly running docker ps and nvidia-smi.</p>
-        <span class="problem-cmd">$ docker ps && nvidia-smi</span>
+        <h3>GGUF download drudgery</h3>
+        <p>Find the file name, hf download, move to models/, edit compose, hope the path matches.</p>
+        <span class="problem-cmd">$ hf download ... && vim docker-compose.yaml</span>
       </div>
       <div class="problem-card">
         <p class="problem-num">04</p>
-        <h3>Multi-model headaches</h3>
-        <p>Running multiple models simultaneously means juggling ports, GPU assignments, and compose files by hand.</p>
-        <span class="problem-cmd">$ vim docker-compose.yaml  # again...</span>
+        <h3>No unified benchmark</h3>
+        <p>Want to compare a GPTQ vLLM run against a Q4_K_M GGUF run? Write the curl by hand, time it yourself, twice.</p>
+        <span class="problem-cmd">$ time curl /v1/chat/completions ...</span>
       </div>
     </div>
   </section>
@@ -514,26 +517,26 @@
   <section class="fade-in">
     <div class="section-header">
       <p class="section-label">how it works</p>
-      <h2 class="section-title">Three steps. That's it.</h2>
+      <h2 class="section-title">Three steps, either engine.</h2>
     </div>
     <div class="steps-grid">
       <div class="step-card">
         <div class="step-num">1</div>
-        <h3>Clone & configure</h3>
-        <p>Set your HuggingFace token and cache path. One-time setup.</p>
+        <h3>Clone &amp; configure</h3>
+        <p>One <code>.env.common</code> holds your HF token and cache path. Both backends share it.</p>
         <div class="step-code">$ git clone ... && cat > .env.common</div>
       </div>
       <div class="step-card">
         <div class="step-num">2</div>
-        <h3>Launch the TUI</h3>
-        <p>Quick Setup auto-generates a profile from just a model name. Or create one manually with full control.</p>
-        <div class="step-code">$ uv run vllm-compose</div>
+        <h3>Launch llmux</h3>
+        <p>Press <code>n</code>, pick vLLM or llama.cpp, type a model name. Profile + config auto-generated.</p>
+        <div class="step-code">$ uv run llmux</div>
       </div>
       <div class="step-card">
         <div class="step-num">3</div>
-        <h3>Select & deploy</h3>
-        <p>Pick a profile, press Enter, choose Start. Your model is serving on the OpenAI-compatible API.</p>
-        <div class="step-code">Enter &rarr; Start &rarr; Serving at :8000</div>
+        <h3>Enter &rarr; Start</h3>
+        <p>Cross-backend conflict gate checks ports and GPUs, then spins the container on the OpenAI-compatible API.</p>
+        <div class="step-code">Enter &rarr; Start &rarr; Serving :8000 / :8080</div>
       </div>
     </div>
   </section>
@@ -549,9 +552,9 @@
         <span class="terminal-dot red"></span>
         <span class="terminal-dot yellow"></span>
         <span class="terminal-dot green"></span>
-        <span class="terminal-title">vllm-compose</span>
+        <span class="terminal-title">llmux</span>
       </div>
-      <img src="assets/demo.gif" alt="vLLM Compose Demo" loading="lazy" />
+      <img src="https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/assets/demo.gif" alt="llmux Demo" loading="lazy" onerror="this.style.display='none'" />
     </div>
   </section>
 
@@ -569,19 +572,20 @@
         <span class="terminal-title">~</span>
       </div>
       <div class="terminal-body" id="terminalBody">
-        <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">git clone https://github.com/Bae-ChangHyun/vllm-compose.git</span></div>
-        <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">cd vllm-compose</span></div>
+        <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">git clone https://github.com/Bae-ChangHyun/llmux.git</span></div>
+        <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">cd llmux</span></div>
         <div class="line info">&nbsp;</div>
         <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">cat > .env.common << 'EOF'</span></div>
         <div class="line info">HF_TOKEN=hf_your_token_here</div>
         <div class="line info">HF_CACHE_PATH=/home/user/.cache/huggingface</div>
         <div class="line info">EOF</div>
         <div class="line info">&nbsp;</div>
-        <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">uv run vllm-compose</span></div>
+        <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">uv run llmux</span></div>
         <div class="line info">&nbsp;</div>
-        <div class="line"><span class="success">&#10004;</span> <span class="highlight">TUI launched</span> <span class="info">— press w for Quick Setup</span></div>
-        <div class="line"><span class="success">&#10004;</span> Enter model name: <span class="highlight">Qwen/Qwen3-30B-A3B</span></div>
-        <div class="line"><span class="success">&#10004;</span> Profile created <span class="info">— config auto-generated</span></div>
+        <div class="line"><span class="success">&#10004;</span> <span class="highlight">TUI launched</span> <span class="info">— press n for new profile</span></div>
+        <div class="line"><span class="success">&#10004;</span> Select backend: <span class="highlight">vLLM</span> / <span class="highlight">llama.cpp</span></div>
+        <div class="line"><span class="success">&#10004;</span> Enter model: <span class="highlight">Qwen/Qwen3-30B-A3B</span></div>
+        <div class="line"><span class="warn">&#9888;</span> <span class="info">conflict gate: no overlap on port 8000 / GPU 0</span></div>
         <div class="line"><span class="success">&#10004;</span> Container started <span class="info">— serving at</span> <span class="highlight">http://localhost:8000/v1</span></div>
       </div>
     </div>
@@ -591,26 +595,26 @@
   <section class="fade-in">
     <div class="section-header">
       <p class="section-label">before &amp; after</p>
-      <h2 class="section-title">From config hell to one-click deploy</h2>
+      <h2 class="section-title">From two toolchains to one keyboard</h2>
     </div>
     <div class="comparison-grid">
       <div class="comparison-card before">
-        <h3>manual workflow</h3>
-        <div class="comp-row"><span class="comp-label">Switch models</span><span class="comp-value dim">docker stop/rm/run</span></div>
-        <div class="comp-row"><span class="comp-label">Manage configs</span><span class="comp-value dim">remember CLI args</span></div>
-        <div class="comp-row"><span class="comp-label">Multi-model</span><span class="comp-value dim">edit compose files</span></div>
-        <div class="comp-row"><span class="comp-label">Monitor GPUs</span><span class="comp-value dim">nvidia-smi loop</span></div>
-        <div class="comp-row"><span class="comp-label">Memory check</span><span class="comp-value dim">trial & error</span></div>
-        <div class="comp-row"><span class="comp-label">Setup time</span><span class="comp-value dim">~15 min / model</span></div>
+        <h3>two separate projects</h3>
+        <div class="comp-row"><span class="comp-label">Switch engines</span><span class="comp-value dim">leave one TUI, open another</span></div>
+        <div class="comp-row"><span class="comp-label">Port conflicts</span><span class="comp-value dim">crash, then debug</span></div>
+        <div class="comp-row"><span class="comp-label">GGUF setup</span><span class="comp-value dim">manual hf download</span></div>
+        <div class="comp-row"><span class="comp-label">Benchmark</span><span class="comp-value dim">curl + time, per engine</span></div>
+        <div class="comp-row"><span class="comp-label">Memory check</span><span class="comp-value dim">guess per engine</span></div>
+        <div class="comp-row"><span class="comp-label">Mental overhead</span><span class="comp-value dim">double</span></div>
       </div>
       <div class="comparison-card after">
-        <h3>with vllm compose</h3>
-        <div class="comp-row"><span class="comp-label">Switch models</span><span class="comp-value good">select + Enter</span></div>
-        <div class="comp-row"><span class="comp-label">Manage configs</span><span class="comp-value good">YAML + autocomplete</span></div>
-        <div class="comp-row"><span class="comp-label">Multi-model</span><span class="comp-value good">independent profiles</span></div>
-        <div class="comp-row"><span class="comp-label">Monitor GPUs</span><span class="comp-value good">real-time dashboard</span></div>
-        <div class="comp-row"><span class="comp-label">Memory check</span><span class="comp-value good">built-in estimator</span></div>
-        <div class="comp-row"><span class="comp-label">Setup time</span><span class="comp-value good">30 seconds</span></div>
+        <h3>with llmux</h3>
+        <div class="comp-row"><span class="comp-label">Switch engines</span><span class="comp-value good">one dashboard</span></div>
+        <div class="comp-row"><span class="comp-label">Port conflicts</span><span class="comp-value good">cross-backend gate</span></div>
+        <div class="comp-row"><span class="comp-label">GGUF setup</span><span class="comp-value good">auto pull on start</span></div>
+        <div class="comp-row"><span class="comp-label">Benchmark</span><span class="comp-value good">built-in for both</span></div>
+        <div class="comp-row"><span class="comp-label">Memory check</span><span class="comp-value good">hf-mem, one keystroke</span></div>
+        <div class="comp-row"><span class="comp-label">Mental overhead</span><span class="comp-value good">single</span></div>
       </div>
     </div>
   </section>
@@ -626,43 +630,43 @@
         <div class="feature-icon">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         </div>
-        <h3>Interactive TUI</h3>
-        <p>Start, stop, view logs, edit configs &mdash; all from one terminal screen with keyboard shortcuts.</p>
+        <h3>Unified TUI</h3>
+        <p>Every vLLM and llama.cpp profile shows up in the same list. Start, stop, logs, edit &mdash; all keyboard-driven.</p>
       </div>
       <div class="feature-card">
         <div class="feature-icon">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         </div>
-        <h3>Model Profiles</h3>
-        <p>Save per-model settings independently. Switch between Qwen, Llama, DeepSeek instantly.</p>
+        <h3>Cross-backend conflict gate</h3>
+        <p>Catches port + GPU collisions between vLLM and llama.cpp before docker is even touched.</p>
       </div>
       <div class="feature-card">
         <div class="feature-icon">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
         </div>
-        <h3>GPU Monitor</h3>
-        <p>Real-time GPU usage bars on the dashboard. Auto-refresh every 5 seconds. No more nvidia-smi.</p>
+        <h3>Unified benchmark</h3>
+        <p>OpenAI-compatible <code>/v1/chat/completions</code> bench for either engine. Apples-to-apples latency.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </div>
+        <h3>GGUF auto-download</h3>
+        <p>llama.cpp profiles pull the right file on first start via <code>pull-model.sh</code>. No manual <code>hf download</code>.</p>
       </div>
       <div class="feature-card">
         <div class="feature-icon">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>
         </div>
         <h3>Memory Estimator</h3>
-        <p>Estimate GPU memory before deploying. Know if your model fits before wasting time on OOM errors.</p>
+        <p>Press <code>m</code>, type a HF repo, get per-GPU fit estimates powered by hf-mem. Works for both backends.</p>
       </div>
       <div class="feature-card">
         <div class="feature-icon">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
         </div>
-        <h3>Source Build</h3>
-        <p>Auto-detect GPU architecture. Fast Build in 10-30 min with a TUI-driven dev image workflow.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-        </div>
-        <h3>LoRA Adapters</h3>
-        <p>Multi-adapter loading with automatic path mapping. Serve fine-tuned models alongside base models.</p>
+        <h3>GPU Monitor</h3>
+        <p>Real-time GPU usage bars on the dashboard, auto-refresh every 5 seconds. No more <code>nvidia-smi</code> in a loop.</p>
       </div>
     </div>
   </section>
@@ -676,32 +680,43 @@
     <div class="faq-list">
       <div class="faq-item">
         <div class="faq-q" onclick="toggleFaq(this)">
-          How do I get started?
+          How do I choose between vLLM and llama.cpp?
           <span class="faq-arrow">+</span>
         </div>
         <div class="faq-a">
-          Clone the repo, set your HuggingFace token in <code>.env.common</code>, and run <code>uv run vllm-compose</code>.
-          Quick Setup auto-generates a profile from just a model name &mdash; you'll be serving in 30 seconds.
+          Rule of thumb: <b>vLLM</b> for high-throughput serving of HF Transformer weights on big GPUs;
+          <b>llama.cpp</b> for GGUF on smaller / offloaded setups, CPU+GPU mixed, or exotic quantizations (Q4_K_M, Q8_0).
+          llmux lets you keep profiles for both and benchmark them side by side.
         </div>
       </div>
       <div class="faq-item">
         <div class="faq-q" onclick="toggleFaq(this)">
-          What GPU do I need?
+          Can I run a vLLM profile and a llama.cpp profile at the same time?
           <span class="faq-arrow">+</span>
         </div>
         <div class="faq-a">
-          Any NVIDIA GPU supported by vLLM. The built-in Memory Estimator helps you check if a model fits
-          your GPU before deploying. Tensor parallelism lets you split large models across multiple GPUs.
+          Yes &mdash; as long as they don't share a port or GPU. The cross-backend conflict gate warns you pre-start if they do.
+          Independent profiles with different <code>GPU_ID</code> and ports run simultaneously.
         </div>
       </div>
       <div class="faq-item">
         <div class="faq-q" onclick="toggleFaq(this)">
-          Can I run multiple models at once?
+          What about LoRA adapters?
           <span class="faq-arrow">+</span>
         </div>
         <div class="faq-a">
-          Yes. Each profile runs independently with its own container, port, and GPU assignment.
-          Start as many as your hardware supports &mdash; the dashboard shows all running containers.
+          Supported for vLLM profiles (multi-adapter loading via <code>ENABLE_LORA=true</code> + <code>LORA_BASE_PATH</code>).
+          llama.cpp LoRA support is on the roadmap.
+        </div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          Is the llama.cpp web UI served too?
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          No. llmux injects <code>--no-webui</code> unconditionally. Only the OpenAI-compatible HTTP API is exposed,
+          so both engines look identical to clients.
         </div>
       </div>
       <div class="faq-item">
@@ -711,16 +726,7 @@
         </div>
         <div class="faq-a">
           Docker with NVIDIA Container Toolkit, Python 3.10+, and an NVIDIA GPU.
-          We recommend <code>uv</code> for Python package management but <code>pip</code> works too.
-        </div>
-      </div>
-      <div class="faq-item">
-        <div class="faq-q" onclick="toggleFaq(this)">
-          Can I use my own vLLM fork?
-          <span class="faq-arrow">+</span>
-        </div>
-        <div class="faq-a">
-          Yes. In the Dev Build flow, you can enter a custom repository URL and branch before starting the build. The runtime still auto-detects your GPU architecture for optimized builds.
+          <code>uv</code> is recommended for the TUI's venv but <code>pip</code> works too.
         </div>
       </div>
     </div>
@@ -733,14 +739,13 @@
   <div class="page-wrap">
     <p>
       MIT License &middot;
-      <a href="https://github.com/Bae-ChangHyun/vllm-compose">GitHub</a> &middot;
+      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a> &middot;
       Made by <a href="https://github.com/Bae-ChangHyun">Bae-ChangHyun</a>
     </p>
   </div>
 </footer>
 
 <script>
-// Copy command
 function copyCmd(el) {
   const text = el.querySelector('.cmd-text').textContent;
   navigator.clipboard.writeText(text);
@@ -749,43 +754,29 @@ function copyCmd(el) {
   setTimeout(() => tooltip.classList.remove('show'), 1500);
 }
 
-// FAQ toggle
 function toggleFaq(el) {
   el.parentElement.classList.toggle('open');
 }
 
-// Scroll animations
 const observer = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
-    if (entry.isIntersecting) {
-      entry.target.classList.add('visible');
-    }
+    if (entry.isIntersecting) entry.target.classList.add('visible');
   });
 }, { threshold: 0.1 });
-
 document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
 
-// Terminal animation
 function animateTerminal() {
   const lines = document.querySelectorAll('#terminalBody .line');
-  lines.forEach((line, i) => {
-    setTimeout(() => line.classList.add('visible'), i * 200);
-  });
+  lines.forEach((line, i) => setTimeout(() => line.classList.add('visible'), i * 200));
 }
-
 const termObserver = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
-    if (entry.isIntersecting) {
-      animateTerminal();
-      termObserver.unobserve(entry.target);
-    }
+    if (entry.isIntersecting) { animateTerminal(); termObserver.unobserve(entry.target); }
   });
 }, { threshold: 0.3 });
-
 termObserver.observe(document.getElementById('terminalBody'));
 
-// Fetch GitHub star count
-fetch('https://api.github.com/repos/Bae-ChangHyun/vllm-compose')
+fetch('https://api.github.com/repos/Bae-ChangHyun/llmux')
   .then(r => r.json())
   .then(data => {
     if (data.stargazers_count !== undefined) {

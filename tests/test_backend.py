@@ -3,9 +3,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from tui import backend
-from tui.backend_inspect import _pick_preferred_tag
-from tui.backend_runtime import _build_lora_options, _detect_gpu_arch, _ensure_common_env
+from tui.backends.vllm import backend
+from tui.backends.vllm.backend_inspect import _pick_preferred_tag
+from tui.backends.vllm.backend_runtime import _build_lora_options, _detect_gpu_arch, _ensure_common_env
 
 
 class LoadConfigTests(unittest.TestCase):
@@ -309,7 +309,7 @@ class BuildLoraOptionsTests(unittest.TestCase):
 class EnsureCommonEnvTests(unittest.TestCase):
     def test_missing_common_env_returns_error(self) -> None:
         profile = backend.Profile(name="p")
-        with patch("tui.backend_runtime.COMMON_ENV", Path("/nonexistent/.env.common")):
+        with patch("tui.backends.vllm.backend_runtime.COMMON_ENV", Path("/nonexistent/.env.common")):
             ok, messages = _ensure_common_env(profile)
         self.assertFalse(ok)
         self.assertTrue(any(".env.common" in m for m in messages))
@@ -321,7 +321,7 @@ class EnsureCommonEnvTests(unittest.TestCase):
         self.addCleanup(tmp_path.unlink, missing_ok=True)
 
         profile = backend.Profile(name="p")
-        with patch("tui.backend_runtime.COMMON_ENV", tmp_path):
+        with patch("tui.backends.vllm.backend_runtime.COMMON_ENV", tmp_path):
             ok, messages = _ensure_common_env(profile)
         self.assertFalse(ok)
         self.assertTrue(any("HF_CACHE_PATH" in m for m in messages))
@@ -333,7 +333,7 @@ class EnsureCommonEnvTests(unittest.TestCase):
         self.addCleanup(tmp_path.unlink, missing_ok=True)
 
         profile = backend.Profile(name="p")
-        with patch("tui.backend_runtime.COMMON_ENV", tmp_path):
+        with patch("tui.backends.vllm.backend_runtime.COMMON_ENV", tmp_path):
             ok, messages = _ensure_common_env(profile)
         self.assertFalse(ok)
         self.assertTrue(any("absolute" in m for m in messages))
@@ -345,7 +345,7 @@ class EnsureCommonEnvTests(unittest.TestCase):
         self.addCleanup(tmp_path.unlink, missing_ok=True)
 
         profile = backend.Profile(name="p")
-        with patch("tui.backend_runtime.COMMON_ENV", tmp_path):
+        with patch("tui.backends.vllm.backend_runtime.COMMON_ENV", tmp_path):
             ok, messages = _ensure_common_env(profile)
         self.assertTrue(ok)
         self.assertEqual(messages, [])
@@ -357,7 +357,7 @@ class EnsureCommonEnvTests(unittest.TestCase):
         self.addCleanup(tmp_path.unlink, missing_ok=True)
 
         profile = backend.Profile(name="p", enable_lora="true")
-        with patch("tui.backend_runtime.COMMON_ENV", tmp_path):
+        with patch("tui.backends.vllm.backend_runtime.COMMON_ENV", tmp_path):
             ok, messages = _ensure_common_env(profile)
         self.assertFalse(ok)
         self.assertTrue(any("LORA_BASE_PATH" in m for m in messages))
@@ -368,7 +368,7 @@ class DetectGpuArchTests(unittest.IsolatedAsyncioTestCase):
         async def fake_run(*args, **kwargs):
             return 0, "8.9\n"
 
-        with patch("tui.backend_runtime.run_command", fake_run):
+        with patch("tui.backends.vllm.backend_runtime.run_command", fake_run):
             result = await _detect_gpu_arch()
         self.assertEqual(result, "8.9")
 
@@ -376,7 +376,7 @@ class DetectGpuArchTests(unittest.IsolatedAsyncioTestCase):
         async def fake_run(*args, **kwargs):
             return 0, "8.9\n8.6\n8.9\n"
 
-        with patch("tui.backend_runtime.run_command", fake_run):
+        with patch("tui.backends.vllm.backend_runtime.run_command", fake_run):
             result = await _detect_gpu_arch()
         self.assertEqual(result, "8.6 8.9")
 
@@ -384,7 +384,7 @@ class DetectGpuArchTests(unittest.IsolatedAsyncioTestCase):
         async def fake_run(*args, **kwargs):
             return 1, ""
 
-        with patch("tui.backend_runtime.run_command", fake_run):
+        with patch("tui.backends.vllm.backend_runtime.run_command", fake_run):
             result = await _detect_gpu_arch()
         self.assertEqual(result, "")
 
@@ -423,7 +423,6 @@ class CheckPortConflictTests(unittest.IsolatedAsyncioTestCase):
                 "run_command": fake_run_command,
                 "list_profile_names": lambda: ["current", "other"],
                 "load_profile": fake_load_profile,
-                "is_container_running": AsyncMock(return_value=False),
             },
         ):
             conflict = await backend.check_port_conflict(profile)
