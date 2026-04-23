@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/llmux.png" alt="llmux" width="240"/>
+<img src="assets/llmux-hero.png" alt="llmux — one TUI for vLLM and llama.cpp" width="440"/>
 
 # llmux
 

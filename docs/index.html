@@ -164,10 +164,11 @@
 
     /* HERO LOGO */
     .hero-logo {
-      display: block; margin: 0 auto 24px auto;
-      width: 180px; height: auto;
-      filter: drop-shadow(0 0 30px rgba(171, 157, 242, 0.3));
-      animation: float 3s ease-in-out infinite;
+      display: block; margin: 0 auto 32px auto;
+      width: 100%; max-width: 440px; height: auto;
+      border-radius: 24px;
+      filter: drop-shadow(0 20px 60px rgba(171, 157, 242, 0.35));
+      animation: float 4s ease-in-out infinite;
     }
     @keyframes float {
       0%, 100% { transform: translateY(0); }
@@ -432,7 +433,7 @@
 
   <!-- HERO -->
   <section class="hero">
-    <img src="https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/assets/llmux.png" alt="llmux" class="hero-logo" onerror="this.style.display='none'" />
+    <img src="https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/assets/llmux-hero.png" alt="llmux — one TUI for vLLM and llama.cpp" class="hero-logo" onerror="this.style.display='none'" />
     <p class="hero-badge">open source &middot; GPU-native &middot; dual backend</p>
     <h1>
       One TUI for<br/>
