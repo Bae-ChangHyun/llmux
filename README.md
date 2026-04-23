@@ -100,7 +100,7 @@ From the dashboard:
 - **Unified Textual TUI** &mdash; Every vLLM and llama.cpp profile side-by-side in a single `DataTable`.
 - **YAML-native profiles** &mdash; One `profiles.yaml`, `defaults` block for inheritance, rendered to `.env` only at launch.
 - **Safe vLLM image resolution** &mdash; Version picker skips `:latest`/`:nightly` aliases; post-start verification warns on tag/content mismatch.
-- **Cross-backend conflict gate** &mdash; Port *and* GPU overlap check pre-`compose up`, regardless of engine.
+- **Cross-backend conflict gate** &mdash; Port/GPU overlap is checked before start, with explicit warning + confirm flow.
 - **Quick Setup** &mdash; HF model or repo → profile + config auto-generated, with live memory estimate.
 - **OpenAI-compatible bench** &mdash; Same `/v1/chat/completions` latency/throughput shot for either engine.
 - **GGUF auto-download** &mdash; llama.cpp profiles fetch the file on first start, no manual `hf download`.
@@ -193,6 +193,7 @@ Use `c` on the dashboard to edit these directly in the TUI — inputs auto-compl
 | `u` / `d` / `l` | Start / Stop / Logs for the selected profile |
 | `e` / `c` / `x` | Edit profile / Edit config / Delete profile |
 | `?` | Full shortcut cheatsheet inside the app |
+| `f` | Toggle auto-follow in log/start streaming screens |
 
 </details>
 
@@ -203,10 +204,14 @@ Use `c` on the dashboard to edit these directly in the TUI — inputs auto-compl
 
 Starting a profile runs a pre-flight check against every other profile — *both* backends — for:
 
-- **Port overlap** &mdash; even with a non-llmux container holding the port.
+- **Port overlap** &mdash; including non-llmux Docker containers already holding the port.
 - **GPU overlap** &mdash; any profile with an intersecting `gpu_id` that's currently running.
 
-You see the offending profile name and port/GPU before any `docker compose` call, so starting `vllm/qwen` won't silently collide with `llamacpp/gemma4` if they share GPU 0.
+If a conflict exists, you get a warning modal with details and can decide whether to continue.
+
+For vLLM, a runtime host-process bind check still runs before `compose up`; choosing **Start anyway** only bypasses the pre-flight conflict gate after explicit confirmation.
+
+If Docker port probing is unavailable, llmux shows a warning and keeps the runtime port check enabled.
 
 </details>
 
@@ -242,6 +247,7 @@ After the container is up, llmux asks the container itself (`import vllm; print(
 | GPU OOM (vLLM) | Lower `gpu-memory-utilization` or raise `tensor_parallel_size` in the profile |
 | GPU OOM (llama.cpp) | Lower `n-gpu-layers` in config YAML |
 | Port conflict | TUI warns pre-start; change the profile's `port` in `profiles.yaml` |
+| Port conflict with no matching Docker container | Another local process may already bind that port; change profile `port` or stop the process |
 | `Local Latest` shows "no images" | You only have `:latest` or `:nightly` locally. Run `docker pull vllm/vllm-openai:vX.Y.Z` (pick a specific version) and retry |
 | GGUF download stuck | Check `HF_TOKEN` in `.env.common`; retry from TUI &mdash; `switch.sh` auto-invokes `pull-model.sh` on start |
 | Copy logs in TUI | Shift+drag to select, Ctrl+C to copy ([Textual FAQ](https://textual.textualize.io/FAQ/#how-can-i-select-and-copy-text-in-a-textual-app)) |
