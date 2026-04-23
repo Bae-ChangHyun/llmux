@@ -36,15 +36,25 @@ require_profile() {
   render_profile "$profile"
 }
 
+_override_path() {
+  local profile=${1:?프로필 이름 필요}
+  echo "$ROOT/.runtime/llamacpp/override-${profile}.yaml"
+}
+
 run_compose() {
-  # 안전판: 인자 분리 유지. profile 이름 + compose 서브명령/옵션을 넘긴다.
+  # Per-profile project (-p) + per-profile override file so multiple
+  # llamacpp profiles can run concurrently without overwriting each other's
+  # command or fighting for the shared `llama-server` service slot.
   local profile=${1:?프로필 이름 필요}
   shift
-  local env_file
+  local env_file override
   env_file="$(render_profile "$profile")"
+  override="$(_override_path "$profile")"
+  [[ -f "$override" ]] || die "override 파일 없음: $override (render-override.py 를 먼저 실행하세요)"
   docker compose \
+    -p "$profile" \
     -f "$COMPOSE_DIR/docker-compose.yaml" \
-    -f "$COMPOSE_DIR/docker-compose.override.yaml" \
+    -f "$override" \
     --project-directory "$ROOT" \
     --env-file "$ROOT/.env.common" \
     --env-file "$env_file" \
@@ -54,11 +64,14 @@ run_compose() {
 exec_compose() {
   local profile=${1:?프로필 이름 필요}
   shift
-  local env_file
+  local env_file override
   env_file="$(render_profile "$profile")"
+  override="$(_override_path "$profile")"
+  [[ -f "$override" ]] || die "override 파일 없음: $override (render-override.py 를 먼저 실행하세요)"
   exec docker compose \
+    -p "$profile" \
     -f "$COMPOSE_DIR/docker-compose.yaml" \
-    -f "$COMPOSE_DIR/docker-compose.override.yaml" \
+    -f "$override" \
     --project-directory "$ROOT" \
     --env-file "$ROOT/.env.common" \
     --env-file "$env_file" \
