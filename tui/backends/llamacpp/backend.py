@@ -334,6 +334,16 @@ async def run_script(
             stdout, _ = await proc.communicate()
         else:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.CancelledError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            pass
+        raise
     except asyncio.TimeoutError:
         try:
             proc.kill()
@@ -345,6 +355,40 @@ async def run_script(
             pass
         return 124, f"✗ '{script}' timed out after {timeout}s"
     return proc.returncode or 0, stdout.decode("utf-8", errors="replace")
+
+
+async def stream_script(
+    script: str, *args: str
+):
+    """스크립트 실행을 라인 단위로 스트리밍."""
+    proc = await asyncio.create_subprocess_exec(
+        str(SCRIPTS_DIR / script),
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        cwd=str(PROJECT_ROOT),
+    )
+    if proc.stdout is None:
+        yield ("rc", 1)
+        return
+    try:
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            yield ("log", line.decode("utf-8", errors="replace").rstrip())
+        await proc.wait()
+        yield ("rc", proc.returncode or 0)
+    except asyncio.CancelledError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            pass
+        raise
 
 
 async def stream_logs(container_name: str, lines: int = 200):

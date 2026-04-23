@@ -9,7 +9,7 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Label,
     OptionList,
@@ -136,3 +136,95 @@ class LogViewer(ModalScreen[None]):
     def action_close(self) -> None:
         self.workers.cancel_group(self, "logviewer-stream")
         self.dismiss(None)
+
+
+class StartScreen(Screen[None]):
+    """Full-screen llama.cpp startup log, then live container logs on success."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Back"),
+        Binding("q", "close", "Back"),
+        Binding("f", "toggle_follow", "Follow on/off"),
+    ]
+
+    DEFAULT_CSS = """
+    StartScreen {
+        layout: vertical;
+    }
+    StartScreen #startup-title {
+        dock: top;
+        height: 1;
+        color: $text-muted;
+        text-style: bold;
+        padding: 0 2;
+        margin: 1 0;
+    }
+    StartScreen RichLog {
+        height: 1fr;
+        margin: 0;
+    }
+    """
+
+    def __init__(self, profile_name: str) -> None:
+        super().__init__()
+        self.profile_name = profile_name
+        self._profile = backend.load_profile(profile_name)
+
+    def compose(self) -> ComposeResult:
+        yield Label(
+            f"Starting llama.cpp: {self.profile_name}  "
+            "[dim](q/Esc:back  f:auto-follow  ↑↓/PgUp/PgDn:scroll)[/dim]",
+            id="startup-title",
+        )
+        yield RichLog(
+            id="startup-log",
+            highlight=False,
+            markup=False,
+            wrap=False,
+            auto_scroll=True,
+            max_lines=5000,
+        )
+
+    def on_mount(self) -> None:
+        self._start()
+
+    @work(exclusive=True, group="llamacpp-start")
+    async def _start(self) -> None:
+        log = self.query_one("#startup-log", RichLog)
+        code = -1
+        async for msg_type, data in backend.stream_script("switch.sh", self.profile_name):
+            if msg_type == "log":
+                log.write(backend.strip_ansi(data))
+            elif msg_type == "rc":
+                code = int(data)
+        if code != 0:
+            log.write(f"Failed to start (rc={code})")
+            self.notify(
+                f"llama.cpp start failed: {self.profile_name}", severity="error"
+            )
+            return
+
+        self.notify(
+            f"llama.cpp started: {self.profile_name} on {self._profile.endpoint}",
+            timeout=6,
+        )
+        log.write("")
+        log.write("Container started. Streaming logs...")
+        try:
+            async for line in backend.stream_logs(
+                self._profile.container_name, lines=200
+            ):
+                log.write(backend.strip_ansi(line))
+        except Exception as exc:  # pragma: no cover
+            log.write(f"Log stream error: {exc}")
+
+    def action_toggle_follow(self) -> None:
+        log = self.query_one("#startup-log", RichLog)
+        log.auto_scroll = not log.auto_scroll
+        if log.auto_scroll:
+            log.scroll_end(animate=False)
+        self.notify(f"auto-follow: {'ON' if log.auto_scroll else 'OFF'}", timeout=2)
+
+    def action_close(self) -> None:
+        self.workers.cancel_group(self, "llamacpp-start")
+        self.app.pop_screen()

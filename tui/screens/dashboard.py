@@ -259,9 +259,7 @@ class DashboardScreen(Screen):
     # Cross-backend conflict gate (port + GPU, 양 backend 교차)
     # ------------------------------------------------------------------
 
-    def _confirm_conflicts_before_start(
-        self, row: DashboardRow, on_ok
-    ) -> None:
+    def _confirm_conflicts_before_start(self, row: DashboardRow, on_ok) -> None:
         """start 실행 전 다른 backend 포함 port/gpu 충돌 체크 (비동기 external 감지 포함)."""
         self._check_and_confirm(row, on_ok)
 
@@ -269,18 +267,30 @@ class DashboardScreen(Screen):
     async def _check_and_confirm(self, row: DashboardRow, on_ok) -> None:
         port_msgs = port_conflicts(row, self._rows)
         gpu_msgs = gpu_conflicts(row, self._rows)
+        probe_msgs: list[str] = []
         try:
             ext_ports = await common_docker.running_container_ports()
-        except Exception:
+        except Exception as exc:
             ext_ports = {}
+            probe_msgs.append(
+                "Could not inspect running Docker container ports. "
+                f"Runtime port check will still run before start. ({exc})"
+            )
         ext_msgs = external_port_conflicts(row, self._rows, ext_ports)
 
-        if not port_msgs and not gpu_msgs and not ext_msgs:
-            on_ok()
+        has_port_conflict = bool(port_msgs or ext_msgs)
+
+        if not port_msgs and not gpu_msgs and not ext_msgs and not probe_msgs:
+            on_ok(False)
             return
 
         lines: list[str] = []
+        if probe_msgs:
+            lines.append("[b]Port probe warning:[/b]")
+            lines += [f"  • {m}" for m in probe_msgs]
         if port_msgs:
+            if lines:
+                lines.append("")
             lines.append("[b]Port conflict (llmux):[/b]")
             lines += [f"  • {m}" for m in port_msgs]
         if ext_msgs:
@@ -299,7 +309,7 @@ class DashboardScreen(Screen):
 
         def after(proceed: bool) -> None:
             if proceed:
-                on_ok()
+                on_ok(has_port_conflict)
 
         self.app.push_screen(
             ConfirmModal(message, confirm_label="Start anyway", variant="warning"),
@@ -313,8 +323,14 @@ class DashboardScreen(Screen):
         if action == "start":
             from tui.backends.vllm.screens.container import ContainerUpScreen
 
-            def launch() -> None:
-                self.app.push_screen(ContainerUpScreen(name), self._after_mutation)
+            def launch(skip_port_conflict_check: bool = False) -> None:
+                self.app.push_screen(
+                    ContainerUpScreen(
+                        name,
+                        skip_port_conflict_check=skip_port_conflict_check,
+                    ),
+                    self._after_mutation,
+                )
 
             self._confirm_conflicts_before_start(row, launch)
             return
@@ -407,9 +423,10 @@ class DashboardScreen(Screen):
     ) -> None:
         name = row.profile_name
         if action == "start":
-            def launch() -> None:
-                self.notify(f"'{name}' 기동 중...", timeout=6)
-                self._run_llamacpp_switch(name)
+            from tui.backends.llamacpp.screens.dashboard import StartScreen
+
+            def launch(_skip_port_conflict_check: bool = False) -> None:
+                self.app.push_screen(StartScreen(name), self._after_mutation)
 
             self._confirm_conflicts_before_start(row, launch)
             return

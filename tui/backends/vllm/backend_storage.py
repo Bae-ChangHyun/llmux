@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -24,11 +25,16 @@ def _parse_env_file(path: Path | str) -> dict[str, str]:
             continue
         key, _, value = line.partition("=")
         value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        if " #" in value and not value.startswith(("'", '"')):
+            value = value[: value.index(" #")].rstrip()
+        try:
+            parsed = shlex.split(value, comments=False, posix=True)
+        except ValueError:
+            parsed = []
+        if len(parsed) == 1:
+            value = parsed[0]
+        elif len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
             value = value[1:-1]
-        else:
-            if " #" in value:
-                value = value[: value.index(" #")].rstrip()
         data[key.strip()] = value
     return data
 

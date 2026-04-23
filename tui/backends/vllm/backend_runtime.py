@@ -515,15 +515,17 @@ async def stream_container_up(
     pull: bool = False,
     repo_url: str = "",
     branch: str = "",
+    skip_port_conflict_check: bool = False,
 ):
     """Async generator that streams container startup output line by line."""
     profile = load_profile(profile_name)
 
-    conflict = await check_port_conflict(profile)
-    if conflict:
-        yield ("log", f"Error: Port {profile.port} is already in use by {conflict}")
-        yield ("rc", 1)
-        return
+    if not skip_port_conflict_check:
+        conflict = await check_port_conflict(profile)
+        if conflict:
+            yield ("log", f"Error: Port {profile.port} is already in use by {conflict}")
+            yield ("rc", 1)
+            return
 
     ok, messages = _ensure_common_env(profile)
     for message in messages:
