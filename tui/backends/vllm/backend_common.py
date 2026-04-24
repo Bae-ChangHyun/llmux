@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import re
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+def _resolve_project_root() -> Path:
+    env_root = os.environ.get("LLMUX_ROOT", "").strip()
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+    cwd = Path.cwd()
+    if (cwd / "profiles.example.yaml").exists() and (cwd / "compose").is_dir():
+        return cwd
+    return Path(__file__).resolve().parents[3]
+
+
+PROJECT_ROOT = _resolve_project_root()
 SCRIPT_DIR = PROJECT_ROOT
 RUNTIME_DIR = PROJECT_ROOT / ".runtime" / "vllm"
 CONFIG_DIR = PROJECT_ROOT / "config" / "vllm"

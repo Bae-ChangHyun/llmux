@@ -29,6 +29,7 @@ from tui.backends.llamacpp.backend import (
     load_config,
     save_config,
     save_profile,
+    validate_name,
 )
 
 
@@ -362,16 +363,19 @@ class QuickSetupScreen(ModalScreen[str]):
         if not name_raw:
             base = repo.rsplit("/", 1)[-1]
             base = re.sub(r"[-_]?GGUF$", "", base, flags=re.I)
-            name_raw = re.sub(r"[^A-Za-z0-9.-]+", "-", base).strip("-").lower()
+            name_raw = re.sub(r"[^a-z0-9_-]+", "-", base.lower()).strip("-")
         if not name_raw:
             self.notify("이름 생성 실패", severity="error")
             return
-        # 파일명 stem 으로 직접 쓰이므로 path traversal / 특수문자 차단.
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", name_raw) or ".." in name_raw:
+        # docker compose project name 으로도 쓰이므로 편집 폼과 동일한 규칙 적용.
+        if not validate_name(name_raw):
             self.notify(
-                "이름 은 A-Z a-z 0-9 . _ - 만 가능 (.. 금지)",
+                "이름은 소문자/숫자/대시/언더스코어만 가능",
                 severity="error",
             )
+            return
+        if not re.fullmatch(r"[0-9](,[0-9])*", gpu):
+            self.notify("GPU ID 는 숫자/콤마 (예: 0 또는 0,1)", severity="error")
             return
 
         # 충돌 시 suffix

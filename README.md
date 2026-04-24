@@ -71,6 +71,8 @@ uv sync
 uv run llmux
 ```
 
+llmux expects to run from this repository checkout. The TUI reads `profiles.yaml`, `compose/`, `config/`, `scripts/`, and `.env.common` relative to the project root. If you launch the entrypoint from another directory, set `LLMUX_ROOT=/path/to/llmux`.
+
 From the dashboard:
 
 - `n` &nbsp;Create a new profile via **Quick Setup** (backend picker → HF repo → auto-generated config)
@@ -99,7 +101,7 @@ From the dashboard:
 
 - **Unified Textual TUI** &mdash; Every vLLM and llama.cpp profile side-by-side in a single `DataTable`.
 - **YAML-native profiles** &mdash; One `profiles.yaml`, `defaults` block for inheritance, rendered to `.env` only at launch.
-- **Safe vLLM image resolution** &mdash; Version picker skips `:latest`/`:nightly` aliases; post-start verification warns on tag/content mismatch.
+- **Safe vLLM image resolution** &mdash; Version picker refuses `:latest`, resolves stable picks to semver tags, and treats `:nightly` as an explicit rolling choice with `--pull always`.
 - **Cross-backend conflict gate** &mdash; Port/GPU overlap is checked before start, with explicit warning + confirm flow.
 - **Quick Setup** &mdash; HF model or repo → profile + config auto-generated, with live memory estimate.
 - **OpenAI-compatible bench** &mdash; Same `/v1/chat/completions` latency/throughput shot for either engine.
@@ -168,6 +170,7 @@ gpu-memory-utilization: 0.9
 max-model-len: 32768
 
 # config/llamacpp/gemma-3-4b.yaml
+model-file: gemma-3-4b-it-q4_k_m.gguf
 n-gpu-layers: 99
 ctx-size: 16384
 parallel: 4
@@ -192,7 +195,7 @@ Use `c` on the dashboard to edit these directly in the TUI — inputs auto-compl
 | `q` | Quit |
 | `u` / `d` / `l` | Start / Stop / Logs for the selected profile |
 | `e` / `c` / `x` | Edit profile / Edit config / Delete profile |
-| `?` | Full shortcut cheatsheet inside the app |
+| `?` | Short dashboard shortcut reminder |
 | `f` | Toggle auto-follow in log/start streaming screens |
 
 </details>
@@ -220,7 +223,7 @@ If Docker port probing is unavailable, llmux shows a warning and keeps the runti
 
 <br/>
 
-llmux **refuses to start from `vllm/vllm-openai:latest`**. The `:latest` alias is a moving target — its contents change whenever upstream pushes, but the local tag name doesn't, so "what version is actually running" becomes unknowable. Every version picker resolves to a semver tag before pulling.
+llmux **refuses to start from `vllm/vllm-openai:latest`**. The `:latest` alias is a moving target — its contents change whenever upstream pushes, but the local tag name doesn't, so "what version is actually running" becomes unknowable. Stable picker options resolve to semver tags before pulling. `nightly` remains available as an explicit rolling choice.
 
 | Picker option | Resolves to | Pulls? |
 |:---|:---|:---|
@@ -230,7 +233,7 @@ llmux **refuses to start from `vllm/vllm-openai:latest`**. The `:latest` alias i
 | **Custom Tag** | whatever you type, except `latest` (rejected) | default compose behavior |
 | **Dev Build** | local `vllm-dev:<tag>` from a git source tree | built in-place |
 
-After the container is up, llmux asks the container itself (`import vllm; print(vllm.__version__)`) and warns in the log panel if the result doesn't match the tag you picked — catches cases where someone ran `docker tag` manually.
+After the container is up, llmux asks the container itself (`import vllm; print(vllm.__version__)`) and warns in the log panel if the result doesn't match the tag you picked, or if the verification cannot be completed.
 
 **Rule of thumb**: if you ever need to type a pull command yourself, use an explicit version: `docker pull vllm/vllm-openai:v0.19.1`. Never `docker pull vllm/vllm-openai` or `:latest`.
 
@@ -249,7 +252,7 @@ After the container is up, llmux asks the container itself (`import vllm; print(
 | Port conflict | TUI warns pre-start; change the profile's `port` in `profiles.yaml` |
 | Port conflict with no matching Docker container | Another local process may already bind that port; change profile `port` or stop the process |
 | `Local Latest` shows "no images" | You only have `:latest` or `:nightly` locally. Run `docker pull vllm/vllm-openai:vX.Y.Z` (pick a specific version) and retry |
-| GGUF download stuck | Check `HF_TOKEN` in `.env.common`; retry from TUI &mdash; `switch.sh` auto-invokes `pull-model.sh` on start |
+| GGUF download stuck | Check `HF_TOKEN` in `.env.common` and ensure the `hf` CLI is installed; retry from TUI &mdash; `switch.sh` auto-invokes `pull-model.sh` on start |
 | Copy logs in TUI | Shift+drag to select, Ctrl+C to copy ([Textual FAQ](https://textual.textualize.io/FAQ/#how-can-i-select-and-copy-text-in-a-textual-app)) |
 
 </details>
@@ -262,6 +265,7 @@ After the container is up, llmux asks the container itself (`import vllm; print(
 - NVIDIA GPU(s)
 - Python 3.10+
 - [uv](https://docs.astral.sh/uv/) for the TUI venv
+- Hugging Face CLI (`hf`) for llama.cpp GGUF auto-download: `uv tool install huggingface_hub`
 
 <br/>
 
