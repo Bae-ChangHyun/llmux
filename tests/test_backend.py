@@ -4,8 +4,17 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from tui.backends.vllm import backend
-from tui.backends.vllm.backend_inspect import _pick_preferred_tag
-from tui.backends.vllm.backend_runtime import _build_lora_options, _detect_gpu_arch, _ensure_common_env
+from tui.backends.vllm.backend_inspect import (
+    _pick_preferred_tag,
+    get_dockerhub_nightly_date,
+    get_dockerhub_release_version,
+)
+from tui.backends.vllm.backend_runtime import (
+    _build_lora_options,
+    _detect_gpu_arch,
+    _ensure_common_env,
+    _post_start_validation,
+)
 from tui.common import profile_store
 
 
@@ -523,6 +532,46 @@ class PickPreferredTagTests(unittest.TestCase):
         self.assertIsNone(_pick_preferred_tag([]))
 
 
+class DockerHubTagLookupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_release_version_scans_next_page_when_first_page_has_no_stable(self) -> None:
+        page1 = {
+            "results": [{"name": "nightly"}, {"name": "latest"}],
+            "next": "https://hub.docker.com/page2",
+        }
+        page2 = {
+            "results": [{"name": "v0.19.0"}, {"name": "v0.19.1"}],
+            "next": None,
+        }
+        fetch = AsyncMock(side_effect=[page1, page2])
+
+        with patch(
+            "tui.backends.vllm.backend_inspect._fetch_json_url",
+            fetch,
+        ):
+            version = await get_dockerhub_release_version()
+
+        self.assertEqual(version, "v0.19.1")
+        self.assertEqual(fetch.await_count, 2)
+
+    async def test_release_version_returns_unknown_when_fetch_fails(self) -> None:
+        fetch = AsyncMock(return_value=None)
+        with patch(
+            "tui.backends.vllm.backend_inspect._fetch_json_url",
+            fetch,
+        ):
+            version = await get_dockerhub_release_version()
+        self.assertEqual(version, "unknown")
+
+    async def test_nightly_date_parses_last_updated(self) -> None:
+        fetch = AsyncMock(return_value={"last_updated": "2026-04-23T12:34:56.000000Z"})
+        with patch(
+            "tui.backends.vllm.backend_inspect._fetch_json_url",
+            fetch,
+        ):
+            nightly_date = await get_dockerhub_nightly_date()
+        self.assertEqual(nightly_date, "2026-04-23")
+
+
 class CheckPortConflictTests(unittest.IsolatedAsyncioTestCase):
     async def test_check_port_conflict_returns_readable_profile_reference(self) -> None:
         profile = backend.Profile(name="current", container_name="current", port="8000")
@@ -595,8 +644,8 @@ class CheckPortConflictTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(str(bound_port), conflict)
 
 
-class StreamContainerUpSkipPortConflictTests(unittest.IsolatedAsyncioTestCase):
-    async def test_skip_port_conflict_false_stops_before_preflight(self) -> None:
+class StreamContainerUpPortConflictTests(unittest.IsolatedAsyncioTestCase):
+    async def test_port_conflict_stops_before_preflight(self) -> None:
         profile = backend.Profile(name="p", container_name="p", port="8000")
 
         async def fake_check_port_conflict(_profile):
@@ -615,11 +664,11 @@ class StreamContainerUpSkipPortConflictTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[-1], ("rc", 1))
         self.assertIn("Port 8000 is already in use", events[0][1])
 
-    async def test_skip_port_conflict_true_continues_to_next_preflight(self) -> None:
+    async def test_no_port_conflict_reaches_common_env_preflight(self) -> None:
         profile = backend.Profile(name="p", container_name="p", port="8000")
 
         async def fake_check_port_conflict(_profile):
-            return "another process"
+            return None
 
         globals_dict = backend.stream_container_up.__globals__
         with patch.dict(
@@ -630,14 +679,54 @@ class StreamContainerUpSkipPortConflictTests(unittest.IsolatedAsyncioTestCase):
                 "_ensure_common_env": lambda _profile: (False, ["common env missing"]),
             },
         ):
-            events = [
-                event
-                async for event in backend.stream_container_up(
-                    "p", skip_port_conflict_check=True
-                )
-            ]
+            events = [event async for event in backend.stream_container_up("p")]
 
         self.assertEqual(events, [("log", "common env missing"), ("rc", 1)])
+
+
+class PostStartValidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fails_when_container_exits_during_startup(self) -> None:
+        profile = backend.Profile(name="p", container_name="p", port="8000")
+
+        async def fake_run_command(*args, **kwargs):
+            if args[:2] == ("docker", "inspect"):
+                return 0, "exited\tunhealthy"
+            if args[:2] == ("docker", "logs"):
+                return 0, "line-a\nline-b\n"
+            return 0, ""
+
+        with patch.dict(
+            _post_start_validation.__globals__,
+            {
+                "run_command": fake_run_command,
+                "_models_endpoint_ready": AsyncMock(return_value=False),
+            },
+        ):
+            ok, messages = await _post_start_validation(profile, timeout=0.1, poll_interval=0.05)
+
+        self.assertFalse(ok)
+        self.assertTrue(any("exited during startup" in m for m in messages))
+        self.assertTrue(any("line-b" in m for m in messages))
+
+    async def test_warns_when_models_endpoint_not_ready_before_timeout(self) -> None:
+        profile = backend.Profile(name="p", container_name="p", port="8000")
+
+        async def fake_run_command(*args, **kwargs):
+            if args[:2] == ("docker", "inspect"):
+                return 0, "running\tstarting"
+            return 0, ""
+
+        with patch.dict(
+            _post_start_validation.__globals__,
+            {
+                "run_command": fake_run_command,
+                "_models_endpoint_ready": AsyncMock(return_value=False),
+            },
+        ):
+            ok, messages = await _post_start_validation(profile, timeout=0.1, poll_interval=0.05)
+
+        self.assertTrue(ok)
+        self.assertTrue(any("/v1/models is not ready yet" in m for m in messages))
 
 
 class QuickSetupSuffixLogicTests(unittest.TestCase):
