@@ -164,7 +164,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             return
         if not validate_name(name):
             self.notify(
-                "이름은 영숫자/대시/언더스코어 ('-' 시작 금지)", severity="error"
+                "이름은 소문자/숫자/대시/언더스코어", severity="error"
             )
             return
         if not self._edit_mode and name in list_profile_names():

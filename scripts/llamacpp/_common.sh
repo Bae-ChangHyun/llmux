@@ -41,6 +41,36 @@ _override_path() {
   echo "$ROOT/.runtime/llamacpp/override-${profile}.yaml"
 }
 
+validate_container_start() {
+  local container=${1:?컨테이너 이름 필요}
+  local port=${2:?포트 필요}
+  local deadline=$((SECONDS + 45))
+  local status health
+
+  while (( SECONDS < deadline )); do
+    if ! state=$(docker inspect "$container" --format '{{.State.Status}}	{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' 2>&1); then
+      die "컨테이너 상태 확인 실패: $state"
+    fi
+    status="${state%%	*}"
+    health="${state#*	}"
+
+    if [[ "$status" == "exited" || "$status" == "dead" || "$status" == "restarting" || "$health" == "unhealthy" ]]; then
+      docker logs --tail 80 "$container" >&2 || true
+      die "컨테이너가 시작 중 실패했습니다 (status=${status}, health=${health})"
+    fi
+    if [[ "$status" != "running" ]]; then
+      die "컨테이너가 실행 상태가 아닙니다 (status=${status})"
+    fi
+    if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  info "컨테이너는 실행 중이지만 /health 가 아직 준비되지 않았습니다. 로그를 확인하세요."
+  return 0
+}
+
 run_compose() {
   # Per-profile project (-p) + per-profile override file so multiple
   # llamacpp profiles can run concurrently without overwriting each other's

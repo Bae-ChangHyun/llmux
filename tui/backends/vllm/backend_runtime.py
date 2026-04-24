@@ -6,7 +6,6 @@ import asyncio
 import json
 import os
 import re
-import shutil
 import socket
 import urllib.request
 
@@ -31,6 +30,8 @@ from .backend_storage import (
     save_config,
     save_profile,
 )
+from tui.common import profile_store
+from tui.common.docker import GPU_WILDCARD, gpu_sets_overlap, parse_gpu_ids
 
 
 _BUILD_LOCK = asyncio.Lock()
@@ -182,21 +183,38 @@ async def _container_exists(container_name: str) -> bool:
 
 async def _gpu_conflict_messages(profile: Profile) -> list[str]:
     rc, out = await run_command("docker", "ps", "--format", "{{.Names}}", timeout=10)
-    running_names = set(out.strip().splitlines()) if rc == 0 else set()
     messages: list[str] = []
-    profile_gpu_ids = {gpu.strip() for gpu in profile.gpu_id.split(",") if gpu.strip()}
+    if rc != 0:
+        return [
+            "Warning: could not inspect running containers for GPU overlap "
+            f"({out.strip() or 'docker ps failed'})."
+        ]
+    running_names = set(out.strip().splitlines())
+    profile_gpu_ids = parse_gpu_ids(profile.gpu_id)
     for name in list_profile_names():
         if name == profile.name:
             continue
         other = load_profile(name)
         if other.container_name not in running_names:
             continue
-        other_gpu_ids = {gpu.strip() for gpu in other.gpu_id.split(",") if gpu.strip()}
-        for gpu_id in sorted(profile_gpu_ids & other_gpu_ids):
+        other_gpu_ids = parse_gpu_ids(other.gpu_id)
+        for gpu_id in sorted(gpu_sets_overlap(profile_gpu_ids, other_gpu_ids)):
             messages.append(
-                f"Warning: GPU {gpu_id} is also used by running container '{other.container_name}'"
+                f"Warning: {_format_gpu_label(gpu_id)} is also used by running vLLM container '{other.container_name}'"
+            )
+    for other in profile_store.list_profiles("llamacpp"):
+        if other.container_name not in running_names:
+            continue
+        other_gpu_ids = parse_gpu_ids(other.gpu_id)
+        for gpu_id in sorted(gpu_sets_overlap(profile_gpu_ids, other_gpu_ids)):
+            messages.append(
+                f"Warning: {_format_gpu_label(gpu_id)} is also used by running llama.cpp container '{other.container_name}'"
             )
     return messages
+
+
+def _format_gpu_label(gpu_id: str) -> str:
+    return "all GPUs" if gpu_id == GPU_WILDCARD else f"GPU {gpu_id}"
 
 
 async def _detect_gpu_arch() -> str:
@@ -280,8 +298,18 @@ async def _clone_or_update_vllm(repo_url: str, branch: str):
             yield ("rc", 1)
             return
         if current_remote.strip() != repo_url:
-            yield ("log", "Repository URL changed. Re-cloning...")
-            await asyncio.to_thread(shutil.rmtree, VLLM_SRC_DIR)
+            yield (
+                "log",
+                "Error: existing .vllm-src remote URL differs from the requested repository.",
+            )
+            yield ("log", f"Existing: {current_remote.strip()}")
+            yield ("log", f"Requested: {repo_url}")
+            yield (
+                "log",
+                "Move or delete .vllm-src yourself if you want to replace the checkout.",
+            )
+            yield ("rc", 1)
+            return
 
     if not VLLM_SRC_DIR.exists():
         async for event in stream_command(["git", "clone", repo_url, str(VLLM_SRC_DIR)], cwd=SCRIPT_DIR):
@@ -608,9 +636,15 @@ async def _post_start_validation(
             "{{.State.Status}}\t{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
             timeout=10,
         )
+        if rc != 0:
+            message = state.strip() or "docker inspect failed"
+            return False, [
+                f"Error: could not inspect container '{profile.container_name}' after startup.",
+                f"  {message}",
+            ]
         status = "unknown"
         health = "unknown"
-        if rc == 0 and state.strip():
+        if state.strip():
             parts = state.strip().split("\t", 1)
             status = parts[0].strip()
             health = parts[1].strip() if len(parts) == 2 else "unknown"
@@ -634,6 +668,11 @@ async def _post_start_validation(
                 messages.append("Recent logs:")
                 messages.extend([f"  {line}" for line in tail.strip().splitlines()[-12:]])
             return False, messages
+
+        if status not in {"running"}:
+            return False, [
+                f"Error: container '{profile.container_name}' is not running after startup ({status})."
+            ]
 
         if await _models_endpoint_ready(profile.port):
             return True, []
@@ -850,11 +889,20 @@ async def _verify_vllm_version(container_name: str, expected_tag: str):
         timeout=15,
     )
     if rc != 0 or not out.strip():
+        yield (
+            "log",
+            "Warning: could not verify vLLM version inside the container "
+            f"({out.strip() or 'docker exec failed'}).",
+        )
         return
 
     actual_str = out.strip().splitlines()[-1].strip()
     actual = _parse_stable_version_tag("v" + actual_str if not actual_str.startswith("v") else actual_str)
     if actual is None:
+        yield (
+            "log",
+            f"Warning: could not parse vLLM version reported by container: {actual_str}",
+        )
         return
 
     if actual != expected:
