@@ -117,16 +117,23 @@ async def get_local_latest_tag() -> str:
     return best_tag
 
 
-async def _fetch_json_url(url: str, timeout: float = 20.0) -> dict | None:
+async def _fetch_json_url(
+    url: str,
+    timeout: float = 5.0,
+    *,
+    headers: dict[str, str] | None = None,
+) -> dict | None:
     """Fetch JSON from URL in a thread to avoid blocking the event loop."""
     loop = asyncio.get_running_loop()
 
     def _fetch() -> dict | None:
-        headers = {
+        request_headers = {
             "Accept": "application/json",
             "User-Agent": "llmux/1.0 (+https://github.com/Bae-ChangHyun/llmux)",
         }
-        request = urllib.request.Request(url, headers=headers)
+        if headers:
+            request_headers.update(headers)
+        request = urllib.request.Request(url, headers=request_headers)
         for target in (request, url):
             try:
                 with urllib.request.urlopen(target, timeout=timeout) as response:
@@ -141,6 +148,25 @@ async def _fetch_json_url(url: str, timeout: float = 20.0) -> dict | None:
     return await loop.run_in_executor(None, _fetch)
 
 
+async def _fetch_docker_registry_tags() -> list[str]:
+    token_url = (
+        "https://auth.docker.io/token?"
+        "service=registry.docker.io&scope=repository:vllm/vllm-openai:pull"
+    )
+    token_payload = await _fetch_json_url(token_url, timeout=5.0)
+    token = str((token_payload or {}).get("token", "")).strip()
+    if not token:
+        return []
+
+    tags_payload = await _fetch_json_url(
+        "https://registry-1.docker.io/v2/vllm/vllm-openai/tags/list?n=1000",
+        timeout=5.0,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    tags = (tags_payload or {}).get("tags", [])
+    return [str(tag) for tag in tags if tag]
+
+
 async def get_dockerhub_release_version() -> str:
     """Get the latest exact stable release version from Docker Hub."""
     base_urls = [
@@ -152,7 +178,7 @@ async def get_dockerhub_release_version() -> str:
             url = base_url
             pages_checked = 0
             while url and pages_checked < 5:
-                data = await _fetch_json_url(url, timeout=20.0)
+                data = await _fetch_json_url(url, timeout=5.0)
                 if not data:
                     break
                 stable_tags = [
@@ -169,6 +195,9 @@ async def get_dockerhub_release_version() -> str:
                 pages_checked += 1
         if attempt < 2:
             await asyncio.sleep(0.5)
+    registry_preferred = _pick_preferred_tag(await _fetch_docker_registry_tags())
+    if registry_preferred:
+        return registry_preferred
     return "unknown"
 
 
@@ -180,7 +209,7 @@ async def get_dockerhub_nightly_date() -> str:
     ]
     for attempt in range(3):
         for url in urls:
-            data = await _fetch_json_url(url, timeout=20.0)
+            data = await _fetch_json_url(url, timeout=5.0)
             if not data:
                 continue
             last_updated = str(data.get("last_updated", "")).strip()
@@ -188,7 +217,8 @@ async def get_dockerhub_nightly_date() -> str:
                 return last_updated.split("T")[0]
         if attempt < 2:
             await asyncio.sleep(0.5)
-    return "unknown"
+    registry_tags = await _fetch_docker_registry_tags()
+    return "available" if "nightly" in registry_tags else "unknown"
 
 
 _VLLM_PARAMS_CACHE_DIR = CONFIG_DIR
