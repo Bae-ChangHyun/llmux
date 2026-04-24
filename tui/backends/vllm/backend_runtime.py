@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shutil
 import socket
+import urllib.request
 
 from .backend_common import (
     COMMON_ENV,
@@ -339,7 +341,11 @@ async def _do_build_dev_image(
         yield ("log", "Using official vLLM Dockerfile (ALL architectures)")
     else:
         yield ("log", f"Detected GPU: {gpu_name} (compute: {gpu_arch})")
-        yield ("log", "Building for your GPU only")
+        yield (
+            "log",
+            "Building with local GPU arch targets. "
+            "Some upstream dependencies may still compile compatibility kernels.",
+        )
     yield ("log", f"Tag: vllm-dev:{main_tag}")
 
     commit_hash = ""
@@ -508,6 +514,86 @@ async def check_port_conflict(profile: Profile) -> str | None:
     return None
 
 
+async def _models_endpoint_ready(port: str, timeout: int = 3) -> bool:
+    """Return True when /v1/models responds with at least one served model id."""
+    loop = asyncio.get_running_loop()
+
+    def _probe() -> bool:
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/v1/models", timeout=timeout
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8", errors="replace"))
+            data = payload.get("data", [])
+            return any(isinstance(item, dict) and item.get("id") for item in data)
+        except Exception:
+            return False
+
+    return await loop.run_in_executor(None, _probe)
+
+
+async def _post_start_validation(
+    profile: Profile,
+    *,
+    timeout: float = 45.0,
+    poll_interval: float = 2.0,
+) -> tuple[bool, list[str]]:
+    """Validate container state right after `compose up -d`.
+
+    Prevents false-positive success when compose starts a container that exits
+    immediately (for example, GPU OOM during engine init).
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(timeout, poll_interval)
+
+    while True:
+        rc, state = await run_command(
+            "docker",
+            "inspect",
+            profile.container_name,
+            "--format",
+            "{{.State.Status}}\t{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+            timeout=10,
+        )
+        status = "unknown"
+        health = "unknown"
+        if rc == 0 and state.strip():
+            parts = state.strip().split("\t", 1)
+            status = parts[0].strip()
+            health = parts[1].strip() if len(parts) == 2 else "unknown"
+
+        if status in {"restarting", "exited", "dead"} or health == "unhealthy":
+            _, tail = await run_command(
+                "docker",
+                "logs",
+                "--tail",
+                "80",
+                profile.container_name,
+                timeout=10,
+            )
+            reason = (
+                f"container '{profile.container_name}' exited during startup ({status})"
+                if status in {"restarting", "exited", "dead"}
+                else f"container '{profile.container_name}' became unhealthy during startup"
+            )
+            messages = [f"Error: {reason}."]
+            if tail.strip():
+                messages.append("Recent logs:")
+                messages.extend([f"  {line}" for line in tail.strip().splitlines()[-12:]])
+            return False, messages
+
+        if await _models_endpoint_ready(profile.port):
+            return True, []
+
+        if loop.time() >= deadline:
+            return True, [
+                "Warning: container started but /v1/models is not ready yet.",
+                "Watch logs and retry benchmark once the model finishes loading.",
+            ]
+
+        await asyncio.sleep(poll_interval)
+
+
 async def stream_container_up(
     profile_name: str,
     use_dev: bool = False,
@@ -515,17 +601,15 @@ async def stream_container_up(
     pull: bool = False,
     repo_url: str = "",
     branch: str = "",
-    skip_port_conflict_check: bool = False,
 ):
     """Async generator that streams container startup output line by line."""
     profile = load_profile(profile_name)
 
-    if not skip_port_conflict_check:
-        conflict = await check_port_conflict(profile)
-        if conflict:
-            yield ("log", f"Error: Port {profile.port} is already in use by {conflict}")
-            yield ("rc", 1)
-            return
+    conflict = await check_port_conflict(profile)
+    if conflict:
+        yield ("log", f"Error: Port {profile.port} is already in use by {conflict}")
+        yield ("rc", 1)
+        return
 
     ok, messages = _ensure_common_env(profile)
     for message in messages:
@@ -662,15 +746,29 @@ async def stream_container_up(
             compose_cmd.extend(["--pull", "always"])
 
     async for event in stream_command(compose_cmd, cwd=SCRIPT_DIR, env=env):
-        yield event
-        if event[0] == "rc":
-            rc = int(event[1])
-            if rc == 0:
-                yield ("log", f"{profile.name} started successfully!")
-                if not use_dev:
-                    async for evt in _verify_vllm_version(profile.container_name, version_tag):
-                        yield evt
+        if event[0] != "rc":
+            yield event
+            continue
+
+        rc = int(event[1])
+        if rc != 0:
+            yield ("rc", rc)
             return
+
+        yield ("log", f"{profile.name} started successfully!")
+
+        ok, messages = await _post_start_validation(profile)
+        for message in messages:
+            yield ("log", message)
+        if not ok:
+            yield ("rc", 1)
+            return
+
+        if not use_dev:
+            async for evt in _verify_vllm_version(profile.container_name, version_tag):
+                yield evt
+        yield ("rc", 0)
+        return
 
 
 async def _verify_vllm_version(container_name: str, expected_tag: str):
