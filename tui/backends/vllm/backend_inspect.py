@@ -147,25 +147,28 @@ async def get_dockerhub_release_version() -> str:
         "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags?page_size=100",
         "https://registry.hub.docker.com/v2/repositories/vllm/vllm-openai/tags?page_size=100",
     ]
-    for base_url in base_urls:
-        url = base_url
-        pages_checked = 0
-        while url and pages_checked < 5:
-            data = await _fetch_json_url(url, timeout=20.0)
-            if not data:
-                break
-            stable_tags = [
-                (version, name)
-                for result in data.get("results", [])
-                if isinstance(result, dict)
-                if (name := str(result.get("name", "")))
-                if (version := _parse_stable_version_tag(name)) is not None
-            ]
-            if stable_tags:
-                return max(stable_tags)[1]
-            next_url = data.get("next", "")
-            url = str(next_url) if next_url else ""
-            pages_checked += 1
+    for attempt in range(3):
+        for base_url in base_urls:
+            url = base_url
+            pages_checked = 0
+            while url and pages_checked < 5:
+                data = await _fetch_json_url(url, timeout=20.0)
+                if not data:
+                    break
+                stable_tags = [
+                    (version, name)
+                    for result in data.get("results", [])
+                    if isinstance(result, dict)
+                    if (name := str(result.get("name", "")))
+                    if (version := _parse_stable_version_tag(name)) is not None
+                ]
+                if stable_tags:
+                    return max(stable_tags)[1]
+                next_url = data.get("next", "")
+                url = str(next_url) if next_url else ""
+                pages_checked += 1
+        if attempt < 2:
+            await asyncio.sleep(0.5)
     return "unknown"
 
 
@@ -175,13 +178,16 @@ async def get_dockerhub_nightly_date() -> str:
         "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags/nightly",
         "https://registry.hub.docker.com/v2/repositories/vllm/vllm-openai/tags/nightly",
     ]
-    for url in urls:
-        data = await _fetch_json_url(url, timeout=20.0)
-        if not data:
-            continue
-        last_updated = str(data.get("last_updated", "")).strip()
-        if last_updated:
-            return last_updated.split("T")[0]
+    for attempt in range(3):
+        for url in urls:
+            data = await _fetch_json_url(url, timeout=20.0)
+            if not data:
+                continue
+            last_updated = str(data.get("last_updated", "")).strip()
+            if last_updated:
+                return last_updated.split("T")[0]
+        if attempt < 2:
+            await asyncio.sleep(0.5)
     return "unknown"
 
 
