@@ -89,12 +89,6 @@ class ContainerUpScreen(Screen):
         margin-bottom: 0;
     }
 
-    ContainerUpScreen #selected-version {
-        color: $accent;
-        margin-top: 0;
-        margin-bottom: 1;
-    }
-
     ContainerUpScreen RadioSet {
         height: auto;
     }
@@ -183,7 +177,6 @@ class ContainerUpScreen(Screen):
                     yield RadioButton("Nightly  (loading...)", id=VER_NIGHTLY)
                     yield RadioButton("Dev Build  (vllm-dev)", id=VER_DEV)
                     yield RadioButton("Custom Tag", id=VER_CUSTOM)
-                yield Static("", id="selected-version")
                 yield Input(
                     placeholder="Enter custom image tag...",
                     id="custom-tag-input",
@@ -226,18 +219,8 @@ class ContainerUpScreen(Screen):
             self.query_one("#version-radio", RadioSet).focus()
         except Exception:
             pass
-        self._update_selected_version_label()
         # Auto-refresh GPU bar every 3 seconds
         self._gpu_timer = self.set_interval(3, self._fetch_gpu_info)
-
-    def _update_selected_version_label(self) -> None:
-        try:
-            radio_set = self.query_one("#version-radio", RadioSet)
-            selected = radio_set.pressed_button
-            text = str(selected.label) if selected else "None"
-            self.query_one("#selected-version", Static).update(f"Selected: [b]{text}[/b]")
-        except Exception:
-            pass
 
     @work(exclusive=False)
     async def _fetch_version_info(self) -> None:
@@ -270,7 +253,7 @@ class ContainerUpScreen(Screen):
                 btn.label = f"Official Release  ({self._release_version})"
                 btn.disabled = False
             else:
-                btn.label = "Official Release  (latest stable)"
+                btn.label = "Official Release  (loading...)"
                 btn.disabled = False
         except Exception:
             pass
@@ -279,7 +262,7 @@ class ContainerUpScreen(Screen):
         nightly_date = await get_dockerhub_nightly_date()
         try:
             btn = radio_set.query_one(f"#{VER_NIGHTLY}", RadioButton)
-            btn.label = "Nightly  (rolling)" if nightly_date == "unknown" else f"Nightly  ({nightly_date})"
+            btn.label = "Nightly  (loading...)" if nightly_date == "unknown" else f"Nightly  ({nightly_date})"
         except Exception:
             pass
 
@@ -291,7 +274,8 @@ class ContainerUpScreen(Screen):
                     radio_set.query_one(f"#{VER_NIGHTLY}", RadioButton).value = True
         except Exception:
             pass
-        self._update_selected_version_label()
+        if not self._release_version or nightly_date == "unknown":
+            self.set_timer(5, self._fetch_version_info)
 
     @work(exclusive=False)
     async def _fetch_gpu_info(self) -> None:
@@ -318,7 +302,6 @@ class ContainerUpScreen(Screen):
         else:
             custom_input.styles.display = "none"
             dev_options.styles.display = "none"
-        self._update_selected_version_label()
 
     def _cleanup(self) -> None:
         if self._gpu_timer is not None:
