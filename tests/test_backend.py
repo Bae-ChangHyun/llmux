@@ -626,6 +626,24 @@ class DockerHubTagLookupTests(unittest.IsolatedAsyncioTestCase):
             version = await get_dockerhub_release_version()
         self.assertEqual(version, "unknown")
 
+    async def test_release_version_falls_back_to_registry_domain(self) -> None:
+        fetch = AsyncMock(
+            side_effect=[
+                None,
+                {
+                    "results": [{"name": "v0.20.0"}],
+                    "next": None,
+                },
+            ]
+        )
+        with patch(
+            "tui.backends.vllm.backend_inspect._fetch_json_url",
+            fetch,
+        ):
+            version = await get_dockerhub_release_version()
+        self.assertEqual(version, "v0.20.0")
+        self.assertEqual(fetch.await_count, 2)
+
     async def test_nightly_date_parses_last_updated(self) -> None:
         fetch = AsyncMock(return_value={"last_updated": "2026-04-23T12:34:56.000000Z"})
         with patch(
@@ -634,6 +652,21 @@ class DockerHubTagLookupTests(unittest.IsolatedAsyncioTestCase):
         ):
             nightly_date = await get_dockerhub_nightly_date()
         self.assertEqual(nightly_date, "2026-04-23")
+
+    async def test_nightly_date_falls_back_to_registry_domain(self) -> None:
+        fetch = AsyncMock(
+            side_effect=[
+                None,
+                {"last_updated": "2026-04-24T01:02:03.000000Z"},
+            ]
+        )
+        with patch(
+            "tui.backends.vllm.backend_inspect._fetch_json_url",
+            fetch,
+        ):
+            nightly_date = await get_dockerhub_nightly_date()
+        self.assertEqual(nightly_date, "2026-04-24")
+        self.assertEqual(fetch.await_count, 2)
 
 
 class CheckPortConflictTests(unittest.IsolatedAsyncioTestCase):
