@@ -29,14 +29,14 @@ RUNTIME_DIR = ROOT / ".runtime" / "llamacpp"
 sys.path.insert(0, str(ROOT))
 from tui.common import profile_store  # noqa: E402
 
-_SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+_SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 def _validate_name(name: str, kind: str) -> str:
-    """filename stem 은 영문/숫자/._- 만 허용. path traversal 방지."""
+    """filename stem 과 compose project name 에 안전한 값만 허용."""
     if not name or not _SAFE_NAME.match(name) or ".." in name:
         raise SystemExit(
-            f"잘못된 {kind} 이름: {name!r} (허용: A-Z a-z 0-9 . _ -)"
+            f"잘못된 {kind} 이름: {name!r} (허용: 소문자, 숫자, _, -)"
         )
     return name
 
@@ -56,13 +56,15 @@ def parse_env_file(path: Path) -> dict[str, str]:
     return env
 
 
-def render_command(cfg: dict) -> list[str]:
+def render_command(cfg: dict, model_file: str = "") -> list[str]:
     """config yaml → llama-server CLI 인자 리스트."""
     args: list[str] = ["--host", "0.0.0.0", "--port", "8080", "--no-webui"]
 
     # 특수 키 먼저 처리
-    if "model-file" in cfg:
-        args.extend(["--model", f"/models/{cfg.pop('model-file')}"])
+    resolved_model = str(cfg.pop("model-file", "") or model_file).strip()
+    if not resolved_model:
+        raise ValueError("model-file missing in config and profile.model_file is empty")
+    args.extend(["--model", f"/models/{resolved_model}"])
 
     # WebUI 는 강제 off. 사용자가 webui 활성화하려 해도 무시.
     cfg.pop("no-webui", None)
@@ -110,7 +112,14 @@ def main() -> int:
         return 1
 
     cfg = yaml.safe_load(config_path.read_text()) or {}
-    command = render_command(cfg)
+    if not isinstance(cfg, dict):
+        print(f"config 형식 오류: mapping YAML 이 필요합니다: {config_path}", file=sys.stderr)
+        return 1
+    try:
+        command = render_command(cfg, stored.model_file)
+    except ValueError as exc:
+        print(f"config 렌더 실패: {exc}", file=sys.stderr)
+        return 1
 
     override = {
         "services": {

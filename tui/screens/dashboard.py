@@ -106,7 +106,12 @@ class DashboardScreen(Screen):
         Adapter 하나가 실패해도 다른 쪽 상태가 유지되도록 예외를 분리한다."""
         try:
             running = await common_docker.running_container_names()
-        except Exception:
+        except Exception as exc:
+            self.notify(
+                f"Docker status scan failed: {exc}",
+                severity="error",
+                timeout=8,
+            )
             running = set()
 
         rows: list[DashboardRow] = []

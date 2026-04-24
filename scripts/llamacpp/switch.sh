@@ -27,6 +27,7 @@ python3 "$SCRIPT_DIR/render-override.py" "$PROFILE"
 # 기동
 info "'${PROFILE}' 프로필로 기동"
 run_compose "$PROFILE" up -d
+validate_container_start "$CONTAINER_NAME" "$LLAMA_PORT"
 
 echo "$PROFILE" > "$CURRENT_PROFILE_FILE"
 
