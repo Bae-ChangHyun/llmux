@@ -232,8 +232,8 @@ class ContainerUpScreen(Screen):
                 btn.label = f"Official Release  ({self._release_version})"
                 btn.disabled = False
             else:
-                btn.label = "Official Release  (unavailable)"
-                btn.disabled = True
+                btn.label = "Official Release  (retry on start)"
+                btn.disabled = False
         except Exception:
             pass
 
@@ -318,8 +318,14 @@ class ContainerUpScreen(Screen):
                 return
         elif selected_id == VER_OFFICIAL:
             if not self._release_version:
-                self.app.notify("Could not determine the latest stable release tag.", severity="error")
-                return
+                refreshed = await get_dockerhub_release_version()
+                if refreshed == "unknown":
+                    self.app.notify(
+                        "Could not determine the latest stable release tag from Docker Hub.",
+                        severity="error",
+                    )
+                    return
+                self._release_version = refreshed
             tag = self._release_version
             pull = True
         elif selected_id == VER_NIGHTLY:

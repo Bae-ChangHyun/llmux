@@ -122,14 +122,20 @@ async def _fetch_json_url(url: str, timeout: float = 20.0) -> dict | None:
     loop = asyncio.get_running_loop()
 
     def _fetch() -> dict | None:
-        try:
-            with urllib.request.urlopen(url, timeout=timeout) as response:
-                payload = response.read().decode("utf-8", errors="replace")
-            data = json.loads(payload)
-            if isinstance(data, dict):
-                return data
-        except Exception:
-            return None
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "llmux/1.0 (+https://github.com/Bae-ChangHyun/llmux)",
+        }
+        request = urllib.request.Request(url, headers=headers)
+        for target in (request, url):
+            try:
+                with urllib.request.urlopen(target, timeout=timeout) as response:
+                    payload = response.read().decode("utf-8", errors="replace")
+                data = json.loads(payload)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                continue
         return None
 
     return await loop.run_in_executor(None, _fetch)
@@ -137,38 +143,45 @@ async def _fetch_json_url(url: str, timeout: float = 20.0) -> dict | None:
 
 async def get_dockerhub_release_version() -> str:
     """Get the latest exact stable release version from Docker Hub."""
-    url = "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags?page_size=100"
-    pages_checked = 0
-    while url and pages_checked < 5:
-        data = await _fetch_json_url(url, timeout=20.0)
-        if not data:
-            return "unknown"
-        stable_tags = [
-            (version, name)
-            for result in data.get("results", [])
-            if isinstance(result, dict)
-            if (name := str(result.get("name", "")))
-            if (version := _parse_stable_version_tag(name)) is not None
-        ]
-        if stable_tags:
-            return max(stable_tags)[1]
-        next_url = data.get("next", "")
-        url = str(next_url) if next_url else ""
-        pages_checked += 1
+    base_urls = [
+        "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags?page_size=100",
+        "https://registry.hub.docker.com/v2/repositories/vllm/vllm-openai/tags?page_size=100",
+    ]
+    for base_url in base_urls:
+        url = base_url
+        pages_checked = 0
+        while url and pages_checked < 5:
+            data = await _fetch_json_url(url, timeout=20.0)
+            if not data:
+                break
+            stable_tags = [
+                (version, name)
+                for result in data.get("results", [])
+                if isinstance(result, dict)
+                if (name := str(result.get("name", "")))
+                if (version := _parse_stable_version_tag(name)) is not None
+            ]
+            if stable_tags:
+                return max(stable_tags)[1]
+            next_url = data.get("next", "")
+            url = str(next_url) if next_url else ""
+            pages_checked += 1
     return "unknown"
 
 
 async def get_dockerhub_nightly_date() -> str:
     """Get last updated date of the nightly tag from Docker Hub."""
-    data = await _fetch_json_url(
+    urls = [
         "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags/nightly",
-        timeout=20.0,
-    )
-    if not data:
-        return "unknown"
-    last_updated = str(data.get("last_updated", "")).strip()
-    if last_updated:
-        return last_updated.split("T")[0]
+        "https://registry.hub.docker.com/v2/repositories/vllm/vllm-openai/tags/nightly",
+    ]
+    for url in urls:
+        data = await _fetch_json_url(url, timeout=20.0)
+        if not data:
+            continue
+        last_updated = str(data.get("last_updated", "")).strip()
+        if last_updated:
+            return last_updated.split("T")[0]
     return "unknown"
 
 
