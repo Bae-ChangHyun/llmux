@@ -99,6 +99,17 @@ class ContainerUpScreen(Screen):
         height: auto;
     }
 
+    ContainerUpScreen RadioSet > RadioButton.-on > .toggle--button {
+        color: #34d399;
+        background: $surface;
+        text-style: bold;
+    }
+
+    ContainerUpScreen RadioSet > RadioButton.-on > .toggle--label {
+        color: #34d399;
+        text-style: bold;
+    }
+
     ContainerUpScreen #custom-tag-input {
         margin-bottom: 1;
         display: none;
@@ -259,7 +270,7 @@ class ContainerUpScreen(Screen):
                 btn.label = f"Official Release  ({self._release_version})"
                 btn.disabled = False
             else:
-                btn.label = "Official Release  (retry on start)"
+                btn.label = "Official Release  (latest stable)"
                 btn.disabled = False
         except Exception:
             pass
@@ -268,7 +279,7 @@ class ContainerUpScreen(Screen):
         nightly_date = await get_dockerhub_nightly_date()
         try:
             btn = radio_set.query_one(f"#{VER_NIGHTLY}", RadioButton)
-            btn.label = f"Nightly  ({nightly_date})"
+            btn.label = "Nightly  (rolling)" if nightly_date == "unknown" else f"Nightly  ({nightly_date})"
         except Exception:
             pass
 
