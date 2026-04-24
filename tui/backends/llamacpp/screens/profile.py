@@ -71,11 +71,13 @@ class ProfileFormScreen(ModalScreen[str | None]):
         margin-bottom: 1;
     }
     ProfileFormScreen .form-buttons {
-        dock: bottom;
-        height: 3;
+        height: auto;
+        min-height: 3;
+        margin-top: 1;
         padding-top: 1;
         align: center middle;
         background: $surface;
+        border-top: solid $primary 30%;
     }
     """
 
