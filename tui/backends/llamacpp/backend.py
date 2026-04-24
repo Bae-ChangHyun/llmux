@@ -14,7 +14,17 @@ import yaml
 
 from tui.common import profile_store
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+def _resolve_project_root() -> Path:
+    env_root = os.environ.get("LLMUX_ROOT", "").strip()
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+    cwd = Path.cwd()
+    if (cwd / "profiles.example.yaml").exists() and (cwd / "compose").is_dir():
+        return cwd
+    return Path(__file__).resolve().parents[3]
+
+
+PROJECT_ROOT = _resolve_project_root()
 ROOT = PROJECT_ROOT
 RUNTIME_DIR = PROJECT_ROOT / ".runtime" / "llamacpp"
 CONFIG_DIR = PROJECT_ROOT / "config" / "llamacpp"
@@ -29,8 +39,8 @@ CURRENT_PROFILE_FILE = PROJECT_ROOT / ".current-profile.llamacpp"
 
 
 def validate_name(name: str) -> bool:
-    """alphanumeric + dash/underscore. - 시작 금지 (argv injection 방지)."""
-    return bool(re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$", name))
+    """compose-safe lowercase name. Also prevents argv/path injection."""
+    return bool(re.match(r"^[a-z0-9][a-z0-9_-]*$", name))
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +137,7 @@ def _to_profile(stored: profile_store.StoredProfile) -> Profile:
         container_name=stored.container_name or stored.name,
         port=stored.port,
         gpu_id=stored.gpu_id,
-        config_name=stored.config_name or stored.name,
+        config_name=stored.config_name,
         model_file=stored.model_file,
         hf_repo=stored.hf_repo,
         hf_file=stored.hf_file,
@@ -141,7 +151,7 @@ def _to_stored(profile: Profile) -> profile_store.StoredProfile:
         container_name=profile.container_name or profile.name,
         port=int(profile.port),
         gpu_id=profile.gpu_id or "0",
-        config_name=profile.config_name or profile.name,
+        config_name=profile.config_name,
         model_file=profile.model_file,
         hf_repo=profile.hf_repo,
         hf_file=profile.hf_file,
@@ -491,7 +501,11 @@ async def list_hf_repo_files(repo: str) -> list[dict]:
 
     def _do():
         url = f"https://huggingface.co/api/models/{repo}/tree/main"
-        req = urllib.request.Request(url, headers={"User-Agent": "llmux"})
+        headers = {"User-Agent": "llmux"}
+        token = _parse_env_file(ROOT / ".env.common").get("HF_TOKEN", "").strip()
+        if token and not token.startswith("your_"):
+            headers["Authorization"] = f"Bearer {token}"
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=15) as r:
             return json.loads(r.read().decode())
 

@@ -4,9 +4,10 @@
 #   uv run llmux  # 또는 ./scripts/llamacpp/switch.sh <profile-name>
 #
 # 동작:
-#   1. scripts/render-override.py 가 profiles/<name>.env + config/<name>.yaml 를
-#      읽어 docker-compose.override.yaml 를 생성 (command: 블록 주입).
-#   2. docker compose up -d 가 base + override 를 병합해 기동.
+#   1. profiles.yaml 의 llamacpp/<name> 을 .runtime/llamacpp/<name>.env 로 렌더.
+#   2. scripts/llamacpp/render-override.py 가 config/llamacpp/<name>.yaml 를
+#      읽어 .runtime/llamacpp/override-<name>.yaml 를 생성 (command: 블록 주입).
+#   3. docker compose up -d 가 base + per-profile override 를 병합해 기동.
 
 services:
   llama-server:

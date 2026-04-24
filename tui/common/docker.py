@@ -53,7 +53,7 @@ async def running_container_names() -> set[str]:
         "docker", "ps", "--format", "{{.Names}}", timeout=5
     )
     if rc != 0:
-        return set()
+        raise RuntimeError(out.strip() or "docker ps failed")
     return {line.strip() for line in out.splitlines() if line.strip()}
 
 
@@ -63,7 +63,7 @@ async def running_container_ports() -> dict[str, str]:
         "docker", "ps", "--format", "{{.Names}}\t{{.Ports}}", timeout=5
     )
     if rc != 0:
-        return {}
+        raise RuntimeError(out.strip() or "docker ps failed")
     result: dict[str, str] = {}
     for line in out.splitlines():
         parts = line.split("\t", 1)
