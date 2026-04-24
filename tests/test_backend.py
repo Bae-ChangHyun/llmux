@@ -4,7 +4,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from tui.backends.vllm import backend
+from tui.backends.vllm import backend_inspect
 from tui.backends.vllm.backend_inspect import (
+    _get_ssl_context,
     _pick_preferred_tag,
     get_dockerhub_nightly_date,
     get_dockerhub_release_version,
@@ -707,6 +709,40 @@ class DockerHubTagLookupTests(unittest.IsolatedAsyncioTestCase):
         ):
             nightly_date = await get_dockerhub_nightly_date()
         self.assertEqual(nightly_date, "available")
+
+
+class SslContextBuilderTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._original = backend_inspect._ssl_context
+        backend_inspect._ssl_context = None
+
+    def tearDown(self) -> None:
+        backend_inspect._ssl_context = self._original
+
+    def test_picks_existing_cafile_from_candidates(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as tmp:
+            # Minimal valid CA bundle: an empty file is enough for
+            # ssl.create_default_context to accept the cafile arg without raising.
+            tmp.write("")
+            cafile = Path(tmp.name)
+        self.addCleanup(cafile.unlink, missing_ok=True)
+
+        with patch.object(
+            backend_inspect, "_SYSTEM_CA_CANDIDATES", (str(cafile),)
+        ), patch.dict("sys.modules", {"certifi": None}):
+            ctx = _get_ssl_context()
+
+        self.assertIsNotNone(ctx)
+        # Result is cached on the module; second call returns the same instance.
+        self.assertIs(_get_ssl_context(), ctx)
+
+    def test_falls_back_to_default_when_no_candidate_exists(self) -> None:
+        with patch.object(
+            backend_inspect, "_SYSTEM_CA_CANDIDATES", ("/nonexistent/ca.pem",)
+        ), patch.dict("sys.modules", {"certifi": None}):
+            ctx = _get_ssl_context()
+
+        self.assertIsNotNone(ctx)
 
 
 class CheckPortConflictTests(unittest.IsolatedAsyncioTestCase):
