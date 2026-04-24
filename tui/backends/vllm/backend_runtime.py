@@ -217,6 +217,53 @@ async def _detect_gpu_arch() -> str:
     return " ".join(caps)
 
 
+def _force_local_arch_for_deepep(dockerfile: os.PathLike[str] | str) -> tuple[bool, str]:
+    """Patch upstream Dockerfile so DeepEP respects TORCH_CUDA_ARCH_LIST.
+
+    Upstream sometimes hard-codes `9.0a 10.0a` for the DeepEP wheel build stage.
+    We replace only that step with the already-exported TORCH_CUDA_ARCH_LIST value.
+    """
+    path = os.fspath(dockerfile)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError as exc:
+        return False, f"Error: failed to read upstream Dockerfile: {exc}"
+
+    lines = text.splitlines(keepends=True)
+    for idx, line in enumerate(lines):
+        if "/tmp/install_python_libraries.sh" not in line:
+            continue
+        if line.lstrip().startswith("COPY "):
+            continue
+
+        # The export is typically the immediately previous non-empty line.
+        for prev in range(idx - 1, max(idx - 6, -1), -1):
+            if "export TORCH_CUDA_ARCH_LIST=" not in lines[prev]:
+                continue
+
+            if (
+                "$TORCH_CUDA_ARCH_LIST" in lines[prev]
+                or "${TORCH_CUDA_ARCH_LIST}" in lines[prev]
+            ):
+                return True, "DeepEP already respects local TORCH_CUDA_ARCH_LIST."
+
+            indent = lines[prev].split("export", 1)[0]
+            lines[prev] = (
+                f'{indent}export TORCH_CUDA_ARCH_LIST="${{TORCH_CUDA_ARCH_LIST}}" && \\\n'
+            )
+            try:
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("".join(lines))
+            except OSError as exc:
+                return False, f"Error: failed to patch upstream Dockerfile: {exc}"
+            return True, "Patched DeepEP stage to use local TORCH_CUDA_ARCH_LIST."
+
+        return False, "Error: could not locate DeepEP arch export line near install step."
+
+    return True, "DeepEP install step not found; skipping DeepEP arch patch."
+
+
 async def _clone_or_update_vllm(repo_url: str, branch: str):
     if VLLM_SRC_DIR.joinpath(".git").exists():
         yield ("log", "Updating existing vLLM source...")
@@ -343,8 +390,7 @@ async def _do_build_dev_image(
         yield ("log", f"Detected GPU: {gpu_name} (compute: {gpu_arch})")
         yield (
             "log",
-            "Building with local GPU arch targets. "
-            "Some upstream dependencies may still compile compatibility kernels.",
+            "Building with local GPU arch targets.",
         )
     yield ("log", f"Tag: vllm-dev:{main_tag}")
 
@@ -356,6 +402,13 @@ async def _do_build_dev_image(
             yield event
             if event[0] == "rc" and event[1] != 0:
                 return
+
+    if not use_official:
+        ok, patch_msg = _force_local_arch_for_deepep(VLLM_SRC_DIR / "docker/Dockerfile")
+        yield ("log", patch_msg)
+        if not ok:
+            yield ("rc", 1)
+            return
 
     build_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     cmd = [

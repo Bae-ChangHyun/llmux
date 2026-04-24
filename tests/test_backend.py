@@ -13,6 +13,7 @@ from tui.backends.vllm.backend_runtime import (
     _build_lora_options,
     _detect_gpu_arch,
     _ensure_common_env,
+    _force_local_arch_for_deepep,
     _post_start_validation,
 )
 from tui.common import profile_store
@@ -510,6 +511,69 @@ class DetectGpuArchTests(unittest.IsolatedAsyncioTestCase):
         with patch("tui.backends.vllm.backend_runtime.run_command", fake_run):
             result = await _detect_gpu_arch()
         self.assertEqual(result, "")
+
+
+class ForceLocalArchForDeepEPTests(unittest.TestCase):
+    def _write_tmp(self, content: str) -> Path:
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".Dockerfile", delete=False)
+        tmp.write(content)
+        tmp.close()
+        self.addCleanup(Path(tmp.name).unlink, missing_ok=True)
+        return Path(tmp.name)
+
+    def test_rewrites_hardcoded_deepep_arch_line(self) -> None:
+        dockerfile = self._write_tmp(
+            "RUN --mount=type=cache,target=/root/.cache/uv \\\n"
+            "    mkdir -p /tmp/ep_kernels_workspace/dist && \\\n"
+            "    export TORCH_CUDA_ARCH_LIST='9.0a 10.0a' && \\\n"
+            "    /tmp/install_python_libraries.sh \\\n"
+            "        --workspace /tmp/ep_kernels_workspace\n"
+        )
+
+        ok, message = _force_local_arch_for_deepep(dockerfile)
+
+        self.assertTrue(ok)
+        self.assertIn("Patched DeepEP stage", message)
+        patched = dockerfile.read_text()
+        self.assertIn('export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" && \\', patched)
+        self.assertNotIn("9.0a 10.0a", patched)
+
+    def test_accepts_already_dynamic_arch_line(self) -> None:
+        dockerfile = self._write_tmp(
+            "RUN --mount=type=cache,target=/root/.cache/uv \\\n"
+            "    export TORCH_CUDA_ARCH_LIST=\"${TORCH_CUDA_ARCH_LIST}\" && \\\n"
+            "    /tmp/install_python_libraries.sh --workspace /tmp/ep_kernels_workspace\n"
+        )
+
+        ok, message = _force_local_arch_for_deepep(dockerfile)
+
+        self.assertTrue(ok)
+        self.assertIn("already respects local TORCH_CUDA_ARCH_LIST", message)
+
+    def test_fails_when_deepep_export_line_missing(self) -> None:
+        dockerfile = self._write_tmp(
+            "RUN --mount=type=cache,target=/root/.cache/uv \\\n"
+            "    mkdir -p /tmp/ep_kernels_workspace/dist && \\\n"
+            "    /tmp/install_python_libraries.sh --workspace /tmp/ep_kernels_workspace\n"
+        )
+
+        ok, message = _force_local_arch_for_deepep(dockerfile)
+
+        self.assertFalse(ok)
+        self.assertIn("could not locate DeepEP arch export line", message)
+
+    def test_ignores_copy_line_and_patches_run_step(self) -> None:
+        dockerfile = self._write_tmp(
+            "COPY tools/ep_kernels/install_python_libraries.sh /tmp/install_python_libraries.sh\n"
+            "RUN --mount=type=cache,target=/root/.cache/uv \\\n"
+            "    export TORCH_CUDA_ARCH_LIST='9.0a 10.0a' && \\\n"
+            "    /tmp/install_python_libraries.sh --workspace /tmp/ep_kernels_workspace\n"
+        )
+
+        ok, message = _force_local_arch_for_deepep(dockerfile)
+
+        self.assertTrue(ok)
+        self.assertIn("Patched DeepEP stage", message)
 
 
 class PickPreferredTagTests(unittest.TestCase):
