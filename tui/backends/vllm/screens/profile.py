@@ -337,13 +337,29 @@ class ProfileDeleteScreen(ModalScreen[bool]):
         super().__init__()
         self._profile_name = profile_name
         self._profile = load_profile(profile_name)
+        self._config_shared = self._has_other_config_refs()
+
+    def _has_other_config_refs(self) -> bool:
+        config_name = self._profile.config_name
+        if not config_name:
+            return False
+        for name in list_profile_names():
+            if name == self._profile_name:
+                continue
+            if load_profile(name).config_name == config_name:
+                return True
+        return False
 
     def compose(self) -> ComposeResult:
         with Vertical():
             if self._profile.config_name:
+                detail = (
+                    f"(profile only; config is shared: {self._profile.config_name})"
+                    if self._config_shared
+                    else f"(profile + config: {self._profile.config_name})"
+                )
                 yield Static(
-                    f"Delete [b]{self._profile_name}[/b]?\n"
-                    f"(profile + config: {self._profile.config_name})",
+                    f"Delete [b]{self._profile_name}[/b]?\n{detail}",
                     id="delete-message",
                 )
             else:
@@ -359,8 +375,12 @@ class ProfileDeleteScreen(ModalScreen[bool]):
     def _on_delete(self, event: Button.Pressed) -> None:
         has_config = bool(self._profile.config_name)
         delete_profile(self._profile_name, delete_config=has_config)
-        if has_config:
+        if has_config and not self._config_shared:
             self.app.notify(f"Deleted: {self._profile_name} + config: {self._profile.config_name}")
+        elif has_config:
+            self.app.notify(
+                f"Deleted profile: {self._profile_name}; shared config kept: {self._profile.config_name}"
+            )
         else:
             self.app.notify(f"Deleted profile: {self._profile_name}")
         self.dismiss(True)

@@ -13,6 +13,13 @@ else
   [[ -f "$CURRENT_PROFILE_FILE" ]] || die "프로필 인자 필요"
   PROFILE=$(cat "$CURRENT_PROFILE_FILE")
 fi
-require_profile "$PROFILE" > /dev/null
+ENV_FILE="$(render_profile "$PROFILE")"
+# shellcheck disable=SC1091
+set -a; source "$ROOT/.env.common"; source "$ENV_FILE"; set +a
 
-exec_compose "$PROFILE" logs -f
+if [[ -f "$(_override_path "$PROFILE")" ]]; then
+  exec_compose "$PROFILE" logs -f
+else
+  info "override 파일이 없어 docker logs 로 직접 조회합니다"
+  exec docker logs -f --tail 200 "$CONTAINER_NAME"
+fi

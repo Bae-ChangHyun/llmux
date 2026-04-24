@@ -15,9 +15,20 @@ else
   PROFILE=$(cat "$CURRENT_PROFILE_FILE")
 fi
 
-require_profile "$PROFILE" > /dev/null
+ENV_FILE="$(render_profile "$PROFILE")"
+# shellcheck disable=SC1091
+set -a; source "$ROOT/.env.common"; source "$ENV_FILE"; set +a
 
 info "'${PROFILE}' 중지"
-run_compose "$PROFILE" down
+if [[ -f "$(_override_path "$PROFILE")" ]]; then
+  run_compose "$PROFILE" down
+else
+  info "override 파일이 없어 docker container 이름으로 직접 중지합니다"
+  if docker ps -a --format '{{.Names}}' | grep -Fxq "$CONTAINER_NAME"; then
+    docker rm -f "$CONTAINER_NAME" >/dev/null
+  else
+    info "컨테이너 없음: $CONTAINER_NAME"
+  fi
+fi
 
 ok "중지 완료"

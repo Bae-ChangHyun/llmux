@@ -54,6 +54,7 @@ class ContainerUpScreen(Screen):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=False),
         Binding("q", "cancel", "Quit", show=False),
+        Binding("f", "toggle_follow", "Follow on/off"),
     ]
 
     DEFAULT_CSS = """
@@ -420,12 +421,24 @@ class ContainerUpScreen(Screen):
                 try:
                     async for line in stream_container_logs(self._profile.container_name):
                         log_widget.write(line)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log_widget.write(f"Log stream error: {exc}")
             else:
                 status.update(f"[red bold]Failed to start (rc={rc})[/red bold]")
         except Exception:  # Screen may already be dismissed
             pass
+
+    def action_toggle_follow(self) -> None:
+        try:
+            log_widget = self.query_one("#startup-log", RichLog)
+        except Exception:
+            return
+        log_widget.auto_scroll = not log_widget.auto_scroll
+        if log_widget.auto_scroll:
+            log_widget.scroll_end(animate=False)
+        self.notify(
+            f"auto-follow: {'ON' if log_widget.auto_scroll else 'OFF'}", timeout=2
+        )
 
 
 # ---------------------------------------------------------------------------

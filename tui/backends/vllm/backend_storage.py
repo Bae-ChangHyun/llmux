@@ -68,7 +68,7 @@ def _to_stored(profile: Profile) -> profile_store.StoredProfile:
         container_name=profile.container_name or profile.name,
         port=int(profile.port or 8000),
         gpu_id=profile.gpu_id or "0",
-        config_name=profile.config_name or profile.name,
+        config_name=profile.config_name,
         tensor_parallel_size=int(profile.tensor_parallel or 1),
         model_id=profile.model_id,
         enable_lora=(profile.enable_lora or "false").lower() == "true",
