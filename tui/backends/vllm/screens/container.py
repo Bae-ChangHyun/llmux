@@ -83,6 +83,18 @@ class ContainerUpScreen(Screen):
         color: $text-muted;
     }
 
+    ContainerUpScreen #version-help {
+        color: $text-muted;
+        margin-top: 0;
+        margin-bottom: 0;
+    }
+
+    ContainerUpScreen #selected-version {
+        color: $accent;
+        margin-top: 0;
+        margin-bottom: 1;
+    }
+
     ContainerUpScreen RadioSet {
         height: auto;
     }
@@ -150,12 +162,17 @@ class ContainerUpScreen(Screen):
                 )
             with Vertical(id="version-scroll"):
                 yield Label("Version", id="version-label")
+                yield Static(
+                    "[dim]Click or use ↑↓ + Enter/Space to select[/dim]",
+                    id="version-help",
+                )
                 with RadioSet(id="version-radio"):
                     yield RadioButton("Local Latest  (loading...)", id=VER_LOCAL, value=True)
                     yield RadioButton("Official Release  (loading...)", id=VER_OFFICIAL)
                     yield RadioButton("Nightly  (loading...)", id=VER_NIGHTLY)
                     yield RadioButton("Dev Build  (vllm-dev)", id=VER_DEV)
                     yield RadioButton("Custom Tag", id=VER_CUSTOM)
+                yield Static("", id="selected-version")
                 yield Input(
                     placeholder="Enter custom image tag...",
                     id="custom-tag-input",
@@ -198,8 +215,18 @@ class ContainerUpScreen(Screen):
             self.query_one("#version-radio", RadioSet).focus()
         except Exception:
             pass
+        self._update_selected_version_label()
         # Auto-refresh GPU bar every 3 seconds
         self._gpu_timer = self.set_interval(3, self._fetch_gpu_info)
+
+    def _update_selected_version_label(self) -> None:
+        try:
+            radio_set = self.query_one("#version-radio", RadioSet)
+            selected = radio_set.pressed_button
+            text = str(selected.label) if selected else "None"
+            self.query_one("#selected-version", Static).update(f"Selected: [b]{text}[/b]")
+        except Exception:
+            pass
 
     @work(exclusive=False)
     async def _fetch_version_info(self) -> None:
@@ -253,6 +280,7 @@ class ContainerUpScreen(Screen):
                     radio_set.query_one(f"#{VER_NIGHTLY}", RadioButton).value = True
         except Exception:
             pass
+        self._update_selected_version_label()
 
     @work(exclusive=False)
     async def _fetch_gpu_info(self) -> None:
@@ -279,6 +307,7 @@ class ContainerUpScreen(Screen):
         else:
             custom_input.styles.display = "none"
             dev_options.styles.display = "none"
+        self._update_selected_version_label()
 
     def _cleanup(self) -> None:
         if self._gpu_timer is not None:
