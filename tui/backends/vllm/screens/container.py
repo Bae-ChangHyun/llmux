@@ -131,13 +131,10 @@ class ContainerUpScreen(Screen):
     }
     """
 
-    def __init__(
-        self, profile_name: str, *, skip_port_conflict_check: bool = False
-    ) -> None:
+    def __init__(self, profile_name: str) -> None:
         super().__init__()
         self.profile_name = profile_name
         self._profile = load_profile(profile_name)
-        self._skip_port_conflict_check = skip_port_conflict_check
         self._gpu_timer = None
         self._local_tag: str = ""
         self._release_version: str = ""
@@ -344,17 +341,15 @@ class ContainerUpScreen(Screen):
                 self.app.notify("Please enter a custom tag.", severity="error")
                 return
 
-        # Dashboard already performs the cross-backend conflict gate. When the
-        # user chooses "Start anyway", avoid blocking them a second time here.
-        if not self._skip_port_conflict_check:
-            conflict = await check_port_conflict(self._profile)
-            if conflict:
-                self.app.notify(
-                    f"Port {self._profile.port} is already used by {conflict}.",
-                    severity="error",
-                    timeout=5,
-                )
-                return
+        # Always keep the runtime bind check enabled right before compose up.
+        conflict = await check_port_conflict(self._profile)
+        if conflict:
+            self.app.notify(
+                f"Port {self._profile.port} is already used by {conflict}.",
+                severity="error",
+                timeout=5,
+            )
+            return
 
         # Switch to startup log view
         try:
@@ -376,7 +371,6 @@ class ContainerUpScreen(Screen):
             pull=pull,
             repo_url=repo_url,
             branch=branch,
-            skip_port_conflict_check=self._skip_port_conflict_check,
         ):
             if msg_type == "log":
                 try:

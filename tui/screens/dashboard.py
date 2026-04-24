@@ -278,10 +278,8 @@ class DashboardScreen(Screen):
             )
         ext_msgs = external_port_conflicts(row, self._rows, ext_ports)
 
-        has_port_conflict = bool(port_msgs or ext_msgs)
-
         if not port_msgs and not gpu_msgs and not ext_msgs and not probe_msgs:
-            on_ok(False)
+            on_ok()
             return
 
         lines: list[str] = []
@@ -309,7 +307,7 @@ class DashboardScreen(Screen):
 
         def after(proceed: bool) -> None:
             if proceed:
-                on_ok(has_port_conflict)
+                on_ok()
 
         self.app.push_screen(
             ConfirmModal(message, confirm_label="Start anyway", variant="warning"),
@@ -323,12 +321,9 @@ class DashboardScreen(Screen):
         if action == "start":
             from tui.backends.vllm.screens.container import ContainerUpScreen
 
-            def launch(skip_port_conflict_check: bool = False) -> None:
+            def launch() -> None:
                 self.app.push_screen(
-                    ContainerUpScreen(
-                        name,
-                        skip_port_conflict_check=skip_port_conflict_check,
-                    ),
+                    ContainerUpScreen(name),
                     self._after_mutation,
                 )
 
@@ -425,7 +420,7 @@ class DashboardScreen(Screen):
         if action == "start":
             from tui.backends.llamacpp.screens.dashboard import StartScreen
 
-            def launch(_skip_port_conflict_check: bool = False) -> None:
+            def launch() -> None:
                 self.app.push_screen(StartScreen(name), self._after_mutation)
 
             self._confirm_conflicts_before_start(row, launch)
@@ -521,6 +516,9 @@ class DashboardScreen(Screen):
         row = self._selected_row()
         if row is None:
             return
+        if row.running:
+            self.notify("Container already running.", severity="warning", timeout=3)
+            return
         if row.backend == "vllm":
             self._dispatch_vllm("start", row)
         else:
@@ -540,6 +538,9 @@ class DashboardScreen(Screen):
     def action_view_logs(self) -> None:
         row = self._selected_row()
         if row is None:
+            return
+        if not row.running:
+            self.notify("Logs are available only for running containers.", severity="warning")
             return
         if row.backend == "vllm":
             self._dispatch_vllm("logs", row)
