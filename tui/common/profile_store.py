@@ -8,6 +8,7 @@ each profile is rendered into `.runtime/<backend>/<name>.env` for
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 import re
 import shlex
 from pathlib import Path
@@ -15,7 +16,17 @@ from typing import Any, Literal
 
 import yaml
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+def _resolve_project_root() -> Path:
+    env_root = os.environ.get("LLMUX_ROOT", "").strip()
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+    cwd = Path.cwd()
+    if (cwd / "profiles.example.yaml").exists() and (cwd / "compose").is_dir():
+        return cwd
+    return Path(__file__).resolve().parents[2]
+
+
+PROJECT_ROOT = _resolve_project_root()
 PROFILES_YAML = PROJECT_ROOT / "profiles.yaml"
 RUNTIME_DIR = PROJECT_ROOT / ".runtime"
 
@@ -144,7 +155,7 @@ def _profile_to_entry(
         out["port"] = profile.port
     if profile.gpu_id and profile.gpu_id != defaults.get("gpu_id", "0"):
         out["gpu_id"] = profile.gpu_id
-    if profile.config_name and profile.config_name != profile.name:
+    if profile.config_name != (defaults.get("config_name") or profile.name):
         out["config_name"] = profile.config_name
 
     if profile.backend == "vllm":

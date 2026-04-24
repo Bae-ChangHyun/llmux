@@ -4,9 +4,11 @@
 # backends. At launch time llmux renders each profile into
 # `.runtime/<backend>/<name>.env` and passes it to `docker compose --env-file`.
 #
-# Minimal profile = just `name` + `backend`. Anything omitted inherits from
-# `defaults.<backend>`. Config flags per model live under `config/<backend>/<name>.yaml`
-# (same CONFIG_NAME convention as before).
+# Schema minimum = `name` + `backend`; anything omitted inherits from
+# `defaults.<backend>`. To actually start a profile, vLLM needs either
+# `model_id` or config/<name>.yaml with `model`, and llama.cpp needs GGUF
+# metadata (`model_file`, `hf_repo`, `hf_file`) plus a config with `model-file`
+# or the profile-level `model_file` fallback.
 
 version: 1
 
@@ -44,6 +46,6 @@ profiles:
     port: 8080
     config_name: gemma-3-4b       # → config/llamacpp/gemma-3-4b.yaml
     gpu_id: "0"
-    model_file: gemma-3-4b-it-q4_k_m.gguf
+    model_file: gemma-3-4b-it-q4_k_m.gguf  # used for download and as config fallback
     hf_repo: unsloth/gemma-3-4b-it-GGUF
     hf_file: gemma-3-4b-it-q4_k_m.gguf

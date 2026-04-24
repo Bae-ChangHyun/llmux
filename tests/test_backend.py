@@ -1,8 +1,10 @@
 import tempfile
+import importlib.util
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from tui.backends.llamacpp import backend as lbackend
 from tui.backends.vllm import backend
 from tui.backends.vllm.backend_inspect import (
     _pick_preferred_tag,
@@ -14,7 +16,9 @@ from tui.backends.vllm.backend_runtime import (
     _detect_gpu_arch,
     _ensure_common_env,
     _force_local_arch_for_deepep,
+    _gpu_conflict_messages,
     _post_start_validation,
+    _verify_vllm_version,
 )
 from tui.common import profile_store
 
@@ -822,6 +826,21 @@ class StreamContainerUpPortConflictTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PostStartValidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fails_when_container_cannot_be_inspected(self) -> None:
+        profile = backend.Profile(name="p", container_name="p", port="8000")
+
+        async def fake_run_command(*args, **kwargs):
+            return 1, "No such object: p"
+
+        with patch.dict(
+            _post_start_validation.__globals__,
+            {"run_command": fake_run_command},
+        ):
+            ok, messages = await _post_start_validation(profile, timeout=0.1, poll_interval=0.05)
+
+        self.assertFalse(ok)
+        self.assertTrue(any("could not inspect container" in m for m in messages))
+
     async def test_fails_when_container_exits_during_startup(self) -> None:
         profile = backend.Profile(name="p", container_name="p", port="8000")
 
@@ -864,6 +883,76 @@ class PostStartValidationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(ok)
         self.assertTrue(any("/v1/models is not ready yet" in m for m in messages))
+
+
+class VllmRuntimeWarningTests(unittest.IsolatedAsyncioTestCase):
+    async def test_version_verification_warns_when_exec_fails(self) -> None:
+        async def fake_run_command(*args, **kwargs):
+            return 1, "exec failed"
+
+        with patch.dict(
+            _verify_vllm_version.__globals__,
+            {"run_command": fake_run_command},
+        ):
+            events = [event async for event in _verify_vllm_version("p", "v0.19.1")]
+
+        self.assertEqual(events[0][0], "log")
+        self.assertIn("could not verify vLLM version", events[0][1])
+
+    async def test_gpu_conflicts_include_llamacpp_profiles(self) -> None:
+        profile = backend.Profile(name="v", container_name="v", gpu_id="0")
+        other = profile_store.StoredProfile(
+            name="l",
+            backend="llamacpp",
+            container_name="l",
+            gpu_id="0",
+        )
+
+        async def fake_run_command(*args, **kwargs):
+            return 0, "l\n"
+
+        with patch.dict(
+            _gpu_conflict_messages.__globals__,
+            {
+                "run_command": fake_run_command,
+                "list_profile_names": lambda: ["v"],
+                "profile_store": type(
+                    "ProfileStoreStub",
+                    (),
+                    {"list_profiles": staticmethod(lambda backend_name: [other])},
+                ),
+            },
+        ):
+            messages = await _gpu_conflict_messages(profile)
+
+        self.assertTrue(any("llama.cpp" in m and "GPU 0" in m for m in messages))
+
+
+class LlamacppValidationTests(unittest.TestCase):
+    def test_validate_name_is_compose_safe(self) -> None:
+        self.assertTrue(lbackend.validate_name("qwen3_0-6b"))
+        self.assertFalse(lbackend.validate_name("Qwen3"))
+        self.assertFalse(lbackend.validate_name("dot.name"))
+
+
+class LlamacppRenderOverrideTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        path = Path(__file__).resolve().parents[1] / "scripts" / "llamacpp" / "render-override.py"
+        spec = importlib.util.spec_from_file_location("render_override_for_tests", path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        cls.module = module
+
+    def test_profile_model_file_is_used_when_config_omits_model_file(self) -> None:
+        command = self.module.render_command({"ctx-size": 2048}, "model.gguf")
+        self.assertIn("--model", command)
+        self.assertIn("/models/model.gguf", command)
+
+    def test_missing_model_file_fails_fast(self) -> None:
+        with self.assertRaises(ValueError):
+            self.module.render_command({"ctx-size": 2048}, "")
 
 
 class QuickSetupSuffixLogicTests(unittest.TestCase):
