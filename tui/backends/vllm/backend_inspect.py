@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import re
+import ssl
 import urllib.request
 from datetime import datetime
 
@@ -17,6 +20,47 @@ from tui.common.mem import estimate_model_memory  # re-export
 
 from .backend_common import CONFIG_DIR, DockerImage
 from .backend_process import run_command
+
+logger = logging.getLogger(__name__)
+
+
+# CA bundle locations checked in order. Some Python builds (e.g. uv-managed
+# CPython on RHEL/CentOS) ship with an OpenSSL default cafile of
+# `/etc/ssl/cert.pem` that does not exist on the host, which causes urllib
+# requests to Docker Hub to fail with `CERTIFICATE_VERIFY_FAILED`.
+_SYSTEM_CA_CANDIDATES = (
+    "/etc/pki/tls/certs/ca-bundle.crt",     # RHEL / CentOS / Fedora
+    "/etc/ssl/certs/ca-certificates.crt",   # Debian / Ubuntu / Alpine
+    "/etc/ssl/cert.pem",                    # macOS / OpenSSL default
+)
+
+_ssl_context: ssl.SSLContext | None = None
+
+
+def _get_ssl_context() -> ssl.SSLContext:
+    global _ssl_context
+    if _ssl_context is not None:
+        return _ssl_context
+
+    candidates: list[str] = []
+    try:
+        import certifi  # type: ignore[import-not-found]
+        candidates.append(certifi.where())
+    except Exception:
+        pass
+    candidates.extend(_SYSTEM_CA_CANDIDATES)
+
+    for cafile in candidates:
+        if not cafile or not os.path.exists(cafile):
+            continue
+        try:
+            _ssl_context = ssl.create_default_context(cafile=cafile)
+            return _ssl_context
+        except Exception:
+            continue
+
+    _ssl_context = ssl.create_default_context()
+    return _ssl_context
 
 
 async def get_docker_images(repo: str = "vllm/vllm-openai") -> list[DockerImage]:
@@ -134,15 +178,23 @@ async def _fetch_json_url(
         if headers:
             request_headers.update(headers)
         request = urllib.request.Request(url, headers=request_headers)
+        context = _get_ssl_context()
+        first_error: Exception | None = None
         for target in (request, url):
             try:
-                with urllib.request.urlopen(target, timeout=timeout) as response:
+                with urllib.request.urlopen(
+                    target, timeout=timeout, context=context
+                ) as response:
                     payload = response.read().decode("utf-8", errors="replace")
                 data = json.loads(payload)
                 if isinstance(data, dict):
                     return data
-            except Exception:
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
                 continue
+        if first_error is not None:
+            logger.debug("fetch %s failed: %s", url, first_error)
         return None
 
     return await loop.run_in_executor(None, _fetch)
