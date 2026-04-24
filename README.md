@@ -55,6 +55,17 @@ Each demo above is a checked-in `.tape` script under [`demo/`](demo/) &mdash; re
 
 ## Quick Start
 
+### Release Installer
+
+Download the latest release from GitHub:
+
+- macOS: open `llmux-<version>-macos-universal.dmg`, then run `Install llmux.command`.
+- Linux: run `chmod +x llmux-<version>-linux-x86_64.run && ./llmux-<version>-linux-x86_64.run`.
+
+The installer copies llmux to `$HOME/.local/share/llmux`, creates a private Python virtual environment, and installs the `llmux` command in `$HOME/.local/bin`. Edit `$HOME/.local/share/llmux/.env.common` and `profiles.yaml` before starting models.
+
+### From Source
+
 ```bash
 git clone https://github.com/Bae-ChangHyun/llmux.git && cd llmux
 
