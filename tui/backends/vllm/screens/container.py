@@ -262,7 +262,12 @@ class ContainerUpScreen(Screen):
         nightly_date = await get_dockerhub_nightly_date()
         try:
             btn = radio_set.query_one(f"#{VER_NIGHTLY}", RadioButton)
-            btn.label = "Nightly  (loading...)" if nightly_date == "unknown" else f"Nightly  ({nightly_date})"
+            if nightly_date == "unknown":
+                btn.label = "Nightly  (loading...)"
+            elif nightly_date == "available":
+                btn.label = "Nightly"
+            else:
+                btn.label = f"Nightly  ({nightly_date})"
         except Exception:
             pass
 
