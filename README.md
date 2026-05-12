@@ -71,7 +71,23 @@ uv sync
 uv run llmux
 ```
 
+> The first launch prints a one-liner you can copy/paste into your `~/.bashrc` or `~/.zshrc` to enable running `llmux` from any directory. See [Run from anywhere](#run-from-anywhere) below.
+
 llmux expects to run from this repository checkout. The TUI reads `profiles.yaml`, `compose/`, `config/`, `scripts/`, and `.env.common` relative to the project root. If you launch the entrypoint from another directory, set `LLMUX_ROOT=/path/to/llmux`.
+
+### Run from anywhere
+
+By default you have to `cd` into the repo and run `uv run llmux`. To use the bare `llmux` command from any directory, register a shell function. Pick the line for your shell, run it once from the repo root, and you're done:
+
+```bash
+# bash
+echo "llmux() { (cd \"$PWD\" && uv run llmux \"\$@\"); }" >> ~/.bashrc && source ~/.bashrc
+
+# zsh
+echo "llmux() { (cd \"$PWD\" && uv run llmux \"\$@\"); }" >> ~/.zshrc && source ~/.zshrc
+```
+
+`$PWD` is expanded by your shell to the current repo path at the moment you run the command, so the function will always `cd` back here. The subshell `( ... )` keeps your shell's working directory unchanged.
 
 From the dashboard:
 
