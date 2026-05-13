@@ -86,6 +86,48 @@ From the dashboard:
 - `c` / `e` &nbsp;Edit config / profile **directly in the TUI** — no shell editing required
 - `m` &nbsp;Memory estimator &middot; `s` &nbsp;System info &middot; `r` &nbsp;Refresh &middot; `q` &nbsp;Quit
 
+### Headless CLI (for scripts & agents)
+
+Every TUI feature is also exposed as a non-interactive subcommand. `llmux` with no arguments still launches the TUI; pass any subcommand to bypass it:
+
+```bash
+# Container lifecycle
+llmux up <profile>             # alias for `llmux container up`
+llmux up <profile> --tag v0.20.1 --pull
+llmux down <profile>
+llmux logs <profile>           # follow by default; --no-follow + --tail for snapshots
+llmux ps --json --running      # machine-readable status across both backends
+llmux render-env <profile>     # re-render .runtime/<backend>/<profile>.env
+
+# Profile + config CRUD
+llmux profile list --json
+llmux profile show qwen3-5-27b-mtp
+llmux profile new myprofile --backend vllm --port 8001 --gpu-id 1 --model Qwen/Qwen3-8B
+llmux profile edit myprofile --port 8002 --set OMP_NUM_THREADS=16
+llmux profile delete myprofile --with-config -y
+llmux profile quick-setup Qwen/Qwen3-8B --gpu-id 0,1   # mirrors TUI Quick Setup
+
+llmux config list
+llmux config new gpt-oss-test --model openai/gpt-oss-120b --set max-model-len=131072
+llmux config edit gpt-oss-test --set tensor-parallel-size=2 --unset reasoning-config
+llmux config show gpt-oss-test --json
+
+# Image + system
+llmux image list --remote --dev
+llmux image pull v0.20.1
+llmux image build-dev --branch main --tag custom
+
+llmux gpu --json              # nvidia-smi summary
+llmux env-check               # validate .env.common (HF_TOKEN, HF_CACHE_PATH, ...)
+llmux system mem-estimate Qwen/Qwen3-8B
+```
+
+`--json` is supported by every list/show/check command for clean piping into agents (`jq`, scripts, etc.). All commands honor `LLMUX_ROOT=/path/to/llmux` so they work from any directory:
+
+```bash
+LLMUX_ROOT=/root/working/bch/llmux llmux ps --json | jq '.[] | select(.running)'
+```
+
 <br/>
 
 ## Why llmux?
