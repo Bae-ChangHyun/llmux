@@ -1,0 +1,15 @@
+# Development compose file — uses llama.cpp built from source.
+# Usage:
+#   1. Build the image: `uv run llmux image build-dev --backend llamacpp --branch <branch>`
+#      (produces `llamacpp-dev:<branch>` and `llamacpp-dev:<branch>-<date>`)
+#   2. Set `image_tag: llamacpp-dev:<branch>` on the profile in profiles.yaml
+#      (per-profile override; another profile can stay on the official image).
+#   3. `uv run llmux up <profile>` — backend_runtime detects `image_tag` and
+#      layers this file on top of docker-compose.yaml.
+
+services:
+  llama-server:
+    extends:
+      file: docker-compose.yaml
+      service: llama-server
+    image: llamacpp-dev:${LLAMACPP_DEV_TAG:-${LLAMACPP_BRANCH:-master}}

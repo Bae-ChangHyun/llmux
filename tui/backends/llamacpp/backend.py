@@ -95,6 +95,7 @@ class Profile:
     model_file: str = ""
     hf_repo: str = ""
     hf_file: str = ""
+    image_tag: str = ""
     # 런타임 상태
     downloaded: bool = False
     model_size_gb: float | None = None
@@ -141,6 +142,7 @@ def _to_profile(stored: profile_store.StoredProfile) -> Profile:
         model_file=stored.model_file,
         hf_repo=stored.hf_repo,
         hf_file=stored.hf_file,
+        image_tag=stored.image_tag,
     )
 
 
@@ -155,6 +157,7 @@ def _to_stored(profile: Profile) -> profile_store.StoredProfile:
         model_file=profile.model_file,
         hf_repo=profile.hf_repo,
         hf_file=profile.hf_file,
+        image_tag=profile.image_tag,
     )
 
 
