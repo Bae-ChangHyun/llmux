@@ -155,23 +155,51 @@ async def _render_override(profile_name: str) -> tuple[int, str]:
 
 
 async def _ensure_model_file(profile: Profile):
-    """If GGUF missing, invoke pull-model.sh. Yields stream events."""
+    """If GGUF missing, download via `hf` CLI directly. Yields stream events.
+
+    Replaces the legacy scripts/llamacpp/pull-model.sh, which sourced
+    _common.sh — itself moved to legacy/ in this refactor.
+    """
     if not profile.model_file:
         return
-    model_path = _get_model_dir() / profile.model_file
+    model_dir = _get_model_dir()
+    model_path = model_dir / profile.model_file
     if model_path.exists():
         return
-    yield ("log", f"▸ 모델 파일 없음 → 다운로드 시도: {profile.model_file}")
-    pull_script = SCRIPTS_DIR / "pull-model.sh"
-    if not pull_script.exists():
-        yield ("log", f"✗ pull-model.sh 없음: {pull_script}")
+
+    hf_repo = profile.hf_repo
+    hf_file = profile.hf_file or profile.model_file
+    if not hf_repo:
+        yield ("log", f"✗ hf_repo 미설정 (profiles.yaml 의 {profile.name} 확인)")
         yield ("rc", 1)
         return
-    async for event in _stream([str(pull_script), profile.name]):
+    if not hf_file:
+        yield ("log", f"✗ hf_file 미설정 (profiles.yaml 의 {profile.name} 확인)")
+        yield ("rc", 1)
+        return
+
+    yield ("log", f"▸ 모델 파일 없음 → 다운로드 시도: {hf_repo} / {hf_file}")
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    if COMMON_ENV.exists():
+        for k, v in _parse_env_file(COMMON_ENV).items():
+            env[k] = v
+
+    # Prefer `hf` (huggingface_hub >= 0.27); fall back to `huggingface-cli`.
+    rc_which, _ = await _run("bash", "-lc", "command -v hf", timeout=5)
+    cmd = (
+        ["hf", "download", hf_repo, hf_file, "--local-dir", str(model_dir)]
+        if rc_which == 0
+        else ["huggingface-cli", "download", hf_repo, hf_file, "--local-dir", str(model_dir)]
+    )
+    async for event in _stream(cmd, env=env):
         if event[0] == "rc" and event[1] != 0:
+            yield ("log", "✗ hf 다운로드 실패. `pip install -U huggingface_hub` 또는 `uv tool install huggingface_hub` 확인.")
             yield event
             return
         yield event
+    yield ("log", f"✓ 완료: {model_path}")
 
 
 # ---------------------------------------------------------------------------
