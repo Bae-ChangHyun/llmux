@@ -50,8 +50,9 @@ models/*.gguf
 models/*.safetensors
 models/*.bin
 
-# vLLM dev source checkout (bulky)
+# Backend dev source checkouts (bulky)
 .vllm-src/
+.llamacpp-src/
 
 # IDE
 .vscode/
