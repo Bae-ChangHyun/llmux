@@ -109,7 +109,12 @@ def build_dev(
     ),
     cuda_arch: str = typer.Option(
         "", "--cuda-arch",
-        help="llamacpp only: CUDA_DOCKER_ARCH value (e.g. '89' for Ada). Empty = default (multi-arch).",
+        help="llamacpp only: override auto-detection. Pass CMake-format like '89' (Ada) or "
+             "'86;89' (mixed). Empty = auto-detect via nvidia-smi.",
+    ),
+    multi_arch: bool = typer.Option(
+        False, "--multi-arch",
+        help="llamacpp only: disable GPU auto-detection and build for all archs (portable, slow).",
     ),
 ) -> None:
     """Build a `<backend>-dev:<tag>` image from source, streaming docker output.
@@ -130,8 +135,8 @@ def build_dev(
         default_repo, default_branch = get_dev_build_defaults()
         branch = branch or default_branch
         repo_url = repo_url or default_repo
-        if cuda_arch:
-            typer.echo("Warning: --cuda-arch is llamacpp-only and ignored for vllm", err=True)
+        if cuda_arch or multi_arch:
+            typer.echo("Warning: --cuda-arch/--multi-arch are llamacpp-only and ignored for vllm", err=True)
         rc = stream_async(
             _stream_build_dev_image(
                 branch,
@@ -157,6 +162,7 @@ def build_dev(
                 repo_url=repo_url,
                 custom_tag=custom_tag,
                 cuda_arch=cuda_arch,
+                use_multi_arch=multi_arch,
             )
         )
     raise typer.Exit(code=rc)

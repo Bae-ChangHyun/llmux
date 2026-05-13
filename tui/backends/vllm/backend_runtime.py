@@ -218,21 +218,12 @@ def _format_gpu_label(gpu_id: str) -> str:
 
 
 async def _detect_gpu_arch() -> str:
-    """Return unique GPU compute capabilities as a space-separated list.
+    """Return PyTorch's TORCH_CUDA_ARCH_LIST format (space-separated dotted caps).
 
-    Preserves dot form ('8.6 8.9') so PyTorch's TORCH_CUDA_ARCH_LIST and
-    CMake recognize each arch. Covers mixed-SM setups rather than only GPU 0.
+    Thin wrapper around the shared dev_build.detect_local_gpu_caps() helper.
+    Kept here as a stable name for the rest of the vllm runtime to call.
     """
-    rc, out = await run_command(
-        "nvidia-smi",
-        "--query-gpu=compute_cap",
-        "--format=csv,noheader",
-        timeout=10,
-    )
-    if rc != 0 or not out.strip():
-        return ""
-    caps = sorted({line.strip() for line in out.splitlines() if line.strip()})
-    return " ".join(caps)
+    return dev_build.format_arch_torch(await dev_build.detect_local_gpu_caps())
 
 
 def _force_local_arch_for_deepep(dockerfile: os.PathLike[str] | str) -> tuple[bool, str]:

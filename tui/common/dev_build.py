@@ -269,6 +269,32 @@ async def stream_build(
 # ---------------------------------------------------------------------------
 
 
+async def detect_local_gpu_caps() -> list[str]:
+    """Return unique compute_cap strings from `nvidia-smi`, sorted.
+
+    Examples: ["8.9"] for a single RTX 4080 SUPER, ["8.6", "8.9"] for a
+    mixed-SM machine. Empty list if nvidia-smi fails — caller decides
+    whether to fall back to a multi-arch build.
+    """
+    rc, out = await _run(
+        "nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader", timeout=10
+    )
+    if rc != 0 or not out.strip():
+        return []
+    return sorted({line.strip() for line in out.splitlines() if line.strip()})
+
+
+def format_arch_torch(caps: list[str]) -> str:
+    """vLLM / PyTorch convention: dotted, space-separated (e.g. '8.6 8.9')."""
+    return " ".join(caps)
+
+
+def format_arch_cmake(caps: list[str]) -> str:
+    """CMake CUDA_ARCHITECTURES / llama.cpp CUDA_DOCKER_ARCH convention:
+    no dot, semicolon-separated (e.g. '86;89')."""
+    return ";".join(c.replace(".", "") for c in caps)
+
+
 async def get_image_label(image_ref: str, label: str) -> str:
     rc, out = await _run(
         "docker",
