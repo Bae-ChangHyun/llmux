@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json as _json
 import sys
 from typing import Any, AsyncIterator, Iterable
@@ -57,16 +58,29 @@ def stream_async(agen: AsyncIterator) -> int:
     """Drive an async generator that yields ('log', line) and exits with ('rc', n).
 
     Lines go to stdout. Returns the final rc (or 0 if none yielded).
+
+    Explicitly closes the generator before asyncio.run() shutdown so that
+    the inner subprocess wrappers can run their cleanup deterministically.
+    Backend code may call `proc.kill()` on already-exited processes during
+    cancellation, raising ProcessLookupError; we swallow those (and the
+    cooperating CancelledError) so they don't leak as unraisable
+    exceptions to stderr.
     """
 
     async def _drive() -> int:
         rc = 0
-        async for evt in agen:
-            kind = evt[0]
-            if kind == "log":
-                print(evt[1], flush=True)
-            elif kind == "rc":
-                rc = int(evt[1])
+        try:
+            async for evt in agen:
+                kind = evt[0]
+                if kind == "log":
+                    print(evt[1], flush=True)
+                elif kind == "rc":
+                    rc = int(evt[1])
+        finally:
+            with contextlib.suppress(
+                ProcessLookupError, OSError, asyncio.CancelledError
+            ):
+                await agen.aclose()
         return rc
 
     try:

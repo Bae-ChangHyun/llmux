@@ -79,18 +79,39 @@ def _parse_set_kv(items: list[str]) -> dict:
     return out
 
 
-def _resolve_backend(backend: Optional[str], name: Optional[str]) -> str:
-    """Pick a backend: explicit override, else find which backend has the config."""
+_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+
+
+def _validate_name(name: str) -> None:
+    """Reject names that could escape `_config_dir(bk)` via path traversal."""
+    if not _NAME_RE.match(name):
+        raise typer.BadParameter(
+            f"invalid config name {name!r}: must match {_NAME_RE.pattern}",
+            param_hint="NAME",
+        )
+
+
+def _resolve_backend_for_existing(backend: Optional[str], name: str) -> str:
+    """Pick the backend that owns an existing `<name>.yaml`.
+
+    Used by show/edit/delete (read-or-mutate paths). Raises if the config
+    can't be located in either backend, so a typo never silently defaults
+    to vllm and reports "config not found" only at the next read.
+    """
+    _validate_name(name)
     if backend:
         if backend not in BACKENDS:
             raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
+        if not (_config_dir(backend) / f"{name}.yaml").exists():
+            raise typer.BadParameter(
+                f"config '{name}' not found in backend '{backend}'", param_hint="NAME"
+            )
         return backend
-    if name is None:
-        return "vllm"
     matches = [b for b in BACKENDS if (_config_dir(b) / f"{name}.yaml").exists()]
     if not matches:
-        # Default to vllm for new configs.
-        return "vllm"
+        raise typer.BadParameter(
+            f"config '{name}' not found in any backend", param_hint="NAME"
+        )
     if len(matches) > 1:
         raise typer.BadParameter(
             f"config '{name}' exists in multiple backends ({', '.join(matches)}); "
@@ -132,7 +153,7 @@ def show_config(
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Print a config YAML."""
-    bk = _resolve_backend(backend, name)
+    bk = _resolve_backend_for_existing(backend, name)
     data = _load_yaml(bk, name)
     if json_out:
         emit_json(data)
@@ -154,8 +175,9 @@ def new_config(
     overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite if file exists."),
 ) -> None:
     """Create a new config YAML."""
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", name):
-        raise typer.BadParameter("invalid name", param_hint="NAME")
+    _validate_name(name)
+    if backend not in BACKENDS:
+        raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
     path = _config_dir(backend) / f"{name}.yaml"
     if path.exists() and not overwrite:
         raise typer.BadParameter(f"config already exists: {path} (use --overwrite)")
@@ -179,7 +201,7 @@ def edit_config(
     gpu_memory_utilization: Optional[str] = typer.Option(None, "--gpu-mem"),
 ) -> None:
     """Patch fields in an existing config."""
-    bk = _resolve_backend(backend, name)
+    bk = _resolve_backend_for_existing(backend, name)
     data = _load_yaml(bk, name)
     if model is not None:
         data["model"] = model
@@ -199,12 +221,12 @@ def delete_config(
     yes: bool = typer.Option(False, "--yes", "-y"),
 ) -> None:
     """Delete a config YAML."""
-    bk = _resolve_backend(backend, name)
+    bk = _resolve_backend_for_existing(backend, name)
     path = _config_dir(bk) / f"{name}.yaml"
     if not path.exists():
         raise typer.BadParameter(f"config not found: {path}", param_hint="NAME")
     if not yes:
         if not typer.confirm(f"Delete {path}?"):
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=0)
     path.unlink()
     print(f"Deleted {path}")

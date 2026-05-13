@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 
 from .backend_common import SCRIPT_DIR
@@ -71,6 +72,15 @@ async def stream_command(
         await proc.wait()
         yield ("rc", proc.returncode or 0)
     except asyncio.CancelledError:
-        proc.kill()
-        await proc.wait()
+        # Async generator cleanup (interpreter shutdown, athrow during
+        # asyncio.run finalization, or explicit caller cancel) lands here.
+        # If the underlying compose/docker process has already exited,
+        # proc.kill() raises ProcessLookupError that escapes as an
+        # "unhandled exception during asyncio.run() shutdown" traceback.
+        # Suppress these specifically — actual signal-delivery failures
+        # for live processes still surface via wait()'s return code.
+        with contextlib.suppress(ProcessLookupError, OSError):
+            proc.kill()
+        with contextlib.suppress(ProcessLookupError, OSError):
+            await proc.wait()
         raise
