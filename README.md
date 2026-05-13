@@ -66,28 +66,17 @@ $EDITOR .env.common       # set HF_TOKEN, HF_CACHE_PATH, MODEL_DIR
 cp profiles.example.yaml profiles.yaml
 $EDITOR profiles.yaml
 
-# 3. Launch the TUI
-uv sync
-uv run llmux
+# 3. Install llmux globally (editable — code edits are picked up live)
+uv tool install --editable .
+uv tool update-shell        # one-time: adds ~/.local/bin to PATH (re-source your shell)
+
+# 4. Launch the TUI from anywhere
+llmux
 ```
 
-> The first launch prints a one-liner you can copy/paste into your `~/.bashrc` or `~/.zshrc` to enable running `llmux` from any directory. See [Run from anywhere](#run-from-anywhere) below.
+Once installed via `uv tool`, the `llmux` binary lives in `~/.local/bin/llmux` and works from any directory — no `uv run`, no shell-function tricks, no `cd`. To upgrade later, pull the latest commit and re-run `uv tool install --editable . --reinstall`. To uninstall, `uv tool uninstall llmux`.
 
-llmux expects to run from this repository checkout. The TUI reads `profiles.yaml`, `compose/`, `config/`, `scripts/`, and `.env.common` relative to the project root. If you launch the entrypoint from another directory, set `LLMUX_ROOT=/path/to/llmux`.
-
-### Run from anywhere
-
-By default you have to `cd` into the repo and run `uv run llmux`. To use the bare `llmux` command from any directory, register a shell function. Pick the line for your shell, run it once from the repo root, and you're done:
-
-```bash
-# bash
-echo "llmux() { (cd \"$PWD\" && uv run llmux \"\$@\"); }" >> ~/.bashrc && source ~/.bashrc
-
-# zsh
-echo "llmux() { (cd \"$PWD\" && uv run llmux \"\$@\"); }" >> ~/.zshrc && source ~/.zshrc
-```
-
-`$PWD` is expanded by your shell to the current repo path at the moment you run the command, so the function will always `cd` back here. The subshell `( ... )` keeps your shell's working directory unchanged.
+> If you'd rather not install globally, the project also runs ad-hoc via `uv run llmux` from inside this repo. llmux reads `profiles.yaml`, `compose/`, `config/`, `scripts/`, and `.env.common` relative to the project root; from outside the repo, set `LLMUX_ROOT=/path/to/llmux` so it can find them.
 
 From the dashboard:
 

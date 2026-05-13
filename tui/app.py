@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Footer, Header
@@ -12,7 +10,6 @@ from tui.backends.llamacpp.screens.config import ConfigListScreen as LlamacppCon
 from tui.backends.llamacpp.screens.system import SystemScreen as LlamacppSystemScreen
 from tui.backends.vllm.screens.config import ConfigListScreen as VllmConfigListScreen
 from tui.backends.vllm.screens.system import SystemScreen as VllmSystemScreen
-from tui.common.profile_store import PROJECT_ROOT
 from tui.screens.dashboard import DashboardScreen
 
 
@@ -59,34 +56,7 @@ class LlmuxApp(App):
         )
 
 
-def _maybe_show_shortcut_notice() -> None:
-    """On first run, suggest adding a shell function so `llmux` works anywhere."""
-    marker = PROJECT_ROOT / ".runtime" / ".shortcut-shown"
-    if marker.exists():
-        return
-
-    func_line = f'llmux() {{ (cd "{PROJECT_ROOT}" && uv run llmux "$@"); }}'
-
-    print(
-        "\nTip: to run `llmux` from any directory, copy & run ONE of these (pick your shell):\n\n"
-        f"  bash:  echo '{func_line}' >> ~/.bashrc && source ~/.bashrc\n"
-        f"  zsh :  echo '{func_line}' >> ~/.zshrc  && source ~/.zshrc\n"
-    )
-
-    try:
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.touch()
-    except OSError:
-        pass
-
-    try:
-        input("\nPress Enter to continue… ")
-    except (EOFError, KeyboardInterrupt):
-        sys.exit(0)
-
-
 def main() -> None:
-    _maybe_show_shortcut_notice()
     LlmuxApp().run()
 
 
