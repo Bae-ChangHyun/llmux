@@ -123,7 +123,10 @@ class DashboardScreen(Screen):
             rows.extend(self._llamacpp.rows(running))
         except Exception as exc:
             self.notify(f"llama.cpp scan failed: {exc}", severity="error")
-        rows.sort(key=lambda r: (r.backend, r.profile_name))
+        # Running containers float to the top so the active workload is
+        # always visible without scrolling. Within each running/stopped group
+        # rows stay (backend, name)-sorted for predictable navigation.
+        rows.sort(key=lambda r: (not r.running, r.backend, r.profile_name))
         self._rows = rows
         self._render_rows(rows)
 
