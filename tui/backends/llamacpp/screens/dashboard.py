@@ -192,7 +192,8 @@ class StartScreen(Screen[None]):
     async def _start(self) -> None:
         log = self.query_one("#startup-log", RichLog)
         code = -1
-        async for msg_type, data in backend.stream_script("switch.sh", self.profile_name):
+        from tui.backends.llamacpp import backend_runtime
+        async for msg_type, data in backend_runtime.stream_container_up(self.profile_name):
             if msg_type == "log":
                 log.write(backend.strip_ansi(data))
             elif msg_type == "rc":
