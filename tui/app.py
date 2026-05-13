@@ -57,7 +57,10 @@ class LlmuxApp(App):
 
 
 def main() -> None:
-    LlmuxApp().run()
+    """Entrypoint dispatching to CLI (typer) or TUI."""
+    from tui.cli import main as cli_main
+
+    cli_main()
 
 
 if __name__ == "__main__":
