@@ -227,6 +227,67 @@ class CliSmokeTests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("MISSING", (r.stdout + r.stderr).upper())
 
+    # --- security / hardening ------------------------------------------------
+
+    def test_config_show_rejects_path_traversal(self):
+        # `..%2Fetc%2Fpasswd` style: dots-and-slashes name should be rejected
+        # by _validate_name *before* any filesystem access happens.
+        r = _run_cli(self.tmp, "config", "show", "../../etc/passwd")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("invalid", (r.stdout + r.stderr).lower())
+
+    def test_config_delete_rejects_path_traversal(self):
+        r = _run_cli(self.tmp, "config", "delete", "../alpha", "-y")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("invalid", (r.stdout + r.stderr).lower())
+
+    def test_profile_set_rejects_invalid_env_key(self):
+        # Lowercase-and-special chars violate POSIX env var naming rules.
+        # Should fail at parse time with BadParameter, not deep in profile_store.
+        r = _run_cli(
+            self.tmp, "profile", "new", "tmpenv", "--backend", "vllm",
+            "--port", "8005", "--gpu-id", "0",
+            "--set", "bad-key=1",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--set", (r.stdout + r.stderr))
+
+    def test_profile_decline_confirm_returns_zero(self):
+        # User explicitly answering "n" to confirmation is not an error.
+        # Pre-create a throwaway profile.
+        _run_cli(
+            self.tmp, "profile", "new", "to-decline", "--backend", "vllm",
+            "--port", "8006", "--gpu-id", "0", "--model", "x/y",
+        )
+        # Pipe "n" to stdin to decline.
+        env = {**os.environ, "LLMUX_ROOT": str(self.tmp), "NO_COLOR": "1"}
+        r = subprocess.run(
+            [sys.executable, "-m", "tui", "profile", "delete", "to-decline"],
+            input="n\n",
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Profile should still exist.
+        r2 = _run_cli(self.tmp, "profile", "show", "to-decline", "--json")
+        self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
+        # Cleanup
+        _run_cli(self.tmp, "profile", "delete", "to-decline", "-y")
+
+    def test_config_show_unknown_backend_explicit(self):
+        # --backend llamacpp + name only existing in vllm → clear error
+        r = _run_cli(self.tmp, "config", "show", "alpha", "--backend", "llamacpp")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not found", (r.stdout + r.stderr).lower())
+
+    def test_profile_show_llamacpp(self):
+        # Symmetric to vllm — make sure llamacpp profiles also dispatch
+        # correctly via auto-detect.
+        r = _run_cli(self.tmp, "profile", "show", "lcpp", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual(data["backend"], "llamacpp")
+        self.assertEqual(data["port"], 8080)
+
 
 if __name__ == "__main__":
     unittest.main()
