@@ -77,8 +77,16 @@ def show_profile(
 
 # ---- new / edit / delete -----------------------------------------------------
 
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
 def _parse_set_kv(items: list[str]) -> dict[str, str]:
-    """Parse repeated --set KEY=VALUE pairs into a dict."""
+    """Parse repeated --set KEY=VALUE pairs into a dict.
+
+    Validates KEY against the same regex profile_store uses for env-line
+    rendering, so a bad name fails up-front with a clean usage error instead
+    of a deep traceback at save_profile time.
+    """
     out: dict[str, str] = {}
     for raw in items:
         if "=" not in raw:
@@ -89,6 +97,12 @@ def _parse_set_kv(items: list[str]) -> dict[str, str]:
         key = key.strip()
         if not key:
             raise typer.BadParameter("--set KEY may not be empty", param_hint="--set")
+        if not _ENV_KEY_RE.match(key):
+            raise typer.BadParameter(
+                f"--set KEY {key!r} must match {_ENV_KEY_RE.pattern} "
+                "(env-var rules: leading letter or underscore, then alphanumerics/underscores)",
+                param_hint="--set",
+            )
         out[key] = value
     return out
 
@@ -224,7 +238,7 @@ def delete_profile(
         suffix = " AND its config YAML" if with_config else ""
         confirm = typer.confirm(f"Delete profile '{name}' (backend={bk}){suffix}?")
         if not confirm:
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=0)
 
     if with_config:
         if bk == "vllm":
@@ -234,7 +248,7 @@ def delete_profile(
         else:
             from tui.backends.llamacpp.backend import delete_profile as _d
 
-            _d(name, delete_config=True)
+            _d(name, delete_config_too=True)
     else:
         profile_store.delete_profile(name, bk)
     print(f"Deleted profile '{name}' (backend={bk})")
