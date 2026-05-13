@@ -188,6 +188,10 @@ def edit_profile(
     model_file: Optional[str] = typer.Option(None, "--model-file"),
     hf_repo: Optional[str] = typer.Option(None, "--hf-repo"),
     hf_file: Optional[str] = typer.Option(None, "--hf-file"),
+    image_tag: Optional[str] = typer.Option(
+        None, "--image-tag",
+        help="Docker image override (e.g. 'llamacpp-dev:mtp_main'). Pass empty string to clear.",
+    ),
 ) -> None:
     """Edit fields of an existing profile (only specified options change)."""
     bk = detect_backend(name, override=backend)
@@ -214,6 +218,8 @@ def edit_profile(
         sp.hf_repo = hf_repo
     if hf_file is not None:
         sp.hf_file = hf_file
+    if image_tag is not None:
+        sp.image_tag = image_tag
     for k, v in _parse_set_kv(set_env).items():
         sp.env_vars[k] = v
     for k in unset_env:

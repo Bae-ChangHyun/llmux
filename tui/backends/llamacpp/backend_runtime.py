@@ -68,6 +68,7 @@ async def _stream_build_dev_image(
     repo_url: str = "",
     custom_tag: str = "",
     cuda_arch: str = "",
+    use_multi_arch: bool = False,
 ):
     """Lock-guarded wrapper around the unified builder."""
     if _BUILD_LOCK.locked():
@@ -78,6 +79,7 @@ async def _stream_build_dev_image(
             repo_url=repo_url,
             custom_tag=custom_tag,
             cuda_arch=cuda_arch,
+            use_multi_arch=use_multi_arch,
         ):
             yield event
 
@@ -88,16 +90,35 @@ async def _do_build_dev_image(
     repo_url: str,
     custom_tag: str,
     cuda_arch: str,
+    use_multi_arch: bool = False,
 ):
+    """Build llamacpp-dev:<tag>.
+
+    cuda_arch precedence:
+      - explicit `cuda_arch` arg (e.g. "89" or "86;89") → use as-is
+      - else auto-detect local GPU via nvidia-smi → CMake-formatted value
+      - else (or use_multi_arch=True) fall back to "default" (Dockerfile's
+        multi-arch path)
+    """
+    resolved_arch = cuda_arch.strip()
+    log_lines: list[str] = []
+
+    if not resolved_arch and not use_multi_arch:
+        caps = await dev_build.detect_local_gpu_caps()
+        if caps:
+            resolved_arch = dev_build.format_arch_cmake(caps)
+            log_lines.append(f"Detected GPUs (compute_cap): {', '.join(caps)}")
+            log_lines.append(f"Building with CUDA_DOCKER_ARCH={resolved_arch} (fast)")
+        else:
+            log_lines.append(
+                "Could not auto-detect GPU (nvidia-smi unavailable) — falling back to multi-arch"
+            )
+
     extra_build_args: list[tuple[str, str]] = []
-    extra_log: list[str] = []
-    if cuda_arch:
-        # llama.cpp's cuda.Dockerfile reads CUDA_DOCKER_ARCH (single arch like "89"
-        # or "all"). Default is "default" → multi-arch, slower but portable.
-        extra_build_args.append(("CUDA_DOCKER_ARCH", cuda_arch))
-        extra_log.append(f"Building with CUDA_DOCKER_ARCH={cuda_arch} (fast)")
+    if resolved_arch:
+        extra_build_args.append(("CUDA_DOCKER_ARCH", resolved_arch))
     else:
-        extra_log.append("Building with CUDA_DOCKER_ARCH=default (multi-arch, slower)")
+        log_lines.append("Building with CUDA_DOCKER_ARCH=default (multi-arch, slower)")
 
     async for event in dev_build.stream_build(
         LLAMACPP_DEV_SPEC,
@@ -105,7 +126,7 @@ async def _do_build_dev_image(
         repo_url=repo_url,
         custom_tag=custom_tag,
         extra_build_args=tuple(extra_build_args),
-        extra_log_lines=tuple(extra_log),
+        extra_log_lines=tuple(log_lines),
     ):
         yield event
 
