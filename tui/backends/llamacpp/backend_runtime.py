@@ -185,6 +185,11 @@ async def _ensure_model_file(profile: Profile):
     if COMMON_ENV.exists():
         for k, v in _parse_env_file(COMMON_ENV).items():
             env[k] = v
+    # The xet-core transport (huggingface_hub >= 0.27 default) fails DNS
+    # resolution in some sandboxed/agent environments where the regular LFS
+    # HTTPS path works fine. Force the classic transport unless the user
+    # has explicitly opted in.
+    env.setdefault("HF_HUB_DISABLE_XET", "1")
 
     # Prefer `hf` (huggingface_hub >= 0.27); fall back to `huggingface-cli`.
     rc_which, _ = await _run("bash", "-lc", "command -v hf", timeout=5)
