@@ -331,8 +331,24 @@ async def _post_start_validation(
 # ---------------------------------------------------------------------------
 
 
-async def stream_container_up(profile_name: str):
-    """Mirrors switch.sh: render profile/override, ensure model, compose up, validate.
+async def stream_container_up(
+    profile_name: str,
+    *,
+    use_dev: bool = False,
+    tag: str = "",
+    repo_url: str = "",
+    branch: str = "",
+):
+    """Mirrors vllm: render profile/override, optionally build dev image, compose up, validate.
+
+    Parameters mirror tui.backends.vllm.backend_runtime.stream_container_up:
+      - use_dev=True: TUI requested a `llamacpp-dev:<tag>` build/launch.
+        repo_url/branch resolve via .env.common defaults when empty.
+      - tag (non-dev path): user-supplied custom `<image>:<tag>`. When
+        empty, fall back to the profile's image_tag or the default image
+        from compose.
+      - All-zero (default) keeps the previous behavior — profile.image_tag
+        decides; default ghcr image otherwise.
 
     Yields ("log", str) lines and a final ("rc", int).
     """
@@ -349,24 +365,54 @@ async def stream_container_up(profile_name: str):
 
     profile = load_profile(profile_name)
 
+    # Apply TUI-side image override (a Dev Build / Custom Tag selection trumps
+    # whatever's pinned on the profile). This is identical to how the vllm
+    # screen passes use_dev/tag down to its stream_container_up.
+    resolved_image_tag = profile.image_tag
+    if use_dev:
+        # Resolve repo/branch defaults so callers can pass empty strings.
+        default_repo, default_branch = get_dev_build_defaults()
+        resolved_repo = (repo_url or default_repo).strip()
+        resolved_branch = (branch or default_branch).strip()
+        dev_tag = (tag or resolved_branch).strip()
+        resolved_image_tag = f"{LLAMACPP_DEV_SPEC.image_prefix}:{dev_tag}"
+
+        # Build the dev image on demand if missing (TUI affordance — CLI users
+        # are expected to run `llmux image build-dev` themselves).
+        if not await dev_build.image_exists_locally(LLAMACPP_DEV_SPEC, dev_tag):
+            yield ("log", f"▸ Dev image {resolved_image_tag} not found — building from {resolved_repo}@{resolved_branch}")
+            async for event in _stream_build_dev_image(
+                resolved_branch, repo_url=resolved_repo, custom_tag=tag
+            ):
+                yield event
+                if event[0] == "rc" and event[1] != 0:
+                    return
+    elif tag:
+        # Custom Tag: pass through as-is (e.g. `ghcr.io/foo/bar:v1`).
+        resolved_image_tag = tag
+
+    profile.image_tag = resolved_image_tag
+
     rc, out = await _render_profile_env(profile_name)
     if rc != 0:
         yield ("log", out.strip() or f"✗ profile env render 실패: {profile_name}")
         yield ("rc", rc)
         return
 
-    # If the profile pins a dev image, refuse to start until it exists locally.
-    # Building it is opt-in via `llmux image build-dev` — auto-building during
-    # a `up` call would silently kick off a 20+ minute job from inside the TUI.
-    if profile.image_tag.startswith(f"{LLAMACPP_DEV_SPEC.image_prefix}:"):
-        dev_tag = profile.image_tag.split(":", 1)[1]
+    # Sanity-check pinned dev images that we didn't build above (e.g. profile
+    # was already pointed at a dev tag via `profile edit --image-tag`).
+    if (
+        not use_dev
+        and resolved_image_tag.startswith(f"{LLAMACPP_DEV_SPEC.image_prefix}:")
+    ):
+        dev_tag = resolved_image_tag.split(":", 1)[1]
         if not await dev_build.image_exists_locally(LLAMACPP_DEV_SPEC, dev_tag):
-            yield ("log", f"✗ Dev image {profile.image_tag} not found locally.")
+            yield ("log", f"✗ Dev image {resolved_image_tag} not found locally.")
             yield ("log", "  Build it first:")
             yield ("log", f"  uv run llmux image build-dev --backend llamacpp --branch {dev_tag}")
             yield ("rc", 1)
             return
-        yield ("log", f"▸ Dev image: {profile.image_tag}")
+        yield ("log", f"▸ Dev image: {resolved_image_tag}")
 
     yield ("log", "▸ command 렌더링")
     rc, out = await _render_override(profile_name)
