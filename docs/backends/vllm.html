@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>vLLM Backend &middot; llmux</title>
+  <meta name="description" content="How the vLLM backend in llmux works — start pipeline, image sources, tensor parallelism, LoRA, dev builds." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/css/style.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="top">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-brand">llm<span class="brand-accent">ux</span></a>
+    <div class="nav-links">
+      <span class="nav-links-desktop">
+        <a href="../getting-started/installation.html">Getting Started</a>
+        <a href="../guide/profiles.html">Guide</a>
+        <a href="vllm.html" class="active">Backends</a>
+        <a href="../reference/cli.html">Reference</a>
+        <a href="../troubleshooting.html">Troubleshooting</a>
+      </span>
+      <a href="https://github.com/Bae-ChangHyun/llmux" class="nav-github" target="_blank">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="nav-github-stars">GitHub</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="docs-wrap">
+
+  <!-- SECTION NAV -->
+  <div class="section-nav">
+    <span class="crumb">Backends</span>
+    <a href="vllm.html" class="active">vLLM</a>
+    <a href="llamacpp.html">llama.cpp</a>
+    <a href="comparison.html">Comparison</a>
+  </div>
+
+  <article class="docs-content">
+
+    <div class="docs-header">
+      <h1>vLLM Backend</h1>
+      <p class="lede">
+        The vLLM backend serves <strong>Hugging Face Transformers models</strong> for high-throughput inference. It is the right choice when you want to run a model directly from its HF repo (safetensors weights), need tensor parallelism across multiple GPUs, or want to attach LoRA adapters at serve time.
+      </p>
+      <p>
+        llmux never installs vLLM on your host — every profile runs in an official <code>vllm/vllm-openai</code> container image (or one you built from source). llmux only renders the Compose files, resolves the image tag, streams logs, and verifies the result.
+      </p>
+    </div>
+
+    <h2 id="how-a-vllm-profile-starts">How a vLLM profile starts</h2>
+    <p>When you start a vLLM profile, llmux runs a fixed pipeline before and after <code>docker compose up</code>:</p>
+    <ol>
+      <li><strong>Port conflict check</strong> — refuses to start if the profile's port is already held by another container or a local process.</li>
+      <li><strong><code>.env.common</code> validation</strong> — <code>HF_CACHE_PATH</code> must be set and absolute. If the profile has LoRA enabled, <code>LORA_BASE_PATH</code> must also be set and absolute.</li>
+      <li><strong>Config validation</strong> — the linked <code>config/vllm/&lt;name&gt;.yaml</code> must exist and point at a real model. If none is linked, llmux auto-links a default config named after the profile and generates a stub.</li>
+      <li><strong>GPU overlap warning</strong> — if any other <em>running</em> container (vLLM or llama.cpp) uses an intersecting <code>gpu_id</code>, llmux warns but continues.</li>
+      <li><strong>Image resolution</strong> — the selected image source is resolved to a concrete tag (see <a href="#image-sources">Image sources</a>).</li>
+      <li><strong><code>docker compose up -d</code></strong> — Compose files are merged and the container starts detached.</li>
+      <li><strong>Post-start validation</strong> — llmux polls <code>docker inspect</code>; if the container exits or goes unhealthy during startup (for example a GPU OOM during engine init), it surfaces the last log lines as an error instead of reporting a false success. It then waits for <code>/v1/models</code> to return a served model id.</li>
+      <li><strong>Version verification</strong> — for versioned tags, llmux execs into the container (<code>import vllm; print(vllm.__version__)</code>) and warns if the running version does not match the tag you picked.</li>
+    </ol>
+
+    <h2 id="container-shape">Container shape</h2>
+    <p>The base service is defined in <code>compose/vllm/docker-compose.yaml</code>:</p>
+    <pre data-lang="yaml"><code>services:
+  vllm:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:${VLLM_VERSION}}
+    container_name: ${CONTAINER_NAME}
+    runtime: nvidia
+    volumes:
+      - ${HF_CACHE_PATH}:/root/.cache/huggingface
+      - ./config/vllm:/config/
+    ports:
+      - "${VLLM_PORT}:8000"
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=${GPU_ID}
+      - VLLM_ENABLE_V1_MULTIPROCESSING=0
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - VLLM_DISABLE_COMPILE_CACHE=1
+    shm_size: "16g"
+    command: --config /config/${CONFIG_NAME}.yaml --tensor-parallel-size=${TENSOR_PARALLEL_SIZE} --trust-remote-code ${LORA_OPTIONS:-}</code></pre>
+    <p>Key points:</p>
+    <ul>
+      <li><strong><code>runtime: nvidia</code> + <code>NVIDIA_VISIBLE_DEVICES</code></strong> — the profile's <code>gpu_id</code> is passed straight through. A value of <code>"0,1"</code> exposes both GPUs to the container, which is what makes multi-GPU tensor parallelism work. (llama.cpp uses Compose's <code>deploy.resources</code> device list instead — see the <a href="comparison.html">comparison</a>.)</li>
+      <li><strong><code>${VLLM_IMAGE:-...}</code></strong> — a per-profile <code>image_tag</code> overrides the default. UI choices (Local Latest / Official / Nightly / Dev / Custom Tag) take precedence; if none is given, <code>VLLM_IMAGE</code> from the profile pin is used; otherwise the base falls back to <code>vllm/vllm-openai:${VLLM_VERSION}</code>.</li>
+      <li><strong><code>--config /config/&lt;name&gt;.yaml</code></strong> — your <code>config/vllm/&lt;name&gt;.yaml</code> is mounted read-only into the container and passed to <code>vllm serve</code> as its config file. Every key in that YAML maps 1:1 to a <code>vllm serve</code> CLI flag.</li>
+      <li><strong><code>--tensor-parallel-size</code></strong> — injected from the profile, not the config.</li>
+      <li><strong><code>--trust-remote-code</code></strong> — always passed so models with custom code load.</li>
+      <li><strong><code>shm_size: "16g"</code></strong> — required headroom for vLLM's multiprocessing workers.</li>
+    </ul>
+    <div class="admonition note">
+      <p class="admonition-title">Config vs. profile</p>
+      <p>The <strong>profile</strong> (<code>profiles.yaml</code>) holds launcher-level settings: port, <code>gpu_id</code>, <code>tensor_parallel_size</code>, LoRA toggles, extra pip packages, env overrides, optional <code>image_tag</code>. The <strong>config</strong> (<code>config/vllm/&lt;name&gt;.yaml</code>) holds per-model engine flags passed to <code>vllm serve</code>. See the example at <code>config/vllm/example.yaml</code>.</p>
+    </div>
+
+    <p>A minimal config:</p>
+    <pre data-lang="yaml"><code># config/vllm/qwen3-8b.yaml
+model: Qwen/Qwen3-8B            # HF repo id or local path
+gpu-memory-utilization: 0.90   # fraction of each GPU's VRAM vLLM may use
+max-model-len: 32768           # context length
+# tensor-parallel-size: 2      # set on the profile instead</code></pre>
+
+    <h2 id="image-sources">Image sources</h2>
+    <p>The start dialog offers five ways to choose the image. llmux deliberately <strong>refuses the <code>:latest</code> alias</strong> — it is a moving target whose contents change without the tag name changing, so "what version is actually running" becomes unknowable. Stable picks always resolve to an explicit semver tag first.</p>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="active" onclick="switchTab(this, 'tab-local')">Local Latest</button>
+        <button onclick="switchTab(this, 'tab-official')">Official Release</button>
+        <button onclick="switchTab(this, 'tab-nightly')">Nightly</button>
+        <button onclick="switchTab(this, 'tab-dev')">Dev Build</button>
+        <button onclick="switchTab(this, 'tab-custom')">Custom Tag</button>
+      </div>
+      <div class="tab-panel active" id="tab-local">
+        <p>The highest <code>vX.Y.Z</code> tag you already have locally. Only semver-style tags are considered — <code>latest</code> and <code>nightly</code> are skipped because they do not self-describe. <strong>No pull happens</strong>; if you have no versioned tag locally, the picker shows "no images" and the start is refused with a hint to <code>docker pull vllm/vllm-openai:&lt;version&gt;</code>.</p>
+      </div>
+      <div class="tab-panel" id="tab-official">
+        <p>Docker Hub's current stable release, resolved to its explicit version (e.g. <code>v0.21.0</code>). Pulled with <code>--pull always</code> on that exact version tag — never the bare <code>:latest</code> alias.</p>
+      </div>
+      <div class="tab-panel" id="tab-nightly">
+        <p><code>vllm/vllm-openai:nightly</code>. Pulled with <code>--pull always</code> every time — <code>nightly</code> is an intentionally rolling target with no versioned alternative, so llmux always wants the freshest copy.</p>
+      </div>
+      <div class="tab-panel" id="tab-dev">
+        <p>A local <code>vllm-dev:&lt;tag&gt;</code> image built from a vLLM git checkout. If the image is missing — or its repo/branch labels do not match the requested repo/branch — llmux builds it first, then starts. See <a href="#dev-builds">Dev builds</a> below.</p>
+      </div>
+      <div class="tab-panel" id="tab-custom">
+        <p>Any tag you type, <strong>except <code>latest</code></strong> (rejected). Uses default Compose pull behavior — no forced <code>--pull</code>.</p>
+      </div>
+    </div>
+
+    <div class="admonition tip">
+      <p class="admonition-title">Rule of thumb</p>
+      <p>If you ever pull by hand, pull an explicit version: <code>docker pull vllm/vllm-openai:v0.21.0</code>. Never <code>docker pull vllm/vllm-openai</code> or <code>:latest</code>.</p>
+    </div>
+
+    <h3 id="per-profile-image-pinning">Per-profile image pinning</h3>
+    <p>You can lock a profile to a specific image — useful for "this profile uses my custom build, that profile uses the official release":</p>
+    <pre data-lang="yaml"><code># profiles.yaml
+profiles:
+  - name: qwen3-8b
+    backend: vllm
+    model_id: Qwen/Qwen3-8B
+    image_tag: vllm-dev:my-feature   # or "vllm/vllm-openai:v0.21.0", or any registry tag</code></pre>
+    <p>Precedence at start time:</p>
+    <ol>
+      <li>An explicit UI / CLI selection (<code>--dev</code>, <code>--tag</code>) wins.</li>
+      <li>Otherwise <code>profile.image_tag</code> is used (rendered as <code>VLLM_IMAGE</code> in the runtime env).</li>
+      <li>Otherwise the version-tag default fires (Local Latest).</li>
+    </ol>
+    <p>Set or clear via the CLI: <code>llmux profile edit &lt;name&gt; --image-tag vllm-dev:my-feature</code>, then <code>--image-tag ""</code> to unset.</p>
+
+    <h3 id="version-verification">Version verification</h3>
+    <p>After a versioned-tag start, llmux execs into the running container and reads <code>vllm.__version__</code>. If the reported version does not match the tag you picked, it prints a warning in the log panel — the tag may have been retagged by hand or pulled at a different time. Verification failures are warnings, not errors; they never block the container.</p>
+
+    <h2 id="tensor-parallelism">Tensor parallelism (multi-GPU)</h2>
+    <p>Set the profile's <code>gpu_id</code> to a comma-separated list and its <code>tensor_parallel_size</code> to match:</p>
+    <pre data-lang="yaml"><code># profiles.yaml
+profiles:
+  - name: qwen3-32b-tp2
+    backend: vllm
+    config_name: qwen3-32b
+    model_id: Qwen/Qwen3-32B
+    gpu_id: "0,1"
+    tensor_parallel_size: 2</code></pre>
+    <p><code>gpu_id: "0,1"</code> becomes <code>NVIDIA_VISIBLE_DEVICES=0,1</code> inside the container, and <code>tensor_parallel_size: 2</code> is injected as <code>--tensor-parallel-size=2</code>. The cross-backend conflict gate also understands comma-separated GPU sets, so overlap with another running profile is detected before start.</p>
+
+    <h2 id="lora-adapters">LoRA adapters</h2>
+    <p>vLLM can serve LoRA adapters alongside the base model. Enable it on the profile:</p>
+    <pre data-lang="yaml"><code># profiles.yaml
+profiles:
+  - name: qwen3-8b-lora
+    backend: vllm
+    config_name: qwen3-8b
+    model_id: Qwen/Qwen3-8B
+    enable_lora: true
+    max_loras: 4
+    max_lora_rank: 64
+    lora_modules: "sql-adapter=/app/lora/sql,chat-adapter=/app/lora/chat"</code></pre>
+    <p>When <code>enable_lora</code> is <code>true</code>, llmux:</p>
+    <ul>
+      <li>Requires <code>LORA_BASE_PATH</code> to be set and absolute in <code>.env.common</code>.</li>
+      <li>Layers <code>compose/vllm/docker-compose.lora.yaml</code>, which bind-mounts <code>${LORA_BASE_PATH}</code> into the container as <code>/app/lora:ro</code>.</li>
+      <li>Builds the <code>${LORA_OPTIONS}</code> string appended to the <code>vllm serve</code> command: <code>--enable-lora</code>, plus <code>--max-loras</code>, <code>--max-lora-rank</code>, and <code>--lora-modules</code> when those fields are set. Commas in <code>lora_modules</code> are split into separate arguments.</li>
+    </ul>
+    <div class="admonition warning">
+      <p class="admonition-title">Adapters must live under LORA_BASE_PATH</p>
+      <p><code>lora_modules</code> paths are resolved inside the container, where <code>LORA_BASE_PATH</code> is mounted at <code>/app/lora</code>. Point each adapter at <code>/app/lora/&lt;subdir&gt;</code>.</p>
+    </div>
+
+    <h2 id="extra-pip-packages">Extra pip packages and env overrides</h2>
+    <p>Two profile fields let you customize the container without rebuilding an image:</p>
+    <ul>
+      <li><strong><code>extra_pip_packages</code></strong> — extra packages installed into the container at start (surfaced as <code>EXTRA_PIP_PACKAGES</code>). The override Compose file runs an entrypoint wrapper that installs them before <code>vllm serve</code> launches. Example: <code>extra_pip_packages: flash-attn==2.7.4.post1</code>.</li>
+      <li><strong><code>env_vars</code></strong> — arbitrary environment variables merged into the container environment. Useful for vLLM feature flags, e.g. <code>VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8: "1"</code>.</li>
+    </ul>
+    <pre data-lang="yaml"><code># profiles.yaml
+profiles:
+  - name: gpt-oss-120b
+    backend: vllm
+    config_name: gpt-oss-120b
+    model_id: openai/gpt-oss-120b
+    extra_pip_packages: flash-attn==2.7.4.post1
+    env_vars:
+      VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8: "1"</code></pre>
+
+    <h2 id="dev-builds">Dev builds</h2>
+    <p>A dev build produces a local <code>vllm-dev:&lt;tag&gt;</code> image from a vLLM git checkout — useful for testing an unreleased branch or a fork. Trigger it from the start dialog ("Dev Build") or with <code>llmux image build-dev --backend vllm</code>.</p>
+    <p>The pipeline (shared with llama.cpp, in <code>tui/common/dev_build.py</code>):</p>
+    <ol>
+      <li><strong>Clone or update</strong> <code>.vllm-src/</code> from <code>VLLM_REPO_URL</code> (default <code>https://github.com/vllm-project/vllm.git</code>) at <code>VLLM_BRANCH</code> (default <code>main</code>). Both are overridable in <code>.env.common</code>, or via <code>--repo-url</code> / <code>--branch</code> on the CLI. If the existing checkout's <code>origin</code> URL differs from the requested repo, llmux refuses to switch remotes silently — move or delete <code>.vllm-src/</code> yourself to swap.</li>
+      <li><strong>Detect GPU arch</strong> — <code>nvidia-smi</code> is queried for compute capability and passed as <code>--build-arg torch_cuda_arch_list=...</code> so the build only targets your GPU (much faster than the multi-arch default). A DeepEP stage in the upstream Dockerfile that hard-codes architectures is patched to respect the detected value.</li>
+      <li><strong><code>docker build</code></strong> — <code>docker/Dockerfile</code>, target <code>vllm-openai</code>, tagged both <code>vllm-dev:&lt;tag&gt;</code> and <code>vllm-dev:&lt;branch&gt;</code>. The image is labeled with the repo URL, branch, and commit hash so llmux can later tell whether a cached tag still matches the requested source.</li>
+    </ol>
+    <p>When you start with a dev tag, llmux rebuilds automatically if the image is missing <strong>or</strong> if its labels show it was built from a different repo/branch. Passing an explicit <code>--tag</code> that does not exist is treated as an error (with a list of available <code>vllm-dev</code> tags) rather than a silent rebuild.</p>
+    <div class="admonition note">
+      <p class="admonition-title">GPU required for the fast path</p>
+      <p>The arch-detection step needs a working <code>nvidia-smi</code>. On a host without it, use the official-Dockerfile path (builds all architectures, slower) — the dev-build flow falls back accordingly.</p>
+    </div>
+
+    <h2 id="see-also">See also</h2>
+    <ul>
+      <li><a href="llamacpp.html">llama.cpp backend</a> — the GGUF counterpart</li>
+      <li><a href="comparison.html">Backend comparison</a> — feature matrix and "when to use which"</li>
+      <li><a href="../troubleshooting.html">Troubleshooting</a> — OOM, stuck health checks, image issues</li>
+      <li><a href="../guide/dev-build.html">Dev builds guide</a> — the shared dev-build pipeline in depth</li>
+    </ul>
+
+    <div class="docs-footer">
+      <a class="edit-link" href="https://github.com/Bae-ChangHyun/llmux/edit/main/docs/backends/vllm.md" target="_blank">Edit this page on GitHub</a>
+      <div class="prev-next">
+        <a href="../guide/dev-build.html">&larr; Dev Builds</a>
+        <a href="llamacpp.html">llama.cpp &rarr;</a>
+      </div>
+    </div>
+
+  </article>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="page-wrap">
+    <p>
+      MIT License &middot;
+      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a> &middot;
+      Made by <a href="https://github.com/Bae-ChangHyun">Bae-ChangHyun</a>
+    </p>
+  </div>
+</footer>
+
+<script>
+function switchTab(btn, panelId) {
+  const tabs = btn.closest('.tabs');
+  tabs.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
+  tabs.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById(panelId).classList.add('active');
+}
+</script>
+
+</body>
+</html>

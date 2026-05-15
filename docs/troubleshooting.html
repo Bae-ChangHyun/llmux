@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Troubleshooting &middot; llmux</title>
+  <meta name="description" content="Common problems when starting and running llmux profiles — symptoms, causes, and fixes for vLLM and llama.cpp." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="assets/css/style.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="top">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-brand">llm<span class="brand-accent">ux</span></a>
+    <div class="nav-links">
+      <span class="nav-links-desktop">
+        <a href="getting-started/installation.html">Getting Started</a>
+        <a href="guide/profiles.html">Guide</a>
+        <a href="backends/vllm.html">Backends</a>
+        <a href="reference/cli.html">Reference</a>
+        <a href="troubleshooting.html" class="active">Troubleshooting</a>
+      </span>
+      <a href="https://github.com/Bae-ChangHyun/llmux" class="nav-github" target="_blank">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="nav-github-stars">GitHub</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="docs-wrap">
+
+  <!-- SECTION NAV -->
+  <div class="section-nav">
+    <span class="crumb">Troubleshooting</span>
+  </div>
+
+  <article class="docs-content">
+
+    <div class="docs-header">
+      <h1>Troubleshooting</h1>
+      <p class="lede">
+        Common problems when starting and running profiles, with the symptom, the underlying cause, and the fix. If a container fails, the fastest first step is always to open the profile in the TUI and stream its logs (<code>l</code>) — llmux already surfaces the last log lines on a failed start, but the full log tells the rest of the story.
+      </p>
+    </div>
+
+    <h2 id="container-stuck-at-health-starting">Container stuck at <code>health: starting</code></h2>
+    <p><strong>Symptom.</strong> The dashboard shows the profile as <code>starting</code> and it never moves to <code>healthy</code>. <code>docker ps</code> shows <code>(health: starting)</code>.</p>
+    <p><strong>Cause.</strong> This is almost always a model still downloading or loading. The health checks only pass once the server is actually serving:</p>
+    <ul>
+      <li>vLLM's healthcheck has a <strong>600s <code>start_period</code></strong>; llmux additionally waits for <code>/v1/models</code> to return a served model id.</li>
+      <li>llama.cpp's healthcheck has a <strong>300s <code>start_period</code></strong>; llmux waits for <code>/health</code> to respond.</li>
+    </ul>
+    <p>A first start that downloads weights — a multi-GB HF repo, or a GGUF pulled by <code>llama-server</code> — can easily exceed those windows on a slow link.</p>
+    <p><strong>Fix.</strong> Stream the logs and watch the download/load progress. Once the model finishes loading, the status flips to <code>healthy</code> on the next refresh. Subsequent starts reuse the cached files and come up fast.</p>
+
+    <h2 id="gpu-out-of-memory">GPU out of memory</h2>
+    <p><strong>Symptom.</strong> The container exits or goes unhealthy seconds after start. llmux reports <code>container exited during startup</code> with the last log lines, which mention CUDA OOM during engine/model init.</p>
+    <p><strong>Cause.</strong> The model plus its KV cache does not fit in the allocated VRAM.</p>
+    <p><strong>Fix.</strong></p>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="active" onclick="switchTab(this, 'tab-ts-1-vllm')">vLLM</button>
+        <button onclick="switchTab(this, 'tab-ts-1-llamacpp')">llama.cpp</button>
+      </div>
+      <div class="tab-panel active" id="tab-ts-1-vllm">
+        <ul>
+          <li>Lower <code>gpu-memory-utilization</code> in <code>config/vllm/&lt;name&gt;.yaml</code> (it is the fraction of each GPU's VRAM vLLM may use).</li>
+          <li>Lower <code>max-model-len</code> — a shorter context length means a smaller KV cache.</li>
+          <li>Raise <code>tensor_parallel_size</code> on the profile (and add GPUs to <code>gpu_id</code>, e.g. <code>"0,1"</code>) to shard the model across more GPUs.</li>
+        </ul>
+      </div>
+      <div class="tab-panel" id="tab-ts-1-llamacpp">
+        <ul>
+          <li>Lower <code>n-gpu-layers</code> in <code>config/llamacpp/&lt;name&gt;.yaml</code> to offload more layers to CPU.</li>
+          <li>Quantize the KV cache with <code>cache-type-k</code> / <code>cache-type-v</code> (e.g. <code>q8_0</code>).</li>
+          <li>For MoE models, add an <code>override-tensors</code> rule (e.g. <code>".ffn_.*_exps.=CPU"</code>) to push expert tensors to system RAM.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="admonition tip">
+      <p class="admonition-title">Size it before you start it</p>
+      <p>Use the memory estimator (<code>m</code> in the TUI, or <code>llmux system mem-estimate &lt;model&gt;</code>) to check whether a model fits <em>before</em> launching it.</p>
+    </div>
+
+    <h2 id="port-conflict">Port conflict</h2>
+    <p><strong>Symptom.</strong> The start is refused immediately with <code>Error: Port &lt;n&gt; is already in use by ...</code>.</p>
+    <p><strong>Cause.</strong> llmux checks the profile's port before starting. The port may be held by:</p>
+    <ul>
+      <li>another llmux profile's container (the message names the profile),</li>
+      <li>a non-llmux Docker container (the message names the container), or</li>
+      <li>a plain local process bound to <code>127.0.0.1:&lt;port&gt;</code> (the message says "another local process").</li>
+    </ul>
+    <p><strong>Fix.</strong> Change the profile's <code>port</code> in <code>profiles.yaml</code> (or via <code>llmux profile edit &lt;name&gt; --port &lt;n&gt;</code>), or stop whatever is holding the port. The cross-backend conflict gate also warns pre-start when another profile — on <em>either</em> backend — overlaps.</p>
+
+    <h2 id="env-common-not-found"><code>.env.common</code> not found</h2>
+    <p><strong>Symptom.</strong> The start fails with <code>Error: .env.common not found</code> (vLLM) or <code>✗ .env.common 없음</code> (llama.cpp).</p>
+    <p><strong>Cause.</strong> <code>.env.common</code> holds shared host paths and tokens and is gitignored — it does not exist until you create it.</p>
+    <p><strong>Fix.</strong></p>
+    <pre data-lang="bash"><code>cp .env.common.example .env.common
+$EDITOR .env.common      # set HF_CACHE_PATH, MODEL_DIR, HF_TOKEN, ...</code></pre>
+    <p>Then run <code>llmux env-check</code> to confirm. Note that <code>HF_CACHE_PATH</code> <strong>must be an absolute path</strong> — a relative value is rejected. If the profile uses LoRA, <code>LORA_BASE_PATH</code> must also be set and absolute.</p>
+
+    <h2 id="gated-model-download-fails-missing-hf-token">Gated model download fails (missing <code>HF_TOKEN</code>)</h2>
+    <p><strong>Symptom.</strong> The container starts but the engine cannot fetch the weights; logs show a 401/403 from Hugging Face, or "gated repo" / "access denied".</p>
+    <p><strong>Cause.</strong> <code>HF_TOKEN</code> in <code>.env.common</code> is empty or lacks access to the repo. Public models download fine without a token, but gated repos (some Llama and Gemma weights, for example) do not.</p>
+    <p><strong>Fix.</strong> Set <code>HF_TOKEN</code> in <code>.env.common</code> to a token with access to that repo. It is passed into both backends' containers (<code>HUGGING_FACE_HUB_TOKEN</code> for vLLM, <code>HF_TOKEN</code> for llama.cpp), so the in-container download can authenticate. Make sure you have also accepted the model's license on the Hugging Face website.</p>
+
+    <h2 id="dev-image-not-found-build-it-first">Dev image not found — "build it first"</h2>
+    <p><strong>Symptom.</strong> Starting a profile that points at a <code>vllm-dev:&lt;tag&gt;</code> or <code>llamacpp-dev:&lt;tag&gt;</code> image fails with <code>Image ... not found</code> and, for llama.cpp, a hint to build it.</p>
+    <p><strong>Cause.</strong> Dev images are built locally and are not in any registry. The tag either was never built, or — for the auto-build paths — its repo/branch labels do not match the requested source.</p>
+    <p><strong>Fix.</strong></p>
+    <ul>
+      <li>If you selected <strong>Dev Build</strong> in the start dialog, llmux builds the image on demand; just let it run (the first build is slow).</li>
+      <li>If the profile <em>pins</em> a dev tag via <code>image_tag</code> or <code>--tag</code>, build it explicitly first:
+        <pre data-lang="bash"><code>llmux image build-dev --branch main --tag custom               # vLLM
+llmux image build-dev --backend llamacpp --branch master       # llama.cpp</code></pre>
+      </li>
+      <li>llmux <strong>rebuilds automatically</strong> when a cached dev tag's labels show it came from a different repo/branch — this is expected, not an error.</li>
+    </ul>
+    <div class="admonition note">
+      <p class="admonition-title">Swapping the source repo</p>
+      <p>If <code>.vllm-src/</code> or <code>.llamacpp-src/</code> already exists with a different <code>origin</code> URL, llmux refuses to switch remotes silently. Move or delete that checkout directory yourself, then rebuild.</p>
+    </div>
+
+    <h2 id="local-latest-shows-no-images-vllm"><code>Local Latest</code> shows "no images" (vLLM)</h2>
+    <p><strong>Symptom.</strong> The vLLM start dialog's <strong>Local Latest</strong> option is labeled "no images" and the start is refused.</p>
+    <p><strong>Cause.</strong> llmux only counts <strong>semver-style</strong> tags (<code>vX.Y.Z</code>) as "local latest". <code>latest</code> and <code>nightly</code> are deliberately skipped because they do not describe their own contents. If you only have those aliases locally, there is no versioned tag to pick.</p>
+    <p><strong>Fix.</strong> Pull a specific version, then retry:</p>
+    <pre data-lang="bash"><code>docker pull vllm/vllm-openai:v0.19.1</code></pre>
+    <p>Or choose <strong>Official Release</strong> in the dialog, which resolves Docker Hub's current stable version and pulls it by explicit tag.</p>
+
+    <h2 id="no-gpu-nvidia-smi-unavailable">No GPU / <code>nvidia-smi</code> unavailable</h2>
+    <p><strong>Symptom.</strong> A dev build logs that it could not detect the GPU and falls back to a multi-arch build; or starting any profile fails because the GPU runtime is not visible.</p>
+    <p><strong>Cause.</strong> The host has no working <code>nvidia-smi</code>, or Docker's NVIDIA Container Toolkit is not set up.</p>
+    <p><strong>Fix.</strong></p>
+    <ul>
+      <li>Confirm GPU passthrough works at the Docker level first:
+        <pre data-lang="bash"><code>docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi</code></pre>
+        If this does not print your GPUs, fix the <a href="https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html" target="_blank">NVIDIA Container Toolkit</a> setup — llmux cannot work around a broken GPU runtime.
+      </li>
+      <li>For <strong>dev builds</strong> specifically, a missing <code>nvidia-smi</code> only costs you the fast arch-detected build path; the build still succeeds via the slower multi-arch fallback.</li>
+    </ul>
+
+    <h2 id="corrupted-or-incomplete-model-file">Corrupted or incomplete model file</h2>
+    <p><strong>Symptom.</strong> The container starts but the engine crashes while loading the weights — checksum mismatch, truncated file, "failed to load model", or a GGUF/safetensors parse error.</p>
+    <p><strong>Cause.</strong> A download that was interrupted (network drop, killed mid-pull) can leave a partial file in the Hugging Face cache.</p>
+    <p><strong>Fix.</strong> Delete the bad file/blob from <code>HF_CACHE_PATH</code> (the host directory mounted into the container) and start again — both backends re-download anything missing from the cache. If it keeps failing on the same file, the upstream repo file itself may be the problem; try a different quantization or a mirror repo.</p>
+
+    <h2 id="copying-logs-out-of-the-tui">Copying logs out of the TUI</h2>
+    <p><strong>Symptom.</strong> You want to paste a container log somewhere but the TUI captures the keyboard.</p>
+    <p><strong>Fix.</strong> Shift+drag to select text, then Ctrl+C to copy — this is standard Textual behavior. See the <a href="https://textual.textualize.io/FAQ/#how-can-i-select-and-copy-text-in-a-textual-app" target="_blank">Textual FAQ</a>.</p>
+
+    <h2 id="see-also">See also</h2>
+    <ul>
+      <li><a href="backends/vllm.html">vLLM backend</a> — the vLLM start pipeline in detail</li>
+      <li><a href="backends/llamacpp.html">llama.cpp backend</a> — the llama.cpp start pipeline in detail</li>
+      <li><a href="backends/comparison.html">Backend comparison</a> — feature matrix</li>
+    </ul>
+
+    <div class="docs-footer">
+      <a class="edit-link" href="https://github.com/Bae-ChangHyun/llmux/edit/main/docs/troubleshooting.md" target="_blank">Edit this page on GitHub</a>
+      <div class="prev-next">
+        <a href="reference/architecture.html">&larr; Architecture</a>
+        <a href="index.html">Home &rarr;</a>
+      </div>
+    </div>
+
+  </article>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="page-wrap">
+    <p>
+      MIT License &middot;
+      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a> &middot;
+      Made by <a href="https://github.com/Bae-ChangHyun">Bae-ChangHyun</a>
+    </p>
+  </div>
+</footer>
+
+<script>
+function switchTab(btn, panelId) {
+  const tabs = btn.closest('.tabs');
+  tabs.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
+  tabs.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById(panelId).classList.add('active');
+}
+</script>
+
+</body>
+</html>
