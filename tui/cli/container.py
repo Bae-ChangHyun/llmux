@@ -63,14 +63,14 @@ def up(
             )
         )
     else:
-        from tui.backends.llamacpp.backend import stream_script
+        from tui.backends.llamacpp.backend_runtime import stream_container_up as lc_up
 
         if dev or tag or pull or repo_url or branch:
             typer.echo(
                 "Warning: --dev/--tag/--pull/--repo-url/--branch are vLLM-only and ignored for llama.cpp",
                 err=True,
             )
-        rc = stream_async(stream_script("switch.sh", profile))
+        rc = stream_async(lc_up(profile))
     raise typer.Exit(code=rc)
 
 
@@ -90,9 +90,9 @@ def down(
 
         rc, msg = run_async(container_down(profile))
     else:
-        from tui.backends.llamacpp.backend import run_script
+        from tui.backends.llamacpp.backend_runtime import container_down as lc_down
 
-        rc, msg = run_async(run_script("stop.sh", profile))
+        rc, msg = run_async(lc_down(profile))
     if msg:
         print(msg.rstrip())
     raise typer.Exit(code=rc)

@@ -12,6 +12,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input, Static
 
 from tui.backends.llamacpp import backend as lbackend
+from tui.backends.llamacpp import backend_runtime as lruntime
 from tui.backends.llamacpp.adapter import LlamacppAdapter
 from tui.backends.vllm import backend as vbackend
 from tui.backends.vllm.adapter import VllmAdapter
@@ -458,11 +459,17 @@ class DashboardScreen(Screen):
 
     @work(exclusive=True)
     async def _run_llamacpp_switch(self, name: str) -> None:
-        code, out = await lbackend.run_script("switch.sh", name)
+        log_lines: list[str] = []
+        code = -1
+        async for msg_type, data in lruntime.stream_container_up(name):
+            if msg_type == "log":
+                log_lines.append(data)
+            elif msg_type == "rc":
+                code = int(data)
         if code == 0:
             self.notify(f"✓ '{name}' 활성화")
         else:
-            tail = out.splitlines()[-3:] if out else []
+            tail = log_lines[-3:]
             msg = " / ".join(tail) if tail else f"code={code}"
             self.notify(f"✗ switch 실패: {msg}", severity="error")
         self._reload()
@@ -483,7 +490,7 @@ class DashboardScreen(Screen):
     @work(exclusive=False)
     async def _run_llamacpp_stop(self, name: str) -> None:
         self.notify(f"Stopping {name}...")
-        code, out = await lbackend.run_script("stop.sh", name)
+        code, out = await lruntime.container_down(name)
         if code == 0:
             self.notify(f"✓ '{name}' 중지")
         else:
