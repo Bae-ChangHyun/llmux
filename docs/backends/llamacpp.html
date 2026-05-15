@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>llama.cpp Backend &middot; llmux</title>
+  <meta name="description" content="How the llama.cpp backend in llmux works — start pipeline, GGUF auto-download, MoE expert offload, MTP, dev builds." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/css/style.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="top">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-brand">llm<span class="brand-accent">ux</span></a>
+    <div class="nav-links">
+      <span class="nav-links-desktop">
+        <a href="../getting-started/installation.html">Getting Started</a>
+        <a href="../guide/profiles.html">Guide</a>
+        <a href="vllm.html" class="active">Backends</a>
+        <a href="../reference/cli.html">Reference</a>
+        <a href="../troubleshooting.html">Troubleshooting</a>
+      </span>
+      <a href="https://github.com/Bae-ChangHyun/llmux" class="nav-github" target="_blank">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="nav-github-stars">GitHub</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="docs-wrap">
+
+  <!-- SECTION NAV -->
+  <div class="section-nav">
+    <span class="crumb">Backends</span>
+    <a href="vllm.html">vLLM</a>
+    <a href="llamacpp.html" class="active">llama.cpp</a>
+    <a href="comparison.html">Comparison</a>
+  </div>
+
+  <article class="docs-content">
+
+    <div class="docs-header">
+      <h1>llama.cpp Backend</h1>
+      <p class="lede">
+        The llama.cpp backend serves <strong>GGUF models</strong> through <code>llama-server</code>. It is the right choice for quantized inference (Q4/Q5/Q8 and friends), running large models that only fit with CPU/GPU layer offload, and MoE models whose experts can be pushed to system RAM.
+      </p>
+      <p>
+        llmux never installs llama.cpp on your host — every profile runs in the official <code>ghcr.io/ggml-org/llama.cpp:server-cuda</code> container image (or one you built from source). llmux renders the Compose files, injects the <code>llama-server</code> command, streams logs, and validates the result.
+      </p>
+    </div>
+
+    <h2 id="how-a-llamacpp-profile-starts">How a llama.cpp profile starts</h2>
+    <p>When you start a llama.cpp profile, llmux runs this pipeline:</p>
+    <ol>
+      <li><strong><code>.env.common</code> check</strong> — refuses to start if <code>.env.common</code> is missing.</li>
+      <li><strong>Profile lookup</strong> — the profile must exist under <code>llamacpp/</code> in <code>profiles.yaml</code>.</li>
+      <li><strong>Image resolution</strong> — the selected image source is resolved to a concrete tag (see <a href="#image-sources">Image sources</a>).</li>
+      <li><strong>Render the per-profile <code>.env</code></strong> — <code>profiles.yaml</code> is rendered to <code>.runtime/llamacpp/&lt;name&gt;.env</code>.</li>
+      <li><strong>Render the command override</strong> — <code>scripts/llamacpp/render-override.py</code> reads <code>config/llamacpp/&lt;name&gt;.yaml</code> and writes <code>.runtime/llamacpp/override-&lt;name&gt;.yaml</code>, which injects the <code>command:</code> block for <code>llama-server</code>.</li>
+      <li><strong><code>docker compose up -d</code></strong> — the base Compose file, the optional dev overlay, and the per-profile override are merged and the container starts.</li>
+      <li><strong>Post-start validation</strong> — llmux polls <code>docker inspect</code>; if the container exits or goes unhealthy during startup it surfaces the last log lines as an error. It then waits for <code>/health</code> to respond before reporting success.</li>
+      <li><strong>Persist last-active profile</strong> — the profile name is written to <code>.current-profile.llamacpp</code>.</li>
+    </ol>
+
+    <h2 id="container-shape">Container shape</h2>
+    <p>The base service is defined in <code>compose/llamacpp/docker-compose.yaml</code>:</p>
+    <pre data-lang="yaml"><code>services:
+  llama-server:
+    image: ${LLAMACPP_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda}
+    container_name: ${CONTAINER_NAME}
+    ports:
+      - "${LLAMA_PORT:-8080}:8080"
+    volumes:
+      - ${HF_CACHE_PATH}:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['${GPU_ID:-0}']
+              capabilities: [gpu]
+    # command is injected by the per-profile override file.</code></pre>
+    <p>Key points:</p>
+    <ul>
+      <li><strong><code>command:</code> is not in the base file</strong> — it is injected by <code>.runtime/llamacpp/override-&lt;name&gt;.yaml</code>, generated per profile by <code>render-override.py</code>. This lets multiple llama.cpp profiles run concurrently without clobbering each other's command.</li>
+      <li><strong>Only the HF cache is mounted</strong> — <code>${HF_CACHE_PATH}</code> is bound into the container as <code>/root/.cache/huggingface</code>. There is no per-model bind mount; <code>llama-server</code> downloads the GGUF itself (see below).</li>
+      <li><strong>GPU access via <code>deploy.resources</code></strong> — the profile's <code>gpu_id</code> is passed as a Compose device-id list. Because that list format cannot reliably expand a comma-separated value, llama.cpp profiles are effectively single-GPU; vLLM uses <code>NVIDIA_VISIBLE_DEVICES</code> instead for multi-GPU tensor parallelism.</li>
+    </ul>
+
+    <h2 id="gguf-auto-download">GGUF auto-download</h2>
+    <p>You do <strong>not</strong> need the <code>hf</code> CLI on the host or a manual <code>hf download</code> step. <code>render-override.py</code> resolves the model from the profile's <code>hf_repo</code> / <code>hf_file</code> and emits <code>-hf &lt;repo&gt; -hff &lt;file&gt;</code> into the <code>llama-server</code> command. <code>llama-server</code> then downloads the GGUF directly inside the container.</p>
+    <p>Because <code>${HF_CACHE_PATH}</code> is mounted into the container, the downloaded file lands in the host's Hugging Face cache and persists across restarts — the first start is slow, subsequent starts reuse the cached file. This mirrors the vLLM flow exactly.</p>
+    <pre data-lang="yaml"><code># profiles.yaml
+profiles:
+  - name: gemma-3-4b
+    backend: llamacpp
+    config_name: gemma-3-4b
+    hf_repo: unsloth/gemma-3-4b-it-GGUF
+    hf_file: gemma-3-4b-it-q4_k_m.gguf</code></pre>
+
+    <div class="admonition note">
+      <p class="admonition-title"><code>hf_repo</code> and <code>hf_file</code> are required</p>
+      <p><code>render-override.py</code> raises an error if <code>hf_repo</code> is empty or no <code>.gguf</code> filename can be resolved. The profile's <code>hf_repo</code> / <code>hf_file</code> are the source of truth; the config's <code>model-file</code> key is only a display fallback.</p>
+    </div>
+
+    <div class="admonition tip">
+      <p class="admonition-title">Gated repos still need <code>HF_TOKEN</code></p>
+      <p><code>HF_TOKEN</code> from <code>.env.common</code> is passed into the container as an environment variable, so <code>llama-server</code> can download gated GGUF repos.</p>
+    </div>
+
+    <h2 id="config-llama-server-flags-as-yaml">config: llama-server flags as YAML</h2>
+    <p><code>config/llamacpp/&lt;name&gt;.yaml</code> is a flat list of <code>llama-server</code> flags. The key naming rule is simple: drop the leading <code>--</code>. <code>--ctx-size 32768</code> becomes <code>ctx-size: 32768</code>; a boolean flag like <code>--jinja</code> becomes <code>jinja: true</code>.</p>
+    <p><code>render-override.py</code> translates the YAML into the command line:</p>
+    <ul>
+      <li>Scalar values → <code>--key value</code>.</li>
+      <li><code>true</code> → <code>--key</code> (bare flag); <code>false</code> and <code>null</code> are skipped.</li>
+      <li>List values → the flag is repeated once per item.</li>
+      <li><code>--host 0.0.0.0 --port 8080 --no-webui</code> are always prepended; the WebUI is forced off (<code>webui</code> / <code>no-webui</code> keys in the config are ignored).</li>
+      <li><code>override-tensors</code> entries are rendered as repeated <code>-ot &lt;pattern&gt;</code>.</li>
+      <li><code>extra-args</code> entries are appended verbatim at the end.</li>
+    </ul>
+    <p>A representative config (see <code>config/llamacpp/example.yaml</code>):</p>
+    <pre data-lang="yaml"><code>ctx-size: 8192
+n-gpu-layers: 99          # layers on GPU; 99 = all
+cache-type-k: bf16        # KV cache precision: f16 / bf16 / q8_0 / q4_0 ...
+cache-type-v: bf16
+temp: 0.7
+top-p: 0.9
+top-k: 40
+alias: your-model         # name shown in /v1/models
+jinja: true               # Jinja chat template (recommended for recent models)
+# parallel: 4             # parallel request slots
+# cont-batching: true     # continuous batching
+# flash-attn: true        # flash attention
+override-tensors: []      # MoE expert offload — see below
+extra-args: []            # verbatim args for flags the schema can't express</code></pre>
+
+    <h3 id="distinctive-flags">Distinctive flags</h3>
+    <table>
+      <thead>
+        <tr><th>Concern</th><th>Flag(s)</th><th>Effect</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>GPU/CPU split</strong></td><td><code>n-gpu-layers</code></td><td>How many layers to offload to GPU. <code>99</code> keeps everything on GPU; lower it to fit a model that overflows VRAM.</td></tr>
+        <tr><td><strong>KV cache precision</strong></td><td><code>cache-type-k</code>, <code>cache-type-v</code></td><td>Quantize the KV cache (<code>q8_0</code>, <code>q4_0</code>, ...) to stretch context length within a fixed VRAM budget.</td></tr>
+        <tr><td><strong>MoE expert offload</strong></td><td><code>override-tensors</code></td><td>Regex-match tensor names and pin matches to CPU — see below.</td></tr>
+        <tr><td><strong>Throughput</strong></td><td><code>parallel</code>, <code>cont-batching</code>, <code>flash-attn</code></td><td>Parallel request slots, continuous batching, and flash attention.</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="moe-expert-cpu-offload-override-tensors">MoE expert CPU offload (<code>override-tensors</code>)</h3>
+    <p>For Mixture-of-Experts models — the A3B-style families in particular — the expert FFN tensors dominate memory while the attention and embedding tensors are comparatively small. <code>override-tensors</code> lets you keep attention and embeddings on the GPU while pushing the expert tensors to system RAM, which is often what makes a large MoE model fit at all.</p>
+    <p>Each entry is a regex matched against tensor names, paired with a destination:</p>
+    <pre data-lang="yaml"><code># config/llamacpp/qwen3-a3b.yaml
+override-tensors:
+  - ".ffn_.*_exps.=CPU"</code></pre>
+    <p><code>render-override.py</code> turns each entry into a repeated <code>-ot &lt;pattern&gt;</code> argument. The example above matches the expert FFN tensors (<code>ffn_*_exps</code>) and routes them to CPU, leaving everything else on the GPU. The TUI's Quick Setup pre-fills this exact pattern for MoE models.</p>
+
+    <h2 id="image-sources">Image sources</h2>
+    <p>llama.cpp ships as a <strong>single official <code>ghcr.io</code> tag</strong> (<code>ghcr.io/ggml-org/llama.cpp:server-cuda</code>), so there is no "Local Latest / Official Release / Nightly" split like vLLM has. The start dialog offers three options instead:</p>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="active" onclick="switchTab(this, 'tab-llamacpp-1')">Default Image</button>
+        <button onclick="switchTab(this, 'tab-llamacpp-2')">Dev Build</button>
+        <button onclick="switchTab(this, 'tab-llamacpp-3')">Custom Tag</button>
+      </div>
+      <div class="tab-panel active" id="tab-llamacpp-1">
+        <p><code>ghcr.io/ggml-org/llama.cpp:server-cuda</code>, or whatever <code>LLAMACPP_IMAGE</code> is set to in <code>.env.common</code>. This is the normal choice.</p>
+      </div>
+      <div class="tab-panel" id="tab-llamacpp-2">
+        <p>A local <code>llamacpp-dev:&lt;branch&gt;</code> image built from a llama.cpp git checkout. Built on demand if missing — or rebuilt if its repo/branch labels do not match. See <a href="#dev-builds">Dev builds</a> below.</p>
+      </div>
+      <div class="tab-panel" id="tab-llamacpp-3">
+        <p>Any <code>&lt;repo&gt;:&lt;tag&gt;</code> you type, passed through as-is.</p>
+      </div>
+    </div>
+
+    <p>A profile can also pin a dev image permanently with <code>image_tag</code> in <code>profiles.yaml</code> (e.g. <code>image_tag: llamacpp-dev:master</code>); the backend layers <code>compose/llamacpp/docker-compose.dev.yaml</code> automatically when it sees a <code>llamacpp-dev:</code> tag.</p>
+
+    <h2 id="dev-builds">Dev builds</h2>
+    <p>A dev build produces a local <code>llamacpp-dev:&lt;tag&gt;</code> image from a llama.cpp git checkout — useful for testing an unreleased branch, a PR, or a fork (for example, one with <a href="#mtp-multi-token-prediction">MTP</a> support). Trigger it from the start dialog ("Dev Build") or with <code>llmux image build-dev --backend llamacpp</code>.</p>
+    <p>The pipeline (shared with vLLM, in <code>tui/common/dev_build.py</code>):</p>
+    <ol>
+      <li><strong>Clone or update</strong> <code>.llamacpp-src/</code> from <code>LLAMACPP_REPO_URL</code> (default <code>https://github.com/ggml-org/llama.cpp.git</code>) at <code>LLAMACPP_BRANCH</code> (default <code>master</code>). Both are overridable in <code>.env.common</code>. If the existing checkout's <code>origin</code> URL differs from the requested repo, llmux refuses to switch remotes silently.</li>
+      <li><strong>Detect GPU arch</strong> — <code>nvidia-smi</code> is queried for compute capability and passed as <code>--build-arg CUDA_DOCKER_ARCH=&lt;arch&gt;</code> (e.g. <code>89</code> or <code>86;89</code>), so the build only targets your GPU. Without <code>nvidia-smi</code>, it falls back to the Dockerfile's slower multi-arch path.</li>
+      <li><strong><code>docker build</code></strong> — <code>.devops/cuda.Dockerfile</code>, target <code>server</code>, tagged both <code>llamacpp-dev:&lt;tag&gt;</code> and <code>llamacpp-dev:&lt;branch&gt;</code>. The image is labeled with the repo URL, branch, and commit hash so llmux can tell whether a cached tag still matches the requested source.</li>
+    </ol>
+    <p>When you start with a dev tag, llmux rebuilds automatically if the image is missing <strong>or</strong> if its labels show it was built from a different repo/branch. A profile pinned to a dev tag that does not exist locally fails with a hint to build it first.</p>
+
+    <h2 id="mtp-multi-token-prediction">MTP (Multi-Token Prediction)</h2>
+    <p>Multi-Token Prediction is a speculative-decoding-style technique where the model predicts several tokens per step. Running it under llama.cpp through llmux requires three things to line up:</p>
+
+    <p><strong>1. An MTP-capable <code>llama.cpp</code> build.</strong> MTP support lands on specific branches before it reaches the official <code>server-cuda</code> image. Use a <a href="#dev-builds">dev build</a> to build a <code>llamacpp-dev:&lt;branch&gt;</code> image from a branch that has MTP support:</p>
+    <pre data-lang="bash"><code># point .env.common at the branch, then:
+llmux image build-dev --backend llamacpp --branch &lt;mtp-branch&gt;</code></pre>
+    <p>Then pin the profile to that image: <code>image_tag: llamacpp-dev:&lt;mtp-branch&gt;</code>.</p>
+
+    <p><strong>2. A GGUF that includes the MTP head.</strong> A regular GGUF has no MTP weights. You need a model exported <em>with</em> the MTP head — for example the <code>*-MTP-GGUF</code> repos published by unsloth. Set the profile's <code>hf_repo</code> / <code>hf_file</code> to that repo and file.</p>
+
+    <p><strong>3. The MTP flags in the config.</strong> Add them to <code>extra-args</code> in <code>config/llamacpp/&lt;name&gt;.yaml</code> so <code>render-override.py</code> appends them verbatim:</p>
+    <pre data-lang="yaml"><code># config/llamacpp/qwen3-mtp.yaml
+n-gpu-layers: 99
+ctx-size: 32768
+extra-args:
+  - --spec-type
+  - mtp
+  - --spec-draft-n-max
+  - "4"           # tokens predicted per step
+  - --parallel
+  - "1"</code></pre>
+
+    <div class="admonition warning">
+      <p class="admonition-title">MTP wants <code>--parallel 1</code></p>
+      <p>MTP is paired with <code>--parallel 1</code> — the speculative path is built around a single request stream. Combining it with multiple parallel slots is not the supported configuration.</p>
+    </div>
+
+    <div class="admonition note">
+      <p class="admonition-title">Why <code>extra-args</code>?</p>
+      <p>The config schema only knows the common <code>llama-server</code> flags. <code>extra-args</code> is the escape hatch for newer or niche flags — <code>render-override.py</code> appends every item in the list to the command line untouched.</p>
+    </div>
+
+    <h2 id="see-also">See also</h2>
+    <ul>
+      <li><a href="vllm.html">vLLM backend</a> — the HF Transformers counterpart</li>
+      <li><a href="comparison.html">Backend comparison</a> — feature matrix and "when to use which"</li>
+      <li><a href="../troubleshooting.html">Troubleshooting</a> — stuck downloads, OOM, dev image not found</li>
+    </ul>
+
+    <div class="docs-footer">
+      <a class="edit-link" href="https://github.com/Bae-ChangHyun/llmux/edit/main/docs/backends/llamacpp.html" target="_blank">Edit this page on GitHub</a>
+      <div class="prev-next">
+        <a href="vllm.html">&larr; vLLM</a>
+        <a href="comparison.html">Comparison &rarr;</a>
+      </div>
+    </div>
+
+  </article>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="page-wrap">
+    <p>
+      MIT License &middot;
+      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a> &middot;
+      Made by <a href="https://github.com/Bae-ChangHyun">Bae-ChangHyun</a>
+    </p>
+  </div>
+</footer>
+
+<script>
+function switchTab(btn, panelId) {
+  const tabs = btn.closest('.tabs');
+  tabs.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
+  tabs.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById(panelId).classList.add('active');
+}
+</script>
+
+</body>
+</html>

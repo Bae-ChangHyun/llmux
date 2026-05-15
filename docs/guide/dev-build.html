@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dev Builds &middot; llmux</title>
+  <meta name="description" content="Building local vllm-dev / llamacpp-dev images from a source checkout, with GPU arch auto-detection." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/css/style.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="top">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-brand">llm<span class="brand-accent">ux</span></a>
+    <div class="nav-links">
+      <span class="nav-links-desktop">
+        <a href="../getting-started/installation.html">Getting Started</a>
+        <a href="../guide/profiles.html" class="active">Guide</a>
+        <a href="../backends/vllm.html">Backends</a>
+        <a href="../reference/cli.html">Reference</a>
+        <a href="../troubleshooting.html">Troubleshooting</a>
+      </span>
+      <a href="https://github.com/Bae-ChangHyun/llmux" class="nav-github" target="_blank">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="nav-github-stars">GitHub</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="docs-wrap">
+
+  <!-- SECTION NAV -->
+  <div class="section-nav">
+    <span class="crumb">Guide</span>
+    <a href="profiles.html">Profiles</a>
+    <a href="configs.html">Model Configs</a>
+    <a href="container-lifecycle.html">Container Lifecycle</a>
+    <a href="tui.html">Using the TUI</a>
+    <a href="dev-build.html" class="active">Dev Builds</a>
+  </div>
+
+  <article class="docs-content">
+
+    <div class="docs-header">
+      <h1>Dev Builds</h1>
+      <p class="lede">
+        By default llmux runs the <strong>official</strong> prebuilt images — <code>vllm/vllm-openai</code> from Docker Hub and <code>ghcr.io/ggml-org/llama.cpp:server-cuda</code>. A <strong>dev build</strong> instead compiles the engine <strong>from source</strong> into a local image, so you can run a fork, a PR branch, or an unreleased commit.
+      </p>
+      <p>The result is a local image tagged <code>&lt;backend&gt;-dev:&lt;tag&gt;</code>:</p>
+      <ul>
+        <li><code>vllm-dev:&lt;tag&gt;</code></li>
+        <li><code>llamacpp-dev:&lt;tag&gt;</code></li>
+      </ul>
+      <p>You then <a href="#pinning-a-profile-to-a-dev-image">pin a profile</a> to that image, or select it once from the <a href="tui.html#container-start-screen">TUI start screen</a>.</p>
+    </div>
+
+    <h2 id="when-to-use-a-dev-build">When to use a dev build</h2>
+    <table>
+      <thead>
+        <tr><th>Use the official image</th><th>Use a dev build</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Running a released model on a stable engine</td><td>Testing an upstream PR or your own fork</td></tr>
+        <tr><td>You want the fastest path to serving</td><td>You need a feature not in any release yet</td></tr>
+        <tr><td>—</td><td>You need engine patches (e.g. custom CUDA archs)</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="building-from-source">Building from source</h2>
+    <p>The unified builder lives behind one command:</p>
+    <pre data-lang="bash"><code>llmux image build-dev --backend vllm
+llmux image build-dev --backend llamacpp</code></pre>
+    <p>It runs the same three-stage pipeline for both backends:</p>
+    <ol>
+      <li><strong>git clone / update</strong> the source checkout (<code>.vllm-src/</code> or <code>.llamacpp-src/</code>) — clone if missing, otherwise <code>fetch</code> + <code>checkout</code> + <code>pull</code>.</li>
+      <li><strong><code>docker build</code></strong> with the backend's Dockerfile and target stage.</li>
+      <li><strong>Label</strong> the image with <code>repo.url</code>, <code>repo.branch</code>, <code>commit.hash</code>, and <code>build.date</code> so llmux can later tell which source a tag was built from.</li>
+    </ol>
+    <p>Docker output streams live to your terminal.</p>
+
+    <div class="admonition info">
+      <p class="admonition-title">The source checkout is sticky</p>
+      <p>The builder refuses to silently switch the <code>.vllm-src/</code> / <code>.llamacpp-src/</code> checkout to a different remote URL. If you want to swap repos, move or delete the checkout directory yourself first.</p>
+    </div>
+
+    <h3 id="build-dev-options"><code>build-dev</code> options</h3>
+    <table>
+      <thead>
+        <tr><th>Option</th><th>Applies to</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>--backend</code></td><td>both</td><td><code>vllm</code> or <code>llamacpp</code>. Required.</td></tr>
+        <tr><td><code>--branch</code>, <code>-b</code></td><td>both</td><td>Source branch. Default from <code>.env.common</code> (<code>VLLM_BRANCH</code> / <code>LLAMACPP_BRANCH</code>).</td></tr>
+        <tr><td><code>--repo-url</code></td><td>both</td><td>Source repo URL. Default from <code>.env.common</code> (<code>VLLM_REPO_URL</code> / <code>LLAMACPP_REPO_URL</code>).</td></tr>
+        <tr><td><code>--tag</code>, <code>-t</code></td><td>both</td><td>Custom output tag. Default = the branch name.</td></tr>
+        <tr><td><code>--official</code></td><td>vLLM only</td><td>Build with upstream Dockerfile defaults — skips llmux's local GPU-arch detection patch. Builds for <strong>all</strong> architectures (portable, slower).</td></tr>
+        <tr><td><code>--cuda-arch</code></td><td>llama.cpp only</td><td>Override GPU auto-detection. CMake format, e.g. <code>89</code> (Ada) or <code>86;89</code> (mixed).</td></tr>
+        <tr><td><code>--multi-arch</code></td><td>llama.cpp only</td><td>Disable GPU auto-detection; build for all archs (portable, slow).</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="output-tags">Output tags</h3>
+    <p>Every build applies <strong>two</strong> tags:</p>
+    <ul>
+      <li><code>&lt;prefix&gt;:&lt;tag&gt;</code> — the unique tag (your <code>--tag</code>, or <code>&lt;branch&gt;-YYYYMMDD</code>)</li>
+      <li><code>&lt;prefix&gt;:&lt;branch&gt;</code> — a stable alias always pointing at the latest build of that branch</li>
+    </ul>
+    <p>So <code>llmux image build-dev --backend llamacpp --branch master</code> produces both <code>llamacpp-dev:master-20260515</code> and <code>llamacpp-dev:master</code>.</p>
+
+    <h2 id="gpu-architecture-auto-detection">GPU architecture auto-detection</h2>
+    <p>By default the builder compiles <strong>only for your local GPU(s)</strong>, which is dramatically faster than an all-architecture build. It runs <code>nvidia-smi</code> to read each GPU's compute capability and passes it to the build:</p>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="active" onclick="switchTab(this, 'tab-devbuild-vllm')">vLLM</button>
+        <button onclick="switchTab(this, 'tab-devbuild-llamacpp')">llama.cpp</button>
+      </div>
+      <div class="tab-panel active" id="tab-devbuild-vllm">
+        <p>Detected caps are passed as <code>torch_cuda_arch_list</code> (PyTorch's dotted, space-separated format, e.g. <code>8.6 8.9</code>). The builder also patches the upstream Dockerfile's DeepEP stage so it respects the local arch list. <code>--official</code> skips both — useful if detection fails or you need a portable image. If <code>nvidia-smi</code> is unavailable and you didn't pass <code>--official</code>, the build aborts with an error.</p>
+      </div>
+      <div class="tab-panel" id="tab-devbuild-llamacpp">
+        <p>Detected caps are passed as <code>CUDA_DOCKER_ARCH</code> (CMake's no-dot, semicolon-separated format, e.g. <code>86;89</code>). If <code>nvidia-smi</code> is unavailable, the builder falls back to a multi-arch build automatically. Override detection with <code>--cuda-arch '89'</code> or force the portable path with <code>--multi-arch</code>.</p>
+      </div>
+    </div>
+
+    <h2 id="pinning-a-profile-to-a-dev-image">Pinning a profile to a dev image</h2>
+    <p>Once the image exists, point a profile at it via the <a href="profiles.html#per-profile-image_tag"><code>image_tag</code></a> field in <code>profiles.yaml</code>:</p>
+    <pre data-lang="yaml"><code>- name: gemma-3-4b-mtp
+  backend: llamacpp
+  config_name: gemma-3-4b
+  image_tag: llamacpp-dev:master   # use the dev image instead of the default
+  hf_repo: unsloth/gemma-3-4b-it-GGUF
+  hf_file: gemma-3-4b-it-q4_k_m.gguf</code></pre>
+    <p>Or set it from the CLI / <a href="tui.html#profile-and-config-forms">TUI profile form</a>:</p>
+    <pre data-lang="bash"><code>llmux profile edit gemma-3-4b-mtp --image-tag llamacpp-dev:master</code></pre>
+    <p><code>image_tag</code> is a <strong>per-profile</strong> override — one profile can run a dev image while another stays on the official image. For llama.cpp, when <code>image_tag</code> starts with <code>llamacpp-dev:</code>, llmux layers <code>docker-compose.dev.yaml</code> into the compose invocation to swap the <code>image:</code> line.</p>
+    <p>If you <code>up</code> a profile pinned to a dev image that doesn't exist locally, llmux tells you to build it first rather than failing obscurely.</p>
+
+    <h2 id="dev-build-from-the-tui">Dev Build from the TUI</h2>
+    <p>The <a href="tui.html#container-start-screen">Container Start screen</a> has a <strong>Dev Build</strong> mode in its Version radio set (for both backends). Selecting it reveals <strong>Repo URL</strong> and <strong>Branch</strong> inputs, pre-filled from <code>.env.common</code>. On <strong>Start</strong>, llmux:</p>
+    <ol>
+      <li>Checks whether <code>&lt;backend&gt;-dev:&lt;branch&gt;</code> already exists locally <strong>and</strong> was built from the same repo/branch (verified via the image labels).</li>
+      <li>If missing — or if the cached tag was built from a <em>different</em> repo/branch — it rebuilds from source, streaming the build log.</li>
+      <li>Brings the container up on the freshly built image.</li>
+    </ol>
+    <p>This is a launch-time override: it doesn't modify <code>profiles.yaml</code>. To make it permanent, set <code>image_tag</code> on the profile.</p>
+
+    <div class="admonition tip">
+      <p class="admonition-title">Tag-name collisions are handled</p>
+      <p><code>llamacpp-dev:master</code> built from <code>ggml-org/llama.cpp</code> and <code>llamacpp-dev:master</code> built from a fork would collide on tag name alone. llmux stamps every dev image with its source repo/branch labels and rebuilds rather than silently reusing the wrong source.</p>
+    </div>
+
+    <h2 id="repo-branch-defaults">Repo / branch defaults</h2>
+    <p>Dev builds resolve their source from <code>.env.common</code> when you don't pass <code>--repo-url</code> / <code>--branch</code> explicitly:</p>
+    <table>
+      <thead>
+        <tr><th>Backend</th><th>Repo URL key</th><th>Branch key</th><th>Default branch</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>vLLM</td><td><code>VLLM_REPO_URL</code></td><td><code>VLLM_BRANCH</code></td><td><code>main</code></td></tr>
+        <tr><td>llama.cpp</td><td><code>LLAMACPP_REPO_URL</code></td><td><code>LLAMACPP_BRANCH</code></td><td><code>master</code></td></tr>
+      </tbody>
+    </table>
+    <p>If a key is unset, llmux falls back to the upstream repository and that backend's default branch.</p>
+
+    <h2 id="see-also">See also</h2>
+    <ul>
+      <li><a href="profiles.html">Profiles</a> — the <code>image_tag</code> field that pins a dev image</li>
+      <li><a href="container-lifecycle.html">Container Lifecycle</a> — the <code>up --dev</code> launch path</li>
+      <li><a href="tui.html">Using the TUI</a> — the Dev Build start mode</li>
+      <li><a href="../reference/env-common.html">.env.common</a> — repo/branch defaults</li>
+    </ul>
+
+    <div class="docs-footer">
+      <a class="edit-link" href="https://github.com/Bae-ChangHyun/llmux/edit/main/docs/guide/dev-build.html" target="_blank">Edit this page on GitHub</a>
+      <div class="prev-next">
+        <a href="tui.html">&larr; Using the TUI</a>
+        <a href="../backends/vllm.html">vLLM Backend &rarr;</a>
+      </div>
+    </div>
+
+  </article>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="page-wrap">
+    <p>
+      MIT License &middot;
+      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a> &middot;
+      Made by <a href="https://github.com/Bae-ChangHyun">Bae-ChangHyun</a>
+    </p>
+  </div>
+</footer>
+
+<script>
+function switchTab(btn, panelId) {
+  const tabs = btn.closest('.tabs');
+  tabs.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
+  tabs.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById(panelId).classList.add('active');
+}
+</script>
+
+</body>
+</html>

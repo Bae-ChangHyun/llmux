@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>llmux — One TUI for vLLM and llama.cpp</title>
+  <meta name="description" content="A terminal multiplexer for LLM servers. Run vLLM and llama.cpp side by side from a single Textual dashboard." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="assets/css/style.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="top">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-brand">llm<span class="brand-accent">ux</span></a>
+    <div class="nav-links">
+      <span class="nav-links-desktop">
+        <a href="getting-started/installation.html">Getting Started</a>
+        <a href="guide/profiles.html">Guide</a>
+        <a href="backends/vllm.html">Backends</a>
+        <a href="reference/cli.html">Reference</a>
+        <a href="troubleshooting.html">Troubleshooting</a>
+      </span>
+      <a href="https://github.com/Bae-ChangHyun/llmux" class="nav-github" target="_blank">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="nav-github-stars" id="starCount">GitHub</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="page-wrap">
+
+  <!-- HERO -->
+  <section class="hero">
+    <img src="https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/assets/llmux-hero.png" alt="llmux — one TUI for vLLM and llama.cpp" class="hero-logo" onerror="this.style.display='none'" />
+    <p class="hero-badge">open source &middot; GPU-native &middot; dual backend</p>
+    <h1>
+      One TUI for<br/>
+      <span class="accent">vLLM</span> and <span class="accent-alt">llama.cpp</span>.
+    </h1>
+    <p class="hero-sub">
+      Two engines. One dashboard. Zero config headaches.<br/>
+      Pick a profile in the TUI or shell &mdash; llmux runs the right engine for you.
+    </p>
+    <div class="hero-cmd" onclick="copyCmd(this)">
+      <span class="prompt">$</span>
+      <span class="cmd-text">git clone https://github.com/Bae-ChangHyun/llmux.git</span>
+      <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+        <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+      </svg>
+      <span class="copied-tooltip">Copied!</span>
+    </div>
+    <div class="hero-links">
+      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a>
+      <a href="https://github.com/Bae-ChangHyun/llmux#get-started-in-30-seconds">Docs</a>
+    </div>
+    <div class="tech-stack">
+      <span class="tech-badge">
+        <svg viewBox="0 0 640 512" fill="#2496ED" width="18" height="18"><path d="M349.9 236.3h-66.1v-59.4h66.1v59.4zm0-204.3h-66.1v60.7h66.1V32zm78.2 144.8H362v59.4h66.1v-59.4zm-156.3-72.1h-66.1v60.1h66.1v-60.1zm78.1 0h-66.1v60.1h66.1v-60.1zm276.8 100c-14.4-9.7-47.6-13.2-73.1-8.4-3.3-24-16.7-44.9-41.1-63.7l-14-9.3-9.3 14c-18.4 27.8-23.4 73.6-3.7 103.8-8.7 4.7-25.8 11.1-48.4 10.7H2.4c-8.7 50.8 5.8 116.8 44 162.1 37.1 43.9 92.7 66.2 165.4 66.2 157.4 0 273.9-72.5 328.4-204.2 21.4.4 67.6.1 91.3-45.2 1.5-2.5 6.6-13.2 8.5-17.1l-13.3-8.9zm-511.1-27.9h-66v59.4h66.1v-59.4zm78.1 0h-66.1v59.4h66.1v-59.4zm78.1 0h-66.1v59.4h66.1v-59.4zm-78.1-72.1h-66.1v60.1h66.1v-60.1z"/></svg>
+        Docker
+      </span>
+      <span class="tech-badge">
+        <img src="https://github.com/vllm-project.png" width="16" height="16" alt="vLLM" style="border-radius:3px;" />
+        vLLM
+      </span>
+      <span class="tech-badge">
+        <img src="https://github.com/ggml-org.png" width="16" height="16" alt="llama.cpp" style="border-radius:3px;" />
+        llama.cpp
+      </span>
+      <span class="tech-badge">
+        <img src="https://cdn.simpleicons.org/nvidia/76B900" width="16" height="16" alt="NVIDIA" />
+        NVIDIA
+      </span>
+      <span class="tech-badge">
+        <svg viewBox="0 0 256 255" width="16" height="16"><path d="M126.916.072c-64.832 0-60.784 28.115-60.784 28.115l.072 29.128h61.868v8.745H41.631S.145 61.355.145 126.77c0 65.417 36.21 63.097 36.21 63.097h21.61v-30.356s-1.165-36.21 35.632-36.21h61.362s34.475.557 34.475-33.319V33.97S194.67.072 126.916.072zM92.802 19.66a11.12 11.12 0 0 1 11.13 11.13 11.12 11.12 0 0 1-11.13 11.13 11.12 11.12 0 0 1-11.13-11.13 11.12 11.12 0 0 1 11.13-11.13z" fill="#3776AB"/><path d="M128.757 254.126c64.832 0 60.784-28.115 60.784-28.115l-.072-29.127H127.6v-8.745h86.441s41.486 4.705 41.486-60.712c0-65.416-36.21-63.096-36.21-63.096h-21.61v30.355s1.165 36.21-35.632 36.21h-61.362s-34.475-.557-34.475 33.32v56.013s-5.235 33.897 62.518 33.897zm34.114-19.586a11.12 11.12 0 0 1-11.13-11.13 11.12 11.12 0 0 1 11.13-11.131 11.12 11.12 0 0 1 11.13 11.13 11.12 11.12 0 0 1-11.13 11.13z" fill="#FFD43B"/></svg>
+        Python
+      </span>
+    </div>
+  </section>
+
+  <!-- PROBLEMS -->
+  <section class="fade-in">
+    <div class="section-header">
+      <p class="section-label">the problem</p>
+      <h2 class="section-title">Two backends. Twice the toolchain.</h2>
+    </div>
+    <div class="problems-grid">
+      <div class="problem-card">
+        <p class="problem-num">01</p>
+        <h3>Different tooling per engine</h3>
+        <p>vLLM wants HF Transformer weights. llama.cpp wants GGUF. Different images, different flags, different compose files.</p>
+        <span class="problem-cmd">$ vllm serve &mdash; or &mdash; $ llama-server --model ...</span>
+      </div>
+      <div class="problem-card">
+        <p class="problem-num">02</p>
+        <h3>Port / GPU clashes</h3>
+        <p>Start llama.cpp on 8080, forget that vLLM was already on it. Container crash, logs panic, you dig for the offender.</p>
+        <span class="problem-cmd">$ docker ps | grep 8080</span>
+      </div>
+      <div class="problem-card">
+        <p class="problem-num">03</p>
+        <h3>GGUF download drudgery</h3>
+        <p>Find the file name, hf download, move to models/, edit compose, hope the path matches.</p>
+        <span class="problem-cmd">$ hf download ... && vim docker-compose.yaml</span>
+      </div>
+      <div class="problem-card">
+        <p class="problem-num">04</p>
+        <h3>No unified benchmark</h3>
+        <p>Want to compare a GPTQ vLLM run against a Q4_K_M GGUF run? Write the curl by hand, time it yourself, twice.</p>
+        <span class="problem-cmd">$ time curl /v1/chat/completions ...</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section class="fade-in">
+    <div class="section-header">
+      <p class="section-label">how it works</p>
+      <h2 class="section-title">Three steps, either engine.</h2>
+    </div>
+    <div class="steps-grid">
+      <div class="step-card">
+        <div class="step-num">1</div>
+        <h3>Clone &amp; configure</h3>
+        <p>One <code>.env.common</code> holds your HF token and cache path. Both backends share it.</p>
+        <div class="step-code">$ git clone ... && cat > .env.common</div>
+      </div>
+      <div class="step-card">
+        <div class="step-num">2</div>
+        <h3>Launch llmux</h3>
+        <p>Press <code>n</code>, pick vLLM or llama.cpp, type a model name. Profile + config auto-generated.</p>
+        <div class="step-code">$ uv run llmux</div>
+      </div>
+      <div class="step-card">
+        <div class="step-num">3</div>
+        <h3>Enter &rarr; Start</h3>
+        <p>Cross-backend conflict gate checks ports and GPUs, then spins the container on the OpenAI-compatible API.</p>
+        <div class="step-code">Enter &rarr; Start &rarr; Serving :8000 / :8080</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- DEMO GIF -->
+  <section class="demo-section fade-in">
+    <div class="section-header" style="text-align:center;">
+      <p class="section-label">demo</p>
+      <h2 class="section-title">See it in action</h2>
+    </div>
+    <div class="demo-wrap">
+      <div class="terminal-bar">
+        <span class="terminal-dot red"></span>
+        <span class="terminal-dot yellow"></span>
+        <span class="terminal-dot green"></span>
+        <span class="terminal-title">llmux</span>
+      </div>
+      <img src="https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/demo/llamacpp.gif" alt="llmux Demo" loading="lazy" onerror="this.style.display='none'" />
+    </div>
+  </section>
+
+  <!-- TERMINAL QUICK LOOK -->
+  <section class="terminal-section fade-in">
+    <div class="section-header" style="text-align:center;">
+      <p class="section-label">terminal</p>
+      <h2 class="section-title">Quick Start in your terminal</h2>
+    </div>
+    <div class="terminal">
+      <div class="terminal-bar">
+        <span class="terminal-dot red"></span>
+        <span class="terminal-dot yellow"></span>
+        <span class="terminal-dot green"></span>
+        <span class="terminal-title">~</span>
+      </div>
+      <div class="terminal-body" id="terminalBody">
+        <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">git clone https://github.com/Bae-ChangHyun/llmux.git</span></div>
+        <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">cd llmux</span></div>
+        <div class="line info">&nbsp;</div>
+        <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">cat > .env.common << 'EOF'</span></div>
+        <div class="line info">HF_TOKEN=hf_your_token_here</div>
+        <div class="line info">HF_CACHE_PATH=/home/user/.cache/huggingface</div>
+        <div class="line info">EOF</div>
+        <div class="line info">&nbsp;</div>
+        <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">uv run llmux</span></div>
+        <div class="line info">&nbsp;</div>
+        <div class="line"><span class="success">&#10004;</span> <span class="highlight">TUI launched</span> <span class="info">— press n for new profile</span></div>
+        <div class="line"><span class="success">&#10004;</span> Select backend: <span class="highlight">vLLM</span> / <span class="highlight">llama.cpp</span></div>
+        <div class="line"><span class="success">&#10004;</span> Enter model: <span class="highlight">Qwen/Qwen3-30B-A3B</span></div>
+        <div class="line"><span class="warn">&#9888;</span> <span class="info">conflict gate: no overlap on port 8000 / GPU 0</span></div>
+        <div class="line"><span class="success">&#10004;</span> Container started <span class="info">— serving at</span> <span class="highlight">http://localhost:8000/v1</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- BEFORE / AFTER -->
+  <section class="fade-in">
+    <div class="section-header">
+      <p class="section-label">before &amp; after</p>
+      <h2 class="section-title">From two toolchains to one keyboard</h2>
+    </div>
+    <div class="comparison-grid">
+      <div class="comparison-card before">
+        <h3>two separate projects</h3>
+        <div class="comp-row"><span class="comp-label">Switch engines</span><span class="comp-value dim">leave one TUI, open another</span></div>
+        <div class="comp-row"><span class="comp-label">Port conflicts</span><span class="comp-value dim">crash, then debug</span></div>
+        <div class="comp-row"><span class="comp-label">GGUF setup</span><span class="comp-value dim">manual hf download</span></div>
+        <div class="comp-row"><span class="comp-label">Benchmark</span><span class="comp-value dim">curl + time, per engine</span></div>
+        <div class="comp-row"><span class="comp-label">Memory check</span><span class="comp-value dim">guess per engine</span></div>
+        <div class="comp-row"><span class="comp-label">Mental overhead</span><span class="comp-value dim">double</span></div>
+      </div>
+      <div class="comparison-card after">
+        <h3>with llmux</h3>
+        <div class="comp-row"><span class="comp-label">Switch engines</span><span class="comp-value good">one dashboard</span></div>
+        <div class="comp-row"><span class="comp-label">Port conflicts</span><span class="comp-value good">cross-backend gate</span></div>
+        <div class="comp-row"><span class="comp-label">GGUF setup</span><span class="comp-value good">auto pull on start</span></div>
+        <div class="comp-row"><span class="comp-label">Benchmark</span><span class="comp-value good">built-in for both</span></div>
+        <div class="comp-row"><span class="comp-label">Memory check</span><span class="comp-value good">hf-mem, one keystroke</span></div>
+        <div class="comp-row"><span class="comp-label">Mental overhead</span><span class="comp-value good">single</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features" class="fade-in">
+    <div class="section-header">
+      <p class="section-label">features</p>
+      <h2 class="section-title">Everything you need, nothing you don't</h2>
+    </div>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </div>
+        <h3>Unified TUI</h3>
+        <p>Every vLLM and llama.cpp profile shows up in the same list. Start, stop, logs, edit &mdash; all keyboard-driven.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <h3>Cross-backend conflict gate</h3>
+        <p>Catches port + GPU collisions between vLLM and llama.cpp before docker is even touched.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        </div>
+        <h3>Unified benchmark</h3>
+        <p>OpenAI-compatible <code>/v1/chat/completions</code> bench for either engine. Apples-to-apples latency.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </div>
+        <h3>GGUF auto-download</h3>
+        <p>llama.cpp profiles ride llama-server's <code>-hf</code> / <code>-hff</code> to download GGUFs straight into the host HF cache on first start. No host-side <code>hf</code> CLI, no manual <code>models/</code> wiring.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>
+        </div>
+        <h3>Memory Estimator</h3>
+        <p>Press <code>m</code>, type a HF repo, get per-GPU fit estimates powered by hf-mem. Works for both backends.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        </div>
+        <h3>GPU Monitor</h3>
+        <p>Real-time GPU usage bars on the dashboard, auto-refresh every 5 seconds. No more <code>nvidia-smi</code> in a loop.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        </div>
+        <h3>Headless CLI parity</h3>
+        <p>Every TUI feature has a Typer CLI twin &mdash; <code>llmux up</code>, <code>bench</code>, <code>profile quick-setup</code>, <code>image build-dev</code>, <code>system mem-estimate</code>. Scripted from day one.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6v6H9z"/></svg>
+        </div>
+        <h3>Per-profile image pinning</h3>
+        <p>Pin a profile to any docker image &mdash; <code>vllm-dev:&lt;branch&gt;</code>, an official version, or a custom registry tag &mdash; via <code>profile.image_tag</code>. UI override beats the pin, the pin beats the default.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        </div>
+        <h3>Unified dev builds</h3>
+        <p>Build vLLM or llama.cpp from source with one command. Auto-detects your GPU compute capability (<code>CUDA_DOCKER_ARCH</code> / <code>TORCH_CUDA_ARCH_LIST</code>) so the image only ships what your card actually runs.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ROADMAP -->
+  <section class="fade-in">
+    <div class="section-header">
+      <p class="section-label">what's next</p>
+      <h2 class="section-title">Roadmap</h2>
+    </div>
+    <div class="faq-list">
+      <div class="faq-item open">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          Recipe-based config recommender
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          Give llmux a HuggingFace model ID and a target GPU, and let it auto-generate a
+          <code>config/vllm/&lt;name&gt;.yaml</code> from
+          <a href="https://recipes.vllm.ai/">recipes.vllm.ai</a> — the same engine that powers the
+          official vLLM deployment guides. No more hand-tuning <code>gpu-memory-utilization</code>,
+          <code>max-model-len</code>, and <code>tensor-parallel-size</code> by feel.
+        </div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          Profile clone across backends
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          Duplicate a vLLM profile as its llama.cpp GGUF equivalent in one keystroke — pair with the
+          built-in OpenAI-compatible bench for apples-to-apples throughput/latency.
+        </div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          Batch operations &middot; Bundle export/import &middot; Quantization recommender
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          Start/stop multiple profiles at once · ship a full profile + config bundle between machines ·
+          suggest <code>Q4_K_M</code> vs <code>Q8_0</code> given target GPU and the built-in memory estimator.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" class="fade-in">
+    <div class="section-header">
+      <p class="section-label">faq</p>
+      <h2 class="section-title">Common questions</h2>
+    </div>
+    <div class="faq-list">
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          How do I choose between vLLM and llama.cpp?
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          Rule of thumb: <b>vLLM</b> for high-throughput serving of HF Transformer weights on big GPUs;
+          <b>llama.cpp</b> for GGUF on smaller / offloaded setups, CPU+GPU mixed, or exotic quantizations (Q4_K_M, Q8_0).
+          llmux lets you keep profiles for both and benchmark them side by side.
+        </div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          Can I run a vLLM profile and a llama.cpp profile at the same time?
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          Yes &mdash; as long as they don't share a port or GPU. The cross-backend conflict gate warns you pre-start if they do.
+          Each profile declares its own <code>gpu_id</code> and <code>port</code> in <code>profiles.yaml</code>.
+        </div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          What about LoRA adapters?
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          Supported for vLLM profiles (multi-adapter loading via <code>enable_lora: true</code> in <code>profiles.yaml</code> + <code>LORA_BASE_PATH</code> in <code>.env.common</code>).
+          llama.cpp LoRA support is on the roadmap.
+        </div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          Is the llama.cpp web UI served too?
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          No. llmux injects <code>--no-webui</code> unconditionally. Only the OpenAI-compatible HTTP API is exposed,
+          so both engines look identical to clients.
+        </div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          What are the requirements?
+          <span class="faq-arrow">+</span>
+        </div>
+        <div class="faq-a">
+          Docker with NVIDIA Container Toolkit, Python 3.10+, and an NVIDIA GPU.
+          <code>uv</code> is recommended for the TUI's venv but <code>pip</code> works too.
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="page-wrap">
+    <p>
+      MIT License &middot;
+      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a> &middot;
+      Made by <a href="https://github.com/Bae-ChangHyun">Bae-ChangHyun</a>
+    </p>
+  </div>
+</footer>
+
+<script>
+function copyCmd(el) {
+  const text = el.querySelector('.cmd-text').textContent;
+  navigator.clipboard.writeText(text);
+  const tooltip = el.querySelector('.copied-tooltip');
+  tooltip.classList.add('show');
+  setTimeout(() => tooltip.classList.remove('show'), 1500);
+}
+
+function toggleFaq(el) {
+  el.parentElement.classList.toggle('open');
+}
+
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) entry.target.classList.add('visible');
+  });
+}, { threshold: 0.1 });
+document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+function animateTerminal() {
+  const lines = document.querySelectorAll('#terminalBody .line');
+  lines.forEach((line, i) => setTimeout(() => line.classList.add('visible'), i * 200));
+}
+const termObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) { animateTerminal(); termObserver.unobserve(entry.target); }
+  });
+}, { threshold: 0.3 });
+termObserver.observe(document.getElementById('terminalBody'));
+
+fetch('https://api.github.com/repos/Bae-ChangHyun/llmux')
+  .then(r => r.json())
+  .then(data => {
+    if (data.stargazers_count !== undefined) {
+      const count = data.stargazers_count;
+      const display = count >= 1000 ? (count / 1000).toFixed(1) + 'K' : count;
+      document.getElementById('starCount').textContent = display;
+    }
+  })
+  .catch(() => {});
+</script>
+
+</body>
+</html>

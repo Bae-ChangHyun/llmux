@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quick Start &middot; llmux</title>
+  <meta name="description" content="From a fresh llmux install to a running model in about five minutes — once with vLLM (HF Transformers) and once with llama.cpp (GGUF), TUI and CLI side by side." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/css/style.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="top">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-brand">llm<span class="brand-accent">ux</span></a>
+    <div class="nav-links">
+      <span class="nav-links-desktop">
+        <a href="../getting-started/installation.html" class="active">Getting Started</a>
+        <a href="../guide/profiles.html">Guide</a>
+        <a href="../backends/vllm.html">Backends</a>
+        <a href="../reference/cli.html">Reference</a>
+        <a href="../troubleshooting.html">Troubleshooting</a>
+      </span>
+      <a href="https://github.com/Bae-ChangHyun/llmux" class="nav-github" target="_blank">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="nav-github-stars">GitHub</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="docs-wrap">
+
+  <!-- SECTION NAV -->
+  <div class="section-nav">
+    <span class="crumb">Getting Started</span>
+    <a href="installation.html">Installation</a>
+    <a href="quickstart.html" class="active">Quick Start</a>
+  </div>
+
+  <article class="docs-content">
+
+    <div class="docs-header">
+      <h1>Quick Start</h1>
+      <p class="lede">
+        This guide takes you from a fresh install to a running model in about five minutes — once with <strong>vLLM</strong> (Hugging Face Transformers) and once with <strong>llama.cpp</strong> (GGUF). Each step shows both the <strong>TUI</strong> path and the headless <strong>CLI</strong> path, so pick whichever fits your workflow.
+      </p>
+    </div>
+
+    <div class="admonition note">
+      <p class="admonition-title">Before you start</p>
+      <p>Make sure you've finished <a href="installation.html">Installation</a>: <code>llmux</code> is on your <code>PATH</code>, and <code>llmux env-check</code> reports <code>Status: OK</code>. All commands below run from inside the repo, or anywhere if you've set <code>LLMUX_ROOT</code>.</p>
+    </div>
+
+    <h2 id="path-a-serve-a-model-with-vllm">Path A — Serve a model with vLLM</h2>
+    <p>vLLM serves Hugging Face Transformers models directly from a model id. We'll use <code>Qwen/Qwen3-0.6B</code> because it's small and downloads fast.</p>
+
+    <h3 id="1-create-a-profile">1. Create a profile</h3>
+    <p><code>quick-setup</code> creates both a profile <strong>and</strong> a matching config from a single model id — the same flow as the TUI's <strong>Quick Setup</strong>.</p>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="active" onclick="switchTab(this, 'tab-vllm-create-tui')">TUI</button>
+        <button onclick="switchTab(this, 'tab-vllm-create-cli')">CLI</button>
+      </div>
+      <div class="tab-panel active" id="tab-vllm-create-tui">
+        <pre data-lang="bash"><code>llmux</code></pre>
+        <p>On the dashboard, press <kbd>n</kbd> to open <strong>Quick Setup</strong>, pick the <strong>vLLM</strong> backend, enter <code>Qwen/Qwen3-0.6B</code>, and confirm. llmux generates the profile and config, with a live memory estimate to check it fits your GPU.</p>
+      </div>
+      <div class="tab-panel" id="tab-vllm-create-cli">
+        <pre data-lang="bash"><code>llmux profile quick-setup Qwen/Qwen3-0.6B --gpu-id 0</code></pre>
+        <p>This prints <code>Created profile + config: qwen3-0-6b</code> — the profile name is auto-derived from the model id. Confirm it landed:</p>
+        <pre data-lang="bash"><code>llmux profile list</code></pre>
+      </div>
+    </div>
+
+    <h3 id="2-start-the-container">2. Start the container</h3>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="active" onclick="switchTab(this, 'tab-vllm-start-tui')">TUI</button>
+        <button onclick="switchTab(this, 'tab-vllm-start-cli')">CLI</button>
+      </div>
+      <div class="tab-panel active" id="tab-vllm-start-tui">
+        <p>Select the <code>qwen3-0-6b</code> row and press <kbd>u</kbd> (or <kbd>enter</kbd> &rarr; <strong>Start</strong>). A version picker appears for the vLLM image — pick <strong>Local Latest</strong> or an explicit release. llmux runs its cross-backend port/GPU conflict check, then streams the Compose output live.</p>
+      </div>
+      <div class="tab-panel" id="tab-vllm-start-cli">
+        <pre data-lang="bash"><code>llmux up qwen3-0-6b</code></pre>
+        <p><code>llmux up</code> auto-detects the backend from the profile name and streams <code>docker compose</code> output to your terminal. Add <code>--tag v0.20.1 --pull</code> to pin and pull a specific vLLM image version.</p>
+      </div>
+    </div>
+
+    <div class="admonition note">
+      <p class="admonition-title">vLLM never starts from <code>:latest</code></p>
+      <p>llmux refuses <code>vllm/vllm-openai:latest</code> because its contents drift while the tag name doesn't. The picker resolves stable choices to a semver tag; <code>nightly</code> stays available as an explicit rolling option.</p>
+    </div>
+
+    <h3 id="3-check-health">3. Check health</h3>
+    <p>vLLM exposes an OpenAI-compatible server. Once the container is up, hit its <code>/health</code> endpoint on the profile's port (default <code>8000</code>):</p>
+    <pre data-lang="bash"><code>curl http://localhost:8000/health</code></pre>
+
+    <p>An empty <code>200 OK</code> response means the server is ready. You can confirm status across both backends at any time:</p>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="active" onclick="switchTab(this, 'tab-vllm-health-tui')">TUI</button>
+        <button onclick="switchTab(this, 'tab-vllm-health-cli')">CLI</button>
+      </div>
+      <div class="tab-panel active" id="tab-vllm-health-tui">
+        <p>The dashboard row shows live status (<code>starting</code> &rarr; <code>healthy</code>), port, GPU, and model. Press <kbd>r</kbd> to refresh.</p>
+      </div>
+      <div class="tab-panel" id="tab-vllm-health-cli">
+        <pre data-lang="bash"><code>llmux ps                    # table of every profile + container status
+llmux ps --json --running   # machine-readable, running containers only</code></pre>
+      </div>
+    </div>
+
+    <h3 id="4-watch-the-logs">4. Watch the logs</h3>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="active" onclick="switchTab(this, 'tab-vllm-logs-tui')">TUI</button>
+        <button onclick="switchTab(this, 'tab-vllm-logs-cli')">CLI</button>
+      </div>
+      <div class="tab-panel active" id="tab-vllm-logs-tui">
+        <p>Select the profile and press <kbd>l</kbd> to open the log stream. Press <kbd>f</kbd> to toggle auto-follow.</p>
+      </div>
+      <div class="tab-panel" id="tab-vllm-logs-cli">
+        <pre data-lang="bash"><code>llmux logs qwen3-0-6b              # follow live (Ctrl-C to stop)
+llmux logs qwen3-0-6b --no-follow --tail 100   # snapshot of recent lines</code></pre>
+      </div>
+    </div>
+
+    <h3 id="5-stop-the-container">5. Stop the container</h3>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="active" onclick="switchTab(this, 'tab-vllm-stop-tui')">TUI</button>
+        <button onclick="switchTab(this, 'tab-vllm-stop-cli')">CLI</button>
+      </div>
+      <div class="tab-panel active" id="tab-vllm-stop-tui">
+        <p>Select the profile and press <kbd>d</kbd> (or <kbd>enter</kbd> &rarr; <strong>Stop</strong>).</p>
+      </div>
+      <div class="tab-panel" id="tab-vllm-stop-cli">
+        <pre data-lang="bash"><code>llmux down qwen3-0-6b</code></pre>
+      </div>
+    </div>
+
+    <h2 id="path-b-serve-a-model-with-llama-cpp">Path B — Serve a model with llama.cpp</h2>
+    <p>llama.cpp serves GGUF files. A llama.cpp profile needs GGUF metadata (<code>model_file</code>, <code>hf_repo</code>, <code>hf_file</code>) — llmux downloads the file automatically on first start, so there's no manual <code>hf download</code>.</p>
+
+    <h3 id="1-create-a-profile-llamacpp">1. Create a profile</h3>
+    <p><code>quick-setup</code> currently supports vLLM only, so create the llama.cpp profile directly with <code>profile new</code> (CLI) or <strong>Quick Setup</strong> (TUI).</p>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="active" onclick="switchTab(this, 'tab-llama-create-tui')">TUI</button>
+        <button onclick="switchTab(this, 'tab-llama-create-cli')">CLI</button>
+      </div>
+      <div class="tab-panel active" id="tab-llama-create-tui">
+        <p>Press <kbd>n</kbd> on the dashboard, pick the <strong>llama.cpp</strong> backend, and provide the GGUF repo and file. llmux generates the profile and config.</p>
+      </div>
+      <div class="tab-panel" id="tab-llama-create-cli">
+        <pre data-lang="bash"><code>llmux profile new gemma-3-4b \
+  --backend llamacpp \
+  --port 8080 \
+  --gpu-id 0 \
+  --model-file gemma-3-4b-it-q4_k_m.gguf \
+  --hf-repo unsloth/gemma-3-4b-it-GGUF \
+  --hf-file gemma-3-4b-it-q4_k_m.gguf</code></pre>
+        <p>This prints <code>Created profile 'gemma-3-4b' (backend=llamacpp)</code>.</p>
+      </div>
+    </div>
+
+    <h3 id="2-start-the-container-llamacpp">2. Start the container</h3>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="active" onclick="switchTab(this, 'tab-llama-start-tui')">TUI</button>
+        <button onclick="switchTab(this, 'tab-llama-start-cli')">CLI</button>
+      </div>
+      <div class="tab-panel active" id="tab-llama-start-tui">
+        <p>Select the <code>gemma-3-4b</code> row and press <kbd>u</kbd>. On first start llmux auto-downloads the GGUF file before bringing the container up — you'll see the download progress in the stream.</p>
+      </div>
+      <div class="tab-panel" id="tab-llama-start-cli">
+        <pre data-lang="bash"><code>llmux up gemma-3-4b</code></pre>
+        <p>The GGUF is fetched into <code>MODEL_DIR</code> (from <code>.env.common</code>) on first start, then <code>docker compose</code> brings up the <code>llama.cpp</code> server.</p>
+      </div>
+    </div>
+
+    <div class="admonition tip">
+      <p class="admonition-title">GGUF download stuck?</p>
+      <p>Check <code>HF_TOKEN</code> in <code>.env.common</code> and confirm the <code>hf</code> CLI is installed (<code>uv tool install huggingface_hub</code>). Then retry the start.</p>
+    </div>
+
+    <h3 id="3-check-health-llamacpp">3. Check health</h3>
+    <p>llama.cpp's server is also OpenAI-compatible and exposes <code>/health</code> on the profile's port (default <code>8080</code>):</p>
+    <pre data-lang="bash"><code>curl http://localhost:8080/health</code></pre>
+    <pre data-lang="bash"><code>llmux ps --running    # confirm the llama.cpp container is up</code></pre>
+
+    <h3 id="4-watch-the-logs-llamacpp">4. Watch the logs</h3>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="active" onclick="switchTab(this, 'tab-llama-logs-tui')">TUI</button>
+        <button onclick="switchTab(this, 'tab-llama-logs-cli')">CLI</button>
+      </div>
+      <div class="tab-panel active" id="tab-llama-logs-tui">
+        <p>Select the profile and press <kbd>l</kbd>.</p>
+      </div>
+      <div class="tab-panel" id="tab-llama-logs-cli">
+        <pre data-lang="bash"><code>llmux logs gemma-3-4b</code></pre>
+      </div>
+    </div>
+
+    <h3 id="5-stop-the-container-llamacpp">5. Stop the container</h3>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="active" onclick="switchTab(this, 'tab-llama-stop-tui')">TUI</button>
+        <button onclick="switchTab(this, 'tab-llama-stop-cli')">CLI</button>
+      </div>
+      <div class="tab-panel active" id="tab-llama-stop-tui">
+        <p>Select the profile and press <kbd>d</kbd>.</p>
+      </div>
+      <div class="tab-panel" id="tab-llama-stop-cli">
+        <pre data-lang="bash"><code>llmux down gemma-3-4b</code></pre>
+      </div>
+    </div>
+
+    <h2 id="next-steps">Next steps</h2>
+    <p>You've now served a model with both backends. To go further:</p>
+    <ul>
+      <li><strong><a href="../guide/profiles.html">Profiles</a></strong> — the full <code>profiles.yaml</code> schema, <code>defaults</code> inheritance, and per-backend fields.</li>
+      <li><strong><a href="../guide/configs.html">Model Configs</a></strong> — tune engine flags per model in <code>config/&lt;backend&gt;/&lt;name&gt;.yaml</code>.</li>
+      <li><strong><a href="../guide/container-lifecycle.html">Container Lifecycle</a></strong> — image version policy, the conflict gate, and <code>render-env</code>.</li>
+      <li><strong><a href="../guide/tui.html">Using the TUI</a></strong> — the dashboard, keyboard reference, and in-TUI editing.</li>
+      <li><strong><a href="../reference/cli.html">CLI Reference</a></strong> — every subcommand and flag for scripts, agents, and CI.</li>
+    </ul>
+
+    <div class="docs-footer">
+      <a class="edit-link" href="https://github.com/Bae-ChangHyun/llmux/edit/main/docs/getting-started/quickstart.html" target="_blank">Edit this page on GitHub</a>
+      <div class="prev-next">
+        <a href="installation.html">&larr; Installation</a>
+        <a href="../guide/profiles.html">Profiles &rarr;</a>
+      </div>
+    </div>
+
+  </article>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="page-wrap">
+    <p>
+      MIT License &middot;
+      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a> &middot;
+      Made by <a href="https://github.com/Bae-ChangHyun">Bae-ChangHyun</a>
+    </p>
+  </div>
+</footer>
+
+<script>
+function switchTab(btn, panelId) {
+  const tabs = btn.closest('.tabs');
+  tabs.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
+  tabs.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById(panelId).classList.add('active');
+}
+</script>
+
+</body>
+</html>
