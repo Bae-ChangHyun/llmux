@@ -29,6 +29,8 @@ from tui.backends.llamacpp.backend import (
     load_profile,
     run_command,
 )
+from tui.backends.llamacpp.backend_runtime import LLAMACPP_DEV_SPEC
+from tui.common.dev_build import list_local_dev_images
 
 
 class SystemScreen(Screen):
@@ -65,8 +67,13 @@ class SystemScreen(Screen):
             with TabPane("GPU", id="gpu-tab"):
                 yield DataTable(id="gpu-table")
             with TabPane("Docker Images", id="images-tab"):
-                yield Static("llama.cpp images", classes="section-title")
+                yield Static(
+                    "Official Images (ghcr.io/ggml-org/llama.cpp)",
+                    classes="section-title",
+                )
                 yield DataTable(id="llama-images")
+                yield Static("Dev Images (llamacpp-dev)", classes="section-title")
+                yield DataTable(id="dev-images")
                 yield Button("Refresh Images", id="btn-refresh-images", variant="primary")
             with TabPane("Containers", id="containers-tab"):
                 yield RichLog(id="container-info", highlight=True)
@@ -79,6 +86,8 @@ class SystemScreen(Screen):
         gpu_table.add_columns("GPU", "Name", "Mem Used", "Mem Total", "Util", "Temp")
         images_table = self.query_one("#llama-images", DataTable)
         images_table.add_columns("Tag", "Size", "Created")
+        dev_images_table = self.query_one("#dev-images", DataTable)
+        dev_images_table.add_columns("Tag", "Size", "Created")
 
         self._refresh_gpu()
         self._refresh_images()
@@ -141,11 +150,15 @@ class SystemScreen(Screen):
 
     @work(exclusive=True, group="sys-images")
     async def _refresh_images(self) -> None:
-        imgs = await get_docker_images("ghcr.io/ggml-org/llama.cpp")
-        self._update_images_table(imgs)
+        official = await get_docker_images("ghcr.io/ggml-org/llama.cpp")
+        dev = await list_local_dev_images(LLAMACPP_DEV_SPEC)
+        self._update_image_table("#llama-images", official)
+        # `DevImage` from tui.common.dev_build has matching .tag/.size/.created
+        # attributes, so the same fill helper works for both tables.
+        self._update_image_table("#dev-images", dev)
 
-    def _update_images_table(self, images: list[DockerImage]) -> None:
-        table = self.query_one("#llama-images", DataTable)
+    def _update_image_table(self, table_id: str, images) -> None:
+        table = self.query_one(table_id, DataTable)
         table.clear()
         if not images:
             table.add_row("(없음)", "--", "--")

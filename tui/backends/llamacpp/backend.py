@@ -327,10 +327,15 @@ async def extract_llama_server_flags() -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-async def stream_logs(container_name: str, lines: int = 200):
-    """docker logs 를 async 로 스트리밍. 라인 단위 yield."""
+async def stream_logs(container_name: str, *, tail: int = 100):
+    """docker logs 를 async 로 스트리밍. 라인 단위 yield.
+
+    Signature is keyword-only `tail` for parity with
+    `tui.backends.vllm.backend_runtime.stream_container_logs` — both backends
+    expose `(container_name, *, tail: int = 100)` so the CLI follow path can
+    call either interchangeably."""
     proc = await asyncio.create_subprocess_exec(
-        "docker", "logs", "-f", "--tail", str(lines), container_name,
+        "docker", "logs", "-f", "--tail", str(tail), container_name,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )

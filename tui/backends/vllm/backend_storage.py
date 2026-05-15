@@ -52,6 +52,7 @@ def _to_profile(stored: profile_store.StoredProfile) -> Profile:
         max_loras=str(stored.max_loras) if stored.max_loras is not None else "",
         max_lora_rank=str(stored.max_lora_rank) if stored.max_lora_rank is not None else "",
         lora_modules=stored.lora_modules,
+        image_tag=stored.image_tag,
         env_vars={
             **({"EXTRA_PIP_PACKAGES": stored.extra_pip_packages} if stored.extra_pip_packages else {}),
             **stored.env_vars,
@@ -75,6 +76,7 @@ def _to_stored(profile: Profile) -> profile_store.StoredProfile:
         max_loras=int(profile.max_loras) if str(profile.max_loras).strip() else None,
         max_lora_rank=int(profile.max_lora_rank) if str(profile.max_lora_rank).strip() else None,
         lora_modules=profile.lora_modules,
+        image_tag=profile.image_tag,
         extra_pip_packages=extra_pip,
         env_vars=env_vars,
     )
