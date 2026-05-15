@@ -47,14 +47,61 @@ def _load_yaml(backend: str, name: str) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
-def _save_yaml(backend: str, name: str, data: dict) -> Path:
+def _config_path(backend: str, name: str) -> Path:
+    """Return the canonical on-disk path for `<backend>/<name>.yaml`."""
+    return _config_dir(backend) / f"{name}.yaml"
+
+
+def _backend_save_config(backend: str, name: str, data: dict) -> Path:
+    """Route a config write through the backend's canonical serializer.
+
+    The vLLM backend hoists `model` / `gpu-memory-utilization` into typed
+    fields and writes them in a fixed order; the llama.cpp backend writes a
+    flat flag dict. Going through these instead of a local `yaml.safe_dump`
+    keeps TUI and CLI round-trips byte-identical (Finding #4).
+    """
     cdir = _config_dir(backend)
     cdir.mkdir(parents=True, exist_ok=True)
-    path = cdir / f"{name}.yaml"
-    path.write_text(
-        yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=False)
-    )
-    return path
+    if backend == "vllm":
+        from tui.backends.vllm.backend_common import Config as VllmConfig
+        from tui.backends.vllm.backend_storage import save_config as v_save
+
+        extra = dict(data)
+        model = str(extra.pop("model", ""))
+        gpu_mem = str(extra.pop("gpu-memory-utilization", "0.9"))
+        v_save(VllmConfig(
+            name=name,
+            model=model,
+            gpu_memory_utilization=gpu_mem,
+            extra_params=extra,
+        ))
+    else:
+        from tui.backends.llamacpp.backend import Config as LcppConfig
+        from tui.backends.llamacpp.backend import save_config as l_save
+
+        l_save(LcppConfig(name=name, params=dict(data)))
+    return _config_path(backend, name)
+
+
+def _backend_load_config(backend: str, name: str) -> dict:
+    """Read a config through the backend's canonical loader, flattened to a
+    `{key: value}` dict the existing --set/--unset CLI logic patches in place.
+
+    For vLLM: the typed fields are re-merged into the flat dict under their
+    on-disk key names (`model`, `gpu-memory-utilization`) so that subsequent
+    `_backend_save_config` round-trips back through the same code path.
+    """
+    if backend == "vllm":
+        from tui.backends.vllm.backend_storage import load_config as v_load
+
+        cfg = v_load(name)
+        data: dict = {"model": cfg.model, "gpu-memory-utilization": cfg.gpu_memory_utilization}
+        data.update(cfg.extra_params)
+        return data
+    from tui.backends.llamacpp.backend import load_config as l_load
+
+    cfg = l_load(name)
+    return dict(cfg.params)
 
 
 def _parse_set_kv(items: list[str]) -> dict:
@@ -187,7 +234,7 @@ def new_config(
     else:
         data = {}
     data.update(_parse_set_kv(set_kv))
-    saved = _save_yaml(backend, name, data)
+    saved = _backend_save_config(backend, name, data)
     print(saved)
 
 
@@ -202,7 +249,7 @@ def edit_config(
 ) -> None:
     """Patch fields in an existing config."""
     bk = _resolve_backend_for_existing(backend, name)
-    data = _load_yaml(bk, name)
+    data = _backend_load_config(bk, name)
     if model is not None:
         data["model"] = model
     if gpu_memory_utilization is not None:
@@ -210,7 +257,7 @@ def edit_config(
     data.update(_parse_set_kv(set_kv))
     for k in unset:
         data.pop(k, None)
-    saved = _save_yaml(bk, name, data)
+    saved = _backend_save_config(bk, name, data)
     print(saved)
 
 

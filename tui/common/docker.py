@@ -24,8 +24,20 @@ async def run_command(*args: str, timeout: float = 10) -> tuple[int, str]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
+    except FileNotFoundError:
+        return 1, ""
+    try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except (asyncio.TimeoutError, FileNotFoundError):
+    except asyncio.TimeoutError:
+        # Timed-out probe: kill and reap the child so it doesn't leak.
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+        try:
+            await proc.wait()
+        except (asyncio.CancelledError, ProcessLookupError, OSError):
+            pass
         return 1, ""
     return proc.returncode or 0, stdout.decode("utf-8", errors="replace")
 

@@ -31,8 +31,10 @@ from textual.widgets import (
 )
 
 from tui.backends.llamacpp import backend
+from tui.backends.llamacpp.backend import format_gpu_bar, get_gpu_info
 from tui.backends.llamacpp.backend_runtime import (
     LLAMACPP_DEV_SPEC,
+    check_port_conflict,
     get_dev_build_defaults,
     stream_container_up,
 )
@@ -151,6 +153,7 @@ class ContainerUpScreen(Screen):
         self._profile = backend.load_profile(profile_name)
         self._dev_repo_url, self._dev_branch = get_dev_build_defaults()
         self._has_local_dev: bool = False
+        self._gpu_timer = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal-dialog"):
@@ -214,14 +217,26 @@ class ContainerUpScreen(Screen):
                     max_lines=5000,
                     id="startup-log",
                 )
+            yield Static("", id="gpu-bar")
             with Horizontal(classes="buttons"):
                 yield Button("Start", variant="primary", id="start-btn")
                 yield Button("Cancel", variant="default", id="cancel-btn")
 
     def on_mount(self) -> None:
         self._refresh_dev_label()
+        self._fetch_gpu_info()
         try:
             self.query_one("#version-radio", RadioSet).focus()
+        except Exception:
+            pass
+        # Live GPU bar — refreshed every 3 seconds, matching vllm's screen.
+        self._gpu_timer = self.set_interval(3, self._fetch_gpu_info)
+
+    @work(exclusive=False)
+    async def _fetch_gpu_info(self) -> None:
+        gpus = await get_gpu_info()
+        try:
+            self.query_one("#gpu-bar", Static).update(format_gpu_bar(gpus))
         except Exception:
             pass
 
@@ -261,6 +276,8 @@ class ContainerUpScreen(Screen):
             dev_options.styles.display = "none"
 
     def _cleanup(self) -> None:
+        if self._gpu_timer is not None:
+            self._gpu_timer.stop()
         self.workers.cancel_all()
 
     @on(Button.Pressed, "#cancel-btn")
@@ -283,6 +300,7 @@ class ContainerUpScreen(Screen):
         selected_id = pressed.id if pressed else VER_DEFAULT
 
         use_dev = False
+        use_default_image = False
         tag = ""
         repo_url = ""
         branch = ""
@@ -302,9 +320,23 @@ class ContainerUpScreen(Screen):
             if not tag:
                 self.app.notify("Please enter a custom tag.", severity="error")
                 return
+        else:
+            # VER_DEFAULT: explicitly clear any pinned image_tag so the
+            # backend falls back to the compose default image instead of
+            # silently re-using whatever the profile pins.
+            use_default_image = True
 
-        # VER_DEFAULT falls through with all defaults — backend resolves
-        # to the compose default image.
+        # Runtime port-conflict pre-flight — same UX as vllm's screen, mirrors
+        # the check the backend will perform anyway so the user sees an
+        # actionable error before we switch into the log view.
+        conflict = await check_port_conflict(self._profile)
+        if conflict:
+            self.app.notify(
+                f"Port {self._profile.port} is already used by {conflict}.",
+                severity="error",
+                timeout=5,
+            )
+            return
 
         # Switch to log view
         try:
@@ -321,6 +353,7 @@ class ContainerUpScreen(Screen):
         async for msg_type, data in stream_container_up(
             self.profile_name,
             use_dev=use_dev,
+            use_default_image=use_default_image,
             tag=tag,
             repo_url=repo_url,
             branch=branch,

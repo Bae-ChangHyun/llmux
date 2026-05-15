@@ -47,6 +47,7 @@ class Profile:
     max_loras: str = ""
     max_lora_rank: str = ""
     lora_modules: str = ""
+    image_tag: str = ""
     env_vars: dict[str, str] = field(default_factory=dict)
 
     @property

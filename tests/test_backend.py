@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from tui.backends.llamacpp import backend as lbackend
+from tui.backends.llamacpp import backend_runtime as lbackend_rt
 from tui.backends.vllm import backend
 from tui.backends.vllm import backend_inspect
 from tui.backends.vllm.backend_inspect import (
@@ -494,11 +495,13 @@ class EnsureCommonEnvTests(unittest.TestCase):
 
 
 class DetectGpuArchTests(unittest.IsolatedAsyncioTestCase):
+    # `_detect_gpu_arch` delegates to dev_build.detect_local_gpu_caps(), which
+    # shells out via dev_build._run() — patch that, not the runtime helper.
     async def test_single_gpu_keeps_dot_form(self) -> None:
         async def fake_run(*args, **kwargs):
             return 0, "8.9\n"
 
-        with patch("tui.backends.vllm.backend_runtime.run_command", fake_run):
+        with patch("tui.common.dev_build._run", fake_run):
             result = await _detect_gpu_arch()
         self.assertEqual(result, "8.9")
 
@@ -506,7 +509,7 @@ class DetectGpuArchTests(unittest.IsolatedAsyncioTestCase):
         async def fake_run(*args, **kwargs):
             return 0, "8.9\n8.6\n8.9\n"
 
-        with patch("tui.backends.vllm.backend_runtime.run_command", fake_run):
+        with patch("tui.common.dev_build._run", fake_run):
             result = await _detect_gpu_arch()
         self.assertEqual(result, "8.6 8.9")
 
@@ -514,7 +517,7 @@ class DetectGpuArchTests(unittest.IsolatedAsyncioTestCase):
         async def fake_run(*args, **kwargs):
             return 1, ""
 
-        with patch("tui.backends.vllm.backend_runtime.run_command", fake_run):
+        with patch("tui.common.dev_build._run", fake_run):
             result = await _detect_gpu_arch()
         self.assertEqual(result, "")
 
@@ -794,6 +797,38 @@ class CheckPortConflictTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(conflict)
 
+    async def test_check_port_conflict_sets_so_reuseaddr(self) -> None:
+        """Regression: the fallback bind() check must set SO_REUSEADDR.
+
+        Our own _post_start_validation hits /v1/models on this port after
+        every successful `up`, which leaves a TIME-WAIT entry on
+        127.0.0.1:<port> for ~60s. Without SO_REUSEADDR a plain bind()
+        refuses TIME-WAIT ports and every up→down→up cycle within that
+        window would falsely report 'another local process'."""
+        import socket as socket_mod
+        from unittest import mock
+
+        profile = backend.Profile(name="current", container_name="current", port="18999")
+
+        async def fake_run_command(*args, **kwargs):
+            return 0, ""
+
+        mock_sock = mock.MagicMock()
+
+        with mock.patch("socket.socket", return_value=mock_sock), patch.dict(
+            backend.check_port_conflict.__globals__,
+            {
+                "run_command": fake_run_command,
+                "list_profile_names": lambda: ["current"],
+                "load_profile": lambda n: profile,
+            },
+        ):
+            await backend.check_port_conflict(profile)
+
+        mock_sock.setsockopt.assert_any_call(
+            socket_mod.SOL_SOCKET, socket_mod.SO_REUSEADDR, 1
+        )
+
     async def test_check_port_conflict_detects_external_process(self) -> None:
         import socket
 
@@ -971,6 +1006,71 @@ class LlamacppValidationTests(unittest.TestCase):
         self.assertFalse(lbackend.validate_name("dot.name"))
 
 
+class LlamacppCheckPortConflictTests(unittest.IsolatedAsyncioTestCase):
+    async def test_check_port_conflict_sets_so_reuseaddr(self) -> None:
+        """Regression: the fallback bind() check must set SO_REUSEADDR.
+
+        Mirrors the vLLM regression at CheckPortConflictTests.
+        Our own _post_start_validation hits /v1/models on this port after
+        every successful `up`, which leaves a TIME-WAIT entry on
+        127.0.0.1:<port> for ~60s. Without SO_REUSEADDR a plain bind()
+        refuses TIME-WAIT ports and every up→down→up cycle within that
+        window would falsely report 'another local process'."""
+        import socket as socket_mod
+        from unittest import mock
+
+        profile = lbackend.Profile(name="current", container_name="current", port=18999)
+
+        async def fake_docker_run(*args, **kwargs):
+            return 0, ""
+
+        mock_sock = mock.MagicMock()
+
+        with mock.patch("socket.socket", return_value=mock_sock), patch.dict(
+            lbackend_rt.check_port_conflict.__globals__,
+            {
+                "_docker_run": fake_docker_run,
+                "list_profile_names": lambda: ["current"],
+                "load_profile": lambda n: profile,
+            },
+        ):
+            await lbackend_rt.check_port_conflict(profile)
+
+        mock_sock.setsockopt.assert_any_call(
+            socket_mod.SOL_SOCKET, socket_mod.SO_REUSEADDR, 1
+        )
+
+    async def test_check_port_conflict_detects_external_listener(self) -> None:
+        """An actively LISTENING peer on the port must still be reported as
+        a conflict even with SO_REUSEADDR on the probe — SO_REUSEADDR only
+        skips TIME-WAIT, not active LISTEN."""
+        import socket
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        bound_port = sock.getsockname()[1]
+        self.addCleanup(sock.close)
+
+        profile = lbackend.Profile(name="current", container_name="current", port=bound_port)
+
+        async def fake_docker_run(*args, **kwargs):
+            return 0, ""
+
+        with patch.dict(
+            lbackend_rt.check_port_conflict.__globals__,
+            {
+                "_docker_run": fake_docker_run,
+                "list_profile_names": lambda: ["current"],
+                "load_profile": lambda n: profile,
+            },
+        ):
+            conflict = await lbackend_rt.check_port_conflict(profile)
+
+        self.assertIsNotNone(conflict)
+        self.assertIn(str(bound_port), conflict)
+
+
 class LlamacppRenderOverrideTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -981,14 +1081,92 @@ class LlamacppRenderOverrideTests(unittest.TestCase):
         spec.loader.exec_module(module)
         cls.module = module
 
+    def test_hf_repo_and_file_emit_hf_download_flags(self) -> None:
+        # render_command now emits container-side `-hf/-hff` download args,
+        # not the legacy host-side `--model` path.
+        command = self.module.render_command(
+            {"ctx-size": 2048},
+            hf_repo="org/repo",
+            hf_file="model.gguf",
+        )
+        self.assertEqual(command[command.index("-hf") + 1], "org/repo")
+        self.assertEqual(command[command.index("-hff") + 1], "model.gguf")
+        self.assertNotIn("--model", command)
+
     def test_profile_model_file_is_used_when_config_omits_model_file(self) -> None:
-        command = self.module.render_command({"ctx-size": 2048}, "model.gguf")
-        self.assertIn("--model", command)
-        self.assertIn("/models/model.gguf", command)
+        # When the config has no `model-file` and the profile carries no
+        # `hf_file`, the profile's `model_file` is the resolved -hff filename.
+        command = self.module.render_command(
+            {"ctx-size": 2048},
+            model_file="model.gguf",
+            hf_repo="org/repo",
+        )
+        self.assertEqual(command[command.index("-hff") + 1], "model.gguf")
+
+    def test_config_model_file_used_as_fallback(self) -> None:
+        command = self.module.render_command(
+            {"ctx-size": 2048, "model-file": "from-config.gguf"},
+            hf_repo="org/repo",
+        )
+        self.assertEqual(command[command.index("-hff") + 1], "from-config.gguf")
 
     def test_missing_model_file_fails_fast(self) -> None:
         with self.assertRaises(ValueError):
-            self.module.render_command({"ctx-size": 2048}, "")
+            self.module.render_command({"ctx-size": 2048}, hf_repo="org/repo")
+
+    def test_missing_hf_repo_fails_fast(self) -> None:
+        with self.assertRaises(ValueError):
+            self.module.render_command({"ctx-size": 2048}, hf_file="model.gguf")
+
+    def test_flash_attn_true_renders_with_on_value(self) -> None:
+        """Regression: modern llama-server requires --flash-attn on/off/auto,
+        not a bare --flash-attn (it would consume the next arg as its value)."""
+        command = self.module.render_command(
+            {"flash-attn": True},
+            hf_repo="org/repo",
+            hf_file="model.gguf",
+        )
+        idx = command.index("--flash-attn")
+        self.assertEqual(command[idx + 1], "on")
+
+    def test_flash_attn_false_renders_with_off_value(self) -> None:
+        command = self.module.render_command(
+            {"flash-attn": False},
+            hf_repo="org/repo",
+            hf_file="model.gguf",
+        )
+        idx = command.index("--flash-attn")
+        self.assertEqual(command[idx + 1], "off")
+
+    def test_flash_attn_string_value_passes_through(self) -> None:
+        """A user can also write `flash-attn: auto` (or any string) explicitly."""
+        command = self.module.render_command(
+            {"flash-attn": "auto"},
+            hf_repo="org/repo",
+            hf_file="model.gguf",
+        )
+        idx = command.index("--flash-attn")
+        self.assertEqual(command[idx + 1], "auto")
+
+    def test_other_bool_keys_remain_bare_flags(self) -> None:
+        """The flash-attn special-case must NOT apply to other bool keys —
+        --jinja, --cont-batching, --metrics, --mlock etc. take no value and
+        adding one would break startup. Whitelist must stay narrow."""
+        command = self.module.render_command(
+            {"jinja": True, "cont-batching": True, "metrics": False},
+            hf_repo="org/repo",
+            hf_file="model.gguf",
+        )
+        # Both `--jinja` and `--cont-batching` must appear as bare flags.
+        self.assertIn("--jinja", command)
+        self.assertIn("--cont-batching", command)
+        # And neither may be followed by an "on"/"off"/"true"/"false" token.
+        for flag in ("--jinja", "--cont-batching"):
+            idx = command.index(flag)
+            next_token = command[idx + 1] if idx + 1 < len(command) else ""
+            self.assertNotIn(next_token, {"on", "off", "true", "false", "True", "False"})
+        # False-valued bare bools (metrics) are simply omitted.
+        self.assertNotIn("--metrics", command)
 
 
 class QuickSetupSuffixLogicTests(unittest.TestCase):

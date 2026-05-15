@@ -92,12 +92,21 @@ def render_command(
     override_tensors = cfg.pop("override-tensors", None) or []
     extra_args = cfg.pop("extra-args", None) or []
 
+    # Modern llama-server requires an explicit value for --flash-attn
+    # (`on` / `off` / `auto`); bare `--flash-attn` consumes the next CLI arg
+    # as the value and dies with "unknown value for --flash-attn: '--jinja'".
+    # Keep this as a narrow whitelist — other boolean keys (--jinja,
+    # --cont-batching, --metrics, --no-mmap, --mlock, …) are still bare flags.
+    _BOOL_VALUE_FLAGS = {"flash-attn"}
+
     for key, value in cfg.items():
         flag = f"--{key}"
         if isinstance(value, bool):
-            if value:
+            if key in _BOOL_VALUE_FLAGS:
+                args.extend([flag, "on" if value else "off"])
+            elif value:
                 args.append(flag)
-            # False 는 무시
+            # value-less bool: False 는 무시
         elif isinstance(value, list):
             for item in value:
                 args.extend([flag, str(item)])

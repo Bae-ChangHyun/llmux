@@ -121,7 +121,7 @@ class LogViewer(ModalScreen[None]):
     async def _stream(self) -> None:
         log = self.query_one("#log-body", RichLog)
         try:
-            async for line in backend.stream_logs(self.container_name, lines=200):
+            async for line in backend.stream_logs(self.container_name, tail=200):
                 log.write(backend.strip_ansi(line))
         except Exception as exc:  # pragma: no cover
             log.write(f"[로그 스트림 오류] {exc}")
@@ -213,7 +213,7 @@ class StartScreen(Screen[None]):
         log.write("Container started. Streaming logs...")
         try:
             async for line in backend.stream_logs(
-                self._profile.container_name, lines=200
+                self._profile.container_name, tail=200
             ):
                 log.write(backend.strip_ansi(line))
         except Exception as exc:  # pragma: no cover

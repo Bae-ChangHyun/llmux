@@ -11,8 +11,10 @@ import typer
 from tui.cli._runtime import (
     BACKENDS,
     detect_backend,
+    docker_logs_once,
     emit_json,
     emit_table,
+    gather_conflict_warnings,
     run_async,
     stream_async,
 )
@@ -46,9 +48,34 @@ def up(
     branch: str = typer.Option(
         "", "--branch", help="vLLM dev image: override default vLLM source branch."
     ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Skip the cross-backend port/GPU conflict pre-flight (matches the "
+             "TUI dashboard's pre-start gate). Required to start a container "
+             "when llmux detects a conflict.",
+    ),
 ) -> None:
     """Start a profile's container. Streams compose output to stdout."""
     bk = detect_backend(profile, override=backend)
+
+    # Conflict pre-flight: mirror the TUI dashboard. The headless CLI defaults
+    # to ABORT-on-conflict so scripts/agents don't silently start a container
+    # that competes with another for the same port or GPU. `--force` opts out.
+    if not force:
+        warnings = run_async(gather_conflict_warnings(profile, bk))
+        if warnings:
+            typer.echo(
+                f"Conflict pre-flight: cannot start '{profile}' ({bk}) — "
+                f"{len(warnings)} issue(s) detected:",
+                err=True,
+            )
+            for w in warnings:
+                typer.echo(f"  • {w}", err=True)
+            typer.echo(
+                "Aborting. Re-run with --force to start anyway.", err=True
+            )
+            raise typer.Exit(code=1)
+
     if bk == "vllm":
         from tui.backends.vllm.backend_runtime import stream_container_up
 
@@ -128,25 +155,29 @@ def logs(
     container_name = sp.container_name or sp.name
 
     if not follow:
-        import subprocess
-
-        rc = subprocess.run(
-            ["docker", "logs", "--tail", str(tail), container_name]
-        ).returncode
+        # Go through the shared async helper so follow and no-follow paths
+        # don't drift (Finding #20). Same `docker logs --tail N` semantics
+        # the bare subprocess had — just routed through _runtime so both
+        # backends, and the TUI's log streamer, share one wrapper shape.
+        rc = run_async(docker_logs_once(container_name, tail=tail))
         raise typer.Exit(code=rc)
 
     if bk == "vllm":
         from tui.backends.vllm.backend_runtime import stream_container_logs as _gen
 
         async def _drive():
-            async for line in _gen(container_name):
+            # Agreed contract: stream_container_logs(container_name, *, tail).
+            async for line in _gen(container_name, tail=tail):
                 print(line, flush=True)
             return 0
     else:
         from tui.backends.llamacpp.backend import stream_logs as _gen
 
         async def _drive():
-            async for evt in _gen(container_name, lines=tail):
+            # Agreed contract: stream_logs(container_name, *, tail) — llama.cpp
+            # matches the vLLM keyword-only signature so `--tail` is honored
+            # for the follow path on both backends.
+            async for evt in _gen(container_name, tail=tail):
                 if isinstance(evt, tuple):
                     if evt[0] == "log":
                         print(evt[1], flush=True)
@@ -159,6 +190,85 @@ def logs(
     except KeyboardInterrupt:
         rc = 130
     raise typer.Exit(code=rc)
+
+
+# ---- benchmark --------------------------------------------------------------
+
+@app.command("benchmark")
+def benchmark(
+    profile: str = typer.Argument(..., help="Profile name (from profiles.yaml)."),
+    backend: Optional[str] = typer.Option(
+        None, "--backend", "-b", help="Force backend; auto-detect if omitted."
+    ),
+    prompt: str = typer.Option(
+        "Explain the theory of relativity in about 150 words.", "--prompt",
+        help="Prompt to send to /v1/chat/completions.",
+    ),
+    max_tokens: int = typer.Option(
+        200, "--max-tokens", help="max_tokens for the bench request."
+    ),
+    json_out: bool = typer.Option(
+        False, "--json", help="Emit a JSON record instead of a human line."
+    ),
+) -> None:
+    """Benchmark a running container (tok/s). Mirrors the TUI dashboard bench."""
+    bk = detect_backend(profile, override=backend)
+    sp = profile_store.load_profile(profile, bk)
+    if not sp.port:
+        typer.echo(f"profile '{profile}' has no port set", err=True)
+        raise typer.Exit(code=2)
+
+    async def _run() -> dict:
+        # Match the dashboard's per-backend dispatch: vLLM discovers the
+        # served model via /v1/models, llama.cpp uses the config `alias` (or
+        # the config name) since llama-server may not expose multiple models.
+        from tui.common.http import chat_completion_bench, list_served_models
+
+        if bk == "vllm":
+            served = await list_served_models(sp.port)
+            model = served[0] if served else (sp.model_id or "")
+            if not model:
+                raise RuntimeError(
+                    "could not identify a served model "
+                    "(/v1/models returned nothing and profile has no model_id)"
+                )
+        else:
+            from tui.backends.llamacpp.backend import load_config as l_load_config
+
+            cfg = l_load_config(sp.config_name or sp.name)
+            model = str(cfg.get("alias", cfg.name))
+
+        r = await chat_completion_bench(
+            sp.port, model, prompt=prompt, max_tokens=max_tokens
+        )
+        usage = r.get("usage", {})
+        ct = int(usage.get("completion_tokens", 0) or 0)
+        elapsed = float(r.get("elapsed", 0.0) or 0.0)
+        tps = ct / elapsed if elapsed > 0 else 0.0
+        return {
+            "profile": profile,
+            "backend": bk,
+            "model": model,
+            "port": sp.port,
+            "tokens": ct,
+            "elapsed": elapsed,
+            "tok_per_s": tps,
+        }
+
+    try:
+        result = run_async(_run())
+    except Exception as exc:
+        typer.echo(f"benchmark failed: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    if json_out:
+        emit_json(result)
+        return
+    print(
+        f"{result['profile']} ({result['backend']}, port {result['port']}): "
+        f"{result['tokens']} tok / {result['elapsed']:.2f}s "
+        f"= {result['tok_per_s']:.1f} tok/s  [{result['model']}]"
+    )
 
 
 # ---- ps ---------------------------------------------------------------------

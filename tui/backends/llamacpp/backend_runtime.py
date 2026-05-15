@@ -15,11 +15,21 @@ builds.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import re
+import socket
+import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 from tui.common import dev_build, profile_store
-from tui.common.docker import run_command as _docker_run
+from tui.common.docker import (
+    GPU_WILDCARD,
+    gpu_sets_overlap,
+    parse_gpu_ids,
+    run_command as _docker_run,
+)
 
 from .backend import (
     COMMON_ENV,
@@ -29,6 +39,7 @@ from .backend import (
     Profile,
     _get_model_dir,
     _parse_env_file,
+    list_profile_names,
     load_profile,
 )
 
@@ -52,6 +63,27 @@ LLAMACPP_DEV_SPEC = dev_build.DevBuildSpec(
 
 
 _BUILD_LOCK = asyncio.Lock()
+
+
+@dataclass
+class ContainerStatus:
+    """Structured per-profile container status.
+
+    Field-for-field mirror of tui.backends.vllm.backend_common.ContainerStatus
+    so the CLI `ps` command can consume either backend's
+    get_container_statuses() interchangeably.
+    """
+
+    profile_name: str
+    container_name: str
+    running: bool = False
+    status_text: str = "stopped"
+    health: str = ""
+    port: str = ""
+    gpu_id: str = ""
+    image: str = ""
+    model: str = ""
+    lora: bool = False
 
 
 def get_dev_build_defaults() -> tuple[str, str]:
@@ -258,8 +290,190 @@ async def _render_override(profile_name: str) -> tuple[int, str]:
 
 
 # ---------------------------------------------------------------------------
+# Safety pre-flight (mirrors vllm: GPU-overlap warning + port-conflict abort)
+# ---------------------------------------------------------------------------
+
+
+def _format_gpu_label(gpu_id: str) -> str:
+    return "all GPUs" if gpu_id == GPU_WILDCARD else f"GPU {gpu_id}"
+
+
+async def _gpu_conflict_messages(profile: Profile) -> list[str]:
+    """Non-fatal warnings when the profile's GPU ids overlap a running
+    container. Mirrors vllm._gpu_conflict_messages — scans BOTH llama.cpp and
+    vLLM profiles so a cross-backend GPU clash is surfaced too.
+    """
+    rc, out = await _docker_run("docker", "ps", "--format", "{{.Names}}", timeout=10)
+    if rc != 0:
+        return [
+            "Warning: could not inspect running containers for GPU overlap "
+            f"({out.strip() or 'docker ps failed'})."
+        ]
+    running_names = set(out.strip().splitlines())
+    profile_gpu_ids = parse_gpu_ids(profile.gpu_id)
+    messages: list[str] = []
+    for name in list_profile_names():
+        if name == profile.name:
+            continue
+        other = load_profile(name)
+        if other.container_name not in running_names:
+            continue
+        other_gpu_ids = parse_gpu_ids(other.gpu_id)
+        for gpu_id in sorted(gpu_sets_overlap(profile_gpu_ids, other_gpu_ids)):
+            messages.append(
+                f"Warning: {_format_gpu_label(gpu_id)} is also used by running "
+                f"llama.cpp container '{other.container_name}'"
+            )
+    for other in profile_store.list_profiles("vllm"):
+        container_name = other.container_name or other.name
+        if container_name not in running_names:
+            continue
+        other_gpu_ids = parse_gpu_ids(other.gpu_id)
+        for gpu_id in sorted(gpu_sets_overlap(profile_gpu_ids, other_gpu_ids)):
+            messages.append(
+                f"Warning: {_format_gpu_label(gpu_id)} is also used by running "
+                f"vLLM container '{container_name}'"
+            )
+    return messages
+
+
+async def check_port_conflict(profile: Profile) -> str | None:
+    """Check whether the profile port is already occupied by a running
+    container or local process. Mirrors vllm.check_port_conflict — static
+    profile-to-profile overlap (both stopped) is ignored.
+
+    Returns a short human-readable description when a conflict is found.
+    """
+    port = str(profile.port)
+    rc, out = await _docker_run(
+        "docker", "ps", "--format", "{{.Names}}\t{{.Ports}}", timeout=10
+    )
+    if rc == 0:
+        for line in out.strip().splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) != 2:
+                continue
+            container_name, ports = parts
+            if container_name == profile.container_name:
+                continue
+            if re.search(rf"(^|[^\d]){re.escape(port)}->", ports):
+                for name in list_profile_names():
+                    other = load_profile(name)
+                    if other.container_name == container_name:
+                        return f"profile '{name}'"
+                return f"container '{container_name}'"
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # SO_REUSEADDR makes the probe ignore stale TIME_WAIT entries on the port.
+    # Without it every successful `up` poisons the next one for ~60s: our own
+    # /v1/models readiness probe leaves a TIME_WAIT 4-tuple on the loopback
+    # side, and a plain bind() refuses to claim a TIME_WAIT'd address. With
+    # SO_REUSEADDR the bind still fails for ports a process is actively
+    # LISTENING on (the case we want to catch), but skips the cooldown.
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("127.0.0.1", int(port)))
+    except OSError:
+        return f"another local process on 127.0.0.1:{port}"
+    finally:
+        sock.close()
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Container status (mirrors vllm.get_container_statuses)
+# ---------------------------------------------------------------------------
+
+
+async def get_container_statuses() -> list[ContainerStatus]:
+    """Status for every llama.cpp profile, including docker health state.
+
+    Mirrors vllm.get_container_statuses() field-for-field (including the
+    Dead/created/exited handling) so the CLI `ps` command can call either
+    backend's version as a drop-in.
+    """
+    names = list_profile_names()
+    rc, out = await _docker_run(
+        "docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}", timeout=10
+    )
+    container_info: dict[str, str] = {}
+    if rc == 0:
+        for line in out.strip().splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) == 2:
+                container_info[parts[0]] = parts[1]
+
+    statuses: list[ContainerStatus] = []
+    for name in names:
+        profile = load_profile(name)
+        docker_status = container_info.get(profile.container_name, "")
+        running = False
+        health = ""
+        status_text = "stopped"
+        if docker_status:
+            if "(healthy)" in docker_status:
+                running = True
+                health = "healthy"
+                status_text = "healthy"
+            elif "(unhealthy)" in docker_status:
+                running = True
+                health = "unhealthy"
+                status_text = "unhealthy"
+            elif "(health: starting)" in docker_status:
+                running = True
+                health = "starting"
+                status_text = "starting"
+            elif docker_status.startswith("Up "):
+                running = True
+                status_text = "running"
+            elif docker_status.startswith("Exited ") or docker_status.startswith("Dead "):
+                status_text = "exited"
+            else:
+                status_text = "created"
+        statuses.append(
+            ContainerStatus(
+                profile_name=name,
+                container_name=profile.container_name,
+                running=running,
+                status_text=status_text,
+                health=health,
+                port=str(profile.port),
+                gpu_id=profile.gpu_id,
+                image=profile.image_tag,
+                model=profile.model_file or "",
+                lora=False,
+            )
+        )
+    return statuses
+
+
+# ---------------------------------------------------------------------------
 # Post-start health validation (mirrors vllm _post_start_validation)
 # ---------------------------------------------------------------------------
+
+
+async def _models_endpoint_ready(port: str | int, timeout: int = 3) -> bool:
+    """Return True when /v1/models responds with at least one served model id.
+
+    Mirrors vllm._models_endpoint_ready — llama-server exposes the same
+    OpenAI-compatible /v1/models endpoint, so listing the served model alias
+    is a true readiness signal (vs /health, which only reports process
+    liveness once the HTTP server is up).
+    """
+    loop = asyncio.get_running_loop()
+
+    def _probe() -> bool:
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/v1/models", timeout=timeout
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8", errors="replace"))
+            data = payload.get("data", [])
+            return any(isinstance(item, dict) and item.get("id") for item in data)
+        except Exception:
+            return False
+
+    return await loop.run_in_executor(None, _probe)
 
 
 async def _post_start_validation(
@@ -304,15 +518,12 @@ async def _post_start_validation(
                 f"Error: container '{profile.container_name}' is not running after startup ({status})."
             ]
 
-        rc_h, _ = await _docker_run(
-            "curl", "-fsS", f"http://127.0.0.1:{profile.port}/health", timeout=5
-        )
-        if rc_h == 0:
+        if await _models_endpoint_ready(profile.port):
             return True, []
 
         if loop.time() >= deadline:
             return True, [
-                "Warning: container started but /health is not ready yet.",
+                "Warning: container started but /v1/models is not ready yet.",
                 "Watch logs and retry once the model finishes loading.",
             ]
 
@@ -328,6 +539,7 @@ async def stream_container_up(
     profile_name: str,
     *,
     use_dev: bool = False,
+    use_default_image: bool = False,
     tag: str = "",
     repo_url: str = "",
     branch: str = "",
@@ -337,11 +549,18 @@ async def stream_container_up(
     Parameters mirror tui.backends.vllm.backend_runtime.stream_container_up:
       - use_dev=True: TUI requested a `llamacpp-dev:<tag>` build/launch.
         repo_url/branch resolve via .env.common defaults when empty.
+      - use_default_image=True: TUI's "Default Image" selection — explicitly
+        drop any pinned profile.image_tag so base compose falls back to its
+        built-in default. Without this signal the pinned tag would silently
+        win (resolved_image_tag starts as profile.image_tag).
       - tag (non-dev path): user-supplied custom `<image>:<tag>`. When
         empty, fall back to the profile's image_tag or the default image
         from compose.
       - All-zero (default) keeps the previous behavior — profile.image_tag
         decides; default ghcr image otherwise.
+
+    Priority order: UI override (dev / custom tag / default) > profile.image_tag
+    > compose default.
 
     Yields ("log", str) lines and a final ("rc", int).
     """
@@ -358,11 +577,26 @@ async def stream_container_up(
 
     profile = load_profile(profile_name)
 
-    # Apply TUI-side image override (a Dev Build / Custom Tag selection trumps
-    # whatever's pinned on the profile). This is identical to how the vllm
-    # screen passes use_dev/tag down to its stream_container_up.
+    # Safety pre-flight (parity with vllm.stream_container_up): a hard port
+    # conflict aborts; GPU id overlap is a non-fatal warning.
+    conflict = await check_port_conflict(profile)
+    if conflict:
+        yield ("log", f"✗ 포트 {profile.port} 사용 중 — {conflict}")
+        yield ("rc", 1)
+        return
+    for message in await _gpu_conflict_messages(profile):
+        yield ("log", message)
+
+    # Apply TUI-side image override (a Dev Build / Custom Tag / Default Image
+    # selection trumps whatever's pinned on the profile). This is identical to
+    # how the vllm screen passes use_dev/tag down to its stream_container_up.
     resolved_image_tag = profile.image_tag
-    if use_dev:
+    if use_default_image:
+        # Explicit "Default Image" — clear any pinned image_tag so neither
+        # LLAMACPP_IMAGE nor LLAMACPP_DEV_TAG is rendered into the per-profile
+        # .env and base compose uses its built-in default image.
+        resolved_image_tag = ""
+    elif use_dev:
         # Resolve repo/branch defaults so callers can pass empty strings.
         default_repo, default_branch = get_dev_build_defaults()
         resolved_repo = (repo_url or default_repo).strip()
@@ -426,6 +660,11 @@ async def stream_container_up(
             yield ("rc", 1)
             return
         yield ("log", f"▸ Dev image: {resolved_image_tag}")
+    elif not use_dev and resolved_image_tag:
+        # Non-dev custom image reference (e.g. ghcr.io/foo/bar:v1). It was
+        # rendered into the per-profile .env as LLAMACPP_IMAGE above and is
+        # consumed verbatim by base compose's `image: ${LLAMACPP_IMAGE:-...}`.
+        yield ("log", f"▸ Image: {resolved_image_tag}")
 
     yield ("log", "▸ command 렌더링")
     rc, out = await _render_override(profile_name)
