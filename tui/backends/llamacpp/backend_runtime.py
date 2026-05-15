@@ -113,7 +113,11 @@ def _compose_env(profile: Profile) -> dict[str, str]:
 
 
 def _compose_base_args(profile: Profile) -> list[str]:
-    return [
+    """docker compose base args. --env-file is only appended when the file
+    actually exists — otherwise `docker compose` aborts up-front on a missing
+    --env-file path, which would make `container_down` skip its clean
+    network teardown and leak orphan resources."""
+    args = [
         "docker",
         "compose",
         "-p",
@@ -121,11 +125,12 @@ def _compose_base_args(profile: Profile) -> list[str]:
         *_compose_files(profile),
         "--project-directory",
         str(PROJECT_ROOT),
-        "--env-file",
-        str(COMMON_ENV),
-        "--env-file",
-        str(profile.path),
     ]
+    if COMMON_ENV.exists():
+        args.extend(["--env-file", str(COMMON_ENV)])
+    if profile.path.exists():
+        args.extend(["--env-file", str(profile.path)])
+    return args
 
 
 # ---------------------------------------------------------------------------
