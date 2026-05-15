@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Container Lifecycle &middot; llmux</title>
+  <meta name="description" content="The startup pipeline, lifecycle commands, and healthchecks llmux runs around docker compose." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/css/style.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="top">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-brand">llm<span class="brand-accent">ux</span></a>
+    <div class="nav-links">
+      <span class="nav-links-desktop">
+        <a href="../getting-started/installation.html">Getting Started</a>
+        <a href="../guide/profiles.html" class="active">Guide</a>
+        <a href="../backends/vllm.html">Backends</a>
+        <a href="../reference/cli.html">Reference</a>
+        <a href="../troubleshooting.html">Troubleshooting</a>
+      </span>
+      <a href="https://github.com/Bae-ChangHyun/llmux" class="nav-github" target="_blank">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="nav-github-stars">GitHub</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="docs-wrap">
+
+  <!-- SECTION NAV -->
+  <div class="section-nav">
+    <span class="crumb">Guide</span>
+    <a href="profiles.html">Profiles</a>
+    <a href="configs.html">Model Configs</a>
+    <a href="container-lifecycle.html" class="active">Container Lifecycle</a>
+    <a href="tui.html">Using the TUI</a>
+    <a href="dev-build.html">Dev Builds</a>
+  </div>
+
+  <article class="docs-content">
+
+    <div class="docs-header">
+      <h1>Container Lifecycle</h1>
+      <p class="lede">
+        llmux drives every container through <code>docker compose</code>, but you never write compose commands by hand. The four lifecycle operations — <strong>up</strong>, <strong>down</strong>, <strong>logs</strong>, <strong>ps</strong> — are exposed identically through the <a href="tui.html">TUI</a> and the headless CLI. This page describes what happens under the hood.
+      </p>
+    </div>
+
+    <h2 id="startup-flow">Startup flow</h2>
+    <p>Starting a profile is more than <code>docker compose up</code>. llmux runs an ordered pipeline and aborts early with a clear message if any step fails.</p>
+    <pre data-lang="mermaid"><code>flowchart TD
+    A[Resolve profile from profiles.yaml] --> B[Port conflict check]
+    B --> C[Render profile env file]
+    C --> D{Backend}
+    D -->|vLLM| E[Validate .env.common + linked config]
+    D -->|llama.cpp| F[Render override.yaml from config]
+    E --> G[GPU conflict warnings]
+    F --> G
+    G --> H[docker compose up -d]
+    H --> I[Post-start health validation]
+    I --> J[Container ready]</code></pre>
+
+    <h3 id="1-profile-env-render">1. Profile env render</h3>
+    <p>The profile is read from <code>profiles.yaml</code> and rendered to <code>.runtime/&lt;backend&gt;/&lt;name&gt;.env</code>. This file is what <code>docker compose --env-file</code> consumes — it carries <code>CONTAINER_NAME</code>, the port, <code>GPU_ID</code>, <code>CONFIG_NAME</code>, and backend-specific values. It is regenerated on every start, so editing it directly is pointless; edit <a href="profiles.html">the profile</a> instead.</p>
+
+    <h3 id="2-config-override-render">2. Config / override render</h3>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="active" onclick="switchTab(this, 'tab-lifecycle-vllm')">vLLM</button>
+        <button onclick="switchTab(this, 'tab-lifecycle-llamacpp')">llama.cpp</button>
+      </div>
+      <div class="tab-panel active" id="tab-lifecycle-vllm">
+        <p>llmux validates <code>.env.common</code> (checks <code>HF_CACHE_PATH</code> is set and absolute, plus <code>LORA_BASE_PATH</code> when LoRA is enabled) and ensures the linked <a href="configs.html">config</a> has a usable <code>model:</code>. If the profile has a <code>model_id</code> but no config, llmux scaffolds one automatically. The <code>config/vllm/</code> directory is mounted into the container at <code>/config/</code>.</p>
+      </div>
+      <div class="tab-panel" id="tab-lifecycle-llamacpp">
+        <p><code>scripts/llamacpp/render-override.py</code> reads <code>config/llamacpp/&lt;config&gt;.yaml</code> and the profile's GGUF metadata, then writes <code>.runtime/llamacpp/override-&lt;profile&gt;.yaml</code> containing the <code>llama-server</code> <code>command:</code> block. The per-profile override file lets multiple llama.cpp profiles run concurrently without clobbering each other.</p>
+      </div>
+    </div>
+
+    <h3 id="3-conflict-gates">3. Conflict gates</h3>
+    <p>Before <code>compose up</code>, llmux checks for resource clashes:</p>
+    <ul>
+      <li><strong>Port conflicts</strong> — the target port is probed against running Docker containers <em>and</em> local processes (a raw socket bind). A static overlap between two <em>stopped</em> profiles is ignored.</li>
+      <li><strong>GPU conflicts</strong> — the profile's <code>gpu_id</code> set is compared against every <em>running</em> container from <strong>both</strong> backends. Overlap produces a warning.</li>
+    </ul>
+    <p>In the CLI, port conflicts are hard errors. In the TUI, the cross-backend conflict gate surfaces port + GPU clashes in a confirmation dialog so you can <strong>Start anyway</strong> or cancel.</p>
+
+    <h3 id="4-compose-up-health-validation">4. compose up + health validation</h3>
+    <p>llmux runs <code>docker compose ... up -d</code> with the rendered env files. After compose returns, a post-start validation loop polls <code>docker inspect</code>:</p>
+    <ul>
+      <li>If the container is <code>restarting</code> / <code>exited</code> / <code>dead</code> or becomes <code>unhealthy</code>, startup is reported as <strong>failed</strong> and the last log lines are printed (this catches e.g. a GPU OOM during engine init).</li>
+      <li>Otherwise llmux waits for the model endpoint to respond — <code>/v1/models</code> for vLLM, <code>/health</code> for llama.cpp. If the model is still loading when the timeout hits, you get a warning, not a failure.</li>
+    </ul>
+
+    <h2 id="the-lifecycle-commands">The lifecycle commands</h2>
+    <p>All commands auto-detect the backend from the profile name; pass <code>--backend</code> / <code>-b</code> to disambiguate when a name exists in both. These are top-level CLI aliases — <code>llmux up</code> is shorthand for <code>llmux container up</code>.</p>
+
+    <h3 id="up-start-a-profile"><code>up</code> — start a profile</h3>
+    <pre data-lang="bash"><code>llmux up qwen3-0-6b
+llmux up qwen3-0-6b --backend vllm
+
+# image overrides
+llmux up qwen3-0-6b --tag v0.20.1          # specific vllm/vllm-openai tag
+llmux up qwen3-0-6b --tag v0.20.1 --pull   # force --pull always (vLLM only)
+llmux up qwen3-0-6b --dev                  # use the locally-built dev image
+llmux up gemma-3-4b --tag llamacpp-dev:master</code></pre>
+
+    <table>
+      <thead>
+        <tr><th>Option</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td>Force the backend instead of auto-detecting.</td></tr>
+        <tr><td><code>--tag</code>, <code>-t</code></td><td>Image tag override. Empty = highest local versioned tag (vLLM) or the profile/compose default (llama.cpp).</td></tr>
+        <tr><td><code>--dev</code></td><td>Use the locally-built <code>&lt;backend&gt;-dev:&lt;tag&gt;</code> image; builds it on demand if missing. See <a href="dev-build.html">Dev Builds</a>.</td></tr>
+        <tr><td><code>--pull</code></td><td>vLLM only: force <code>--pull always</code>. Ignored for llama.cpp.</td></tr>
+        <tr><td><code>--repo-url</code> / <code>--branch</code></td><td>Dev image source overrides (defaults from <code>.env.common</code>).</td></tr>
+      </tbody>
+    </table>
+    <p>Compose output streams to stdout. The command exits non-zero if startup fails.</p>
+
+    <div class="admonition warning">
+      <p class="admonition-title">vLLM rejects <code>:latest</code></p>
+      <p>The <code>:latest</code> alias doesn't describe an image's real contents, so llmux refuses it. Pick a specific version, <code>nightly</code>, the resolved "Official Release" tag, or your highest local versioned tag.</p>
+    </div>
+
+    <h3 id="down-stop-a-profile"><code>down</code> — stop a profile</h3>
+    <pre data-lang="bash"><code>llmux down qwen3-0-6b</code></pre>
+    <p>llmux prefers <code>docker compose down</code> for a clean network teardown. If the container is orphaned (no override file, or compose down fails), it falls back to <code>docker stop</code> + <code>docker rm</code> (<code>docker rm -f</code> for llama.cpp). Stopping an already-stopped profile is a no-op that exits 0.</p>
+
+    <h3 id="logs-stream-container-logs"><code>logs</code> — stream container logs</h3>
+    <pre data-lang="bash"><code>llmux logs qwen3-0-6b              # follow (default), last 200 lines first
+llmux logs qwen3-0-6b --no-follow  # print recent lines and exit
+llmux logs qwen3-0-6b --tail 500   # change the initial backlog</code></pre>
+
+    <table>
+      <thead>
+        <tr><th>Option</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>--tail</code>, <code>-n</code></td><td>Number of recent lines to show before following (default 200).</td></tr>
+        <tr><td><code>--follow / --no-follow</code>, <code>-f / -F</code></td><td>Follow output (default) or print-and-exit.</td></tr>
+      </tbody>
+    </table>
+    <p>While following, <kbd>Ctrl</kbd>+<kbd>C</kbd> stops the stream (exit code 130).</p>
+
+    <h3 id="ps-list-profiles-and-status"><code>ps</code> — list profiles and status</h3>
+    <pre data-lang="bash"><code>llmux ps                    # all profiles, both backends
+llmux ps --backend vllm     # one backend only
+llmux ps --running          # only running containers
+llmux ps --json             # machine-readable output</code></pre>
+    <p>Output columns: <code>backend</code>, <code>profile</code>, <code>status</code>, <code>port</code>, <code>gpu</code>, <code>container</code>, <code>model</code>. Status is derived from <code>docker ps</code> health state — <code>healthy</code>, <code>unhealthy</code>, <code>starting</code>, <code>running</code>, <code>exited</code>, or <code>stopped</code>.</p>
+
+    <h3 id="render-env-regenerate-runtime-env-files"><code>render-env</code> — regenerate runtime env files</h3>
+    <pre data-lang="bash"><code>llmux render-env qwen3-0-6b   # one profile
+llmux render-env              # re-render every profile
+llmux render-env --backend llamacpp</code></pre>
+    <p>Useful after hand-editing <code>profiles.yaml</code>, or to inspect exactly what compose will see. <code>up</code> does this automatically — you rarely need it directly.</p>
+
+    <h2 id="healthchecks">Healthchecks</h2>
+    <p>Both compose definitions declare a Docker <code>healthcheck</code> that curls the in-container <code>/health</code> endpoint every 30s. The <code>start_period</code> is generous to allow for model loading — <strong>600s for vLLM</strong>, <strong>300s for llama.cpp</strong> — so a slow first load won't be flagged as unhealthy. <code>ps</code> and the TUI dashboard read this health state to show <code>healthy</code> / <code>starting</code> / <code>unhealthy</code>.</p>
+
+    <h2 id="see-also">See also</h2>
+    <ul>
+      <li><a href="profiles.html">Profiles</a> — the launch recipe <code>up</code> resolves</li>
+      <li><a href="configs.html">Model Configs</a> — what gets rendered into the container at startup</li>
+      <li><a href="tui.html">Using the TUI</a> — the same lifecycle, driven interactively</li>
+      <li><a href="dev-build.html">Dev Builds</a> — the <code>--dev</code> image path</li>
+    </ul>
+
+    <div class="docs-footer">
+      <a class="edit-link" href="https://github.com/Bae-ChangHyun/llmux/edit/main/docs/guide/container-lifecycle.html" target="_blank">Edit this page on GitHub</a>
+      <div class="prev-next">
+        <a href="configs.html">&larr; Model Configs</a>
+        <a href="tui.html">Using the TUI &rarr;</a>
+      </div>
+    </div>
+
+  </article>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="page-wrap">
+    <p>
+      MIT License &middot;
+      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a> &middot;
+      Made by <a href="https://github.com/Bae-ChangHyun">Bae-ChangHyun</a>
+    </p>
+  </div>
+</footer>
+
+<script>
+function switchTab(btn, panelId) {
+  const tabs = btn.closest('.tabs');
+  tabs.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
+  tabs.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById(panelId).classList.add('active');
+}
+</script>
+
+</body>
+</html>

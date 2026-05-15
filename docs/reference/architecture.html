@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Architecture &middot; llmux</title>
+  <meta name="description" content="How llmux is structured internally — package layout, unified vs. backend split, and the end-to-end flow from profiles.yaml to a running container." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/css/style.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="top">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-brand">llm<span class="brand-accent">ux</span></a>
+    <div class="nav-links">
+      <span class="nav-links-desktop">
+        <a href="../getting-started/installation.html">Getting Started</a>
+        <a href="../guide/profiles.html">Guide</a>
+        <a href="../backends/vllm.html">Backends</a>
+        <a href="cli.html" class="active">Reference</a>
+        <a href="../troubleshooting.html">Troubleshooting</a>
+      </span>
+      <a href="https://github.com/Bae-ChangHyun/llmux" class="nav-github" target="_blank">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="nav-github-stars">GitHub</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="docs-wrap">
+
+  <!-- SECTION NAV -->
+  <div class="section-nav">
+    <span class="crumb">Reference</span>
+    <a href="cli.html">CLI Reference</a>
+    <a href="env-common.html">.env.common</a>
+    <a href="architecture.html" class="active">Architecture</a>
+  </div>
+
+  <article class="docs-content">
+
+    <div class="docs-header">
+      <h1>Architecture</h1>
+      <p class="lede">
+        This page describes how llmux is structured internally: the package layout, the unified-vs-backend split, and the end-to-end flow from <code>profiles.yaml</code> to a running container. It is aimed at contributors and at anyone debugging why a profile started (or didn't).
+      </p>
+    </div>
+
+    <h2 id="design-in-one-sentence">Design in one sentence</h2>
+    <p>llmux keeps <strong>one source of truth</strong> (<code>profiles.yaml</code>), renders it into backend-specific runtime artifacts, and hands those to <code>docker compose</code> — so the same dashboard and the same CLI drive two very different engines (vLLM and llama.cpp) without the user ever editing Compose files.</p>
+
+    <h2 id="repository-layout">Repository layout</h2>
+    <pre data-lang="text"><code>llmux/
+├── tui/
+│   ├── __main__.py            # python -m tui → tui.app:main
+│   ├── app.py                 # LlmuxApp (Textual) + main() → dispatches to CLI
+│   ├── cli/                   # headless Typer CLI
+│   │   ├── __init__.py        # Typer root app + sub-apps + top-level aliases
+│   │   ├── _runtime.py        # backend detection, async glue, table/JSON output
+│   │   ├── _launch_tui.py     # isolated TUI launcher (keeps textual out of CLI imports)
+│   │   ├── container.py       # up / down / logs / ps / render-env
+│   │   ├── profile.py         # profile list/show/new/edit/delete/quick-setup
+│   │   ├── config.py          # config list/show/new/edit/delete
+│   │   ├── image.py           # image list/pull/build-dev
+│   │   └── system.py          # system gpu/mem-estimate/env-check
+│   ├── common/                # backend-agnostic unified layer
+│   │   ├── profile_store.py   # profiles.yaml ⇄ StoredProfile, .runtime/*.env renderer
+│   │   ├── dev_build.py       # DevBuildSpec + shared clone/build/label pipeline
+│   │   ├── docker.py          # nvidia-smi + docker ps helpers, GPU-id parsing
+│   │   ├── conflicts.py       # cross-backend port / GPU conflict detection
+│   │   ├── mem.py             # hf-mem VRAM estimation, .env file parsing
+│   │   ├── http.py            # OpenAI-compatible /v1 probe + benchmark helpers
+│   │   ├── adapter.py         # DashboardRow — unified read-only row snapshot
+│   │   ├── widgets.py         # shared Textual modals (confirm, backend picker)
+│   │   └── app.tcss           # shared Textual stylesheet
+│   ├── backends/
+│   │   ├── vllm/              # vLLM-specific layer
+│   │   │   ├── backend_common.py    # paths, Profile/Config/ContainerStatus dataclasses
+│   │   │   ├── backend.py           # facade re-exporting the vLLM API
+│   │   │   ├── backend_storage.py   # vLLM profile/config CRUD
+│   │   │   ├── backend_runtime.py   # compose orchestration, dev build, status
+│   │   │   ├── backend_process.py   # subprocess run/stream helpers
+│   │   │   ├── backend_inspect.py   # local + DockerHub image inspection
+│   │   │   ├── adapter.py           # VllmAdapter → DashboardRow
+│   │   │   └── screens/             # vLLM TUI screens
+│   │   └── llamacpp/          # llama.cpp-specific layer
+│   │       ├── backend.py           # paths, Profile/Config, CRUD, log streaming
+│   │       ├── backend_runtime.py   # compose orchestration, dev build, status
+│   │       ├── adapter.py           # LlamacppAdapter → DashboardRow
+│   │       └── screens/             # llama.cpp TUI screens
+│   └── screens/
+│       └── dashboard.py       # unified DashboardScreen (both backends in one table)
+├── compose/
+│   ├── vllm/                  # docker-compose.yaml + .dev / .lora / .overrides
+│   └── llamacpp/              # docker-compose.yaml + .dev
+├── config/
+│   ├── vllm/&lt;name&gt;.yaml       # vLLM serve flags per model
+│   └── llamacpp/&lt;name&gt;.yaml   # llama-server flags per model
+├── scripts/
+│   ├── vllm/entrypoint-wrapper.sh
+│   └── llamacpp/
+│       ├── render-override.py        # profile + config → per-profile compose override
+│       └── legacy/                   # archived shell scripts (superseded by Python)
+├── profiles.yaml              # single source of truth (gitignored)
+├── .env.common                # host-wide settings (gitignored)
+└── .runtime/                  # auto-rendered, gitignored
+    ├── vllm/&lt;name&gt;.env
+    └── llamacpp/&lt;name&gt;.env + override-&lt;name&gt;.yaml</code></pre>
+
+    <h2 id="the-unified-layer-vs-the-backend-layers">The unified layer vs. the backend layers</h2>
+    <p>llmux is split into two tiers so that everything cross-cutting is written once:</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Tier</th>
+          <th>Lives in</th>
+          <th>Responsibility</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Unified layer</strong></td>
+          <td><code>tui/common/</code></td>
+          <td>Anything identical for both backends: profile storage, the dev-build pipeline, GPU/port conflict checks, Docker/<code>nvidia-smi</code> helpers, the <code>DashboardRow</code> contract.</td>
+        </tr>
+        <tr>
+          <td><strong>Backend layer</strong></td>
+          <td><code>tui/backends/{vllm,llamacpp}/</code></td>
+          <td>Engine-specific knowledge: which Compose files to layer, how to build the engine command, image inspection, status parsing — exposed mostly through each backend's <code>backend_runtime.py</code>.</td>
+        </tr>
+        <tr>
+          <td><strong>Entrypoints</strong></td>
+          <td><code>tui/cli/</code>, <code>tui/screens/</code>, <code>tui/backends/*/screens/</code></td>
+          <td>The Typer CLI and the Textual TUI. Both call into the same unified + backend functions.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>The dashboard never special-cases a backend at the data level: each backend's <code>adapter.py</code> produces a list of <code>DashboardRow</code> snapshots, and <code>tui/screens/dashboard.py</code> merges, sorts (running rows float to the top), and renders them in one <code>DataTable</code>.</p>
+
+    <pre data-lang="mermaid"><code>flowchart TD
+    subgraph Entrypoints
+        CLI["tui/cli/ (Typer)"]
+        TUI["tui/screens/ + backends/*/screens/ (Textual)"]
+    end
+    subgraph Unified["Unified layer — tui/common/"]
+        PS["profile_store.py"]
+        DB["dev_build.py"]
+        CF["conflicts.py"]
+        DK["docker.py"]
+        AD["adapter.py · mem.py · http.py"]
+    end
+    subgraph Backend["Backend layer — tui/backends/"]
+        VR["vllm/backend_runtime.py"]
+        LR["llamacpp/backend_runtime.py"]
+    end
+    Compose["docker compose"]
+    Cont["vLLM / llama.cpp container"]
+
+    CLI --&gt; PS
+    CLI --&gt; VR
+    CLI --&gt; LR
+    TUI --&gt; PS
+    TUI --&gt; VR
+    TUI --&gt; LR
+    VR --&gt; PS
+    LR --&gt; PS
+    VR --&gt; DB
+    LR --&gt; DB
+    VR --&gt; CF
+    LR --&gt; CF
+    CF --&gt; DK
+    VR --&gt; Compose
+    LR --&gt; Compose
+    Compose --&gt; Cont</code></pre>
+
+    <h2 id="launch-flow-from-profiles-yaml-to-a-running-container">Launch flow: from <code>profiles.yaml</code> to a running container</h2>
+    <p><code>profiles.yaml</code> is the only file you edit by hand (or via <code>llmux profile …</code>). Everything under <code>.runtime/</code> is generated. The flow differs slightly per backend because the engines consume their config differently.</p>
+
+    <pre data-lang="mermaid"><code>sequenceDiagram
+    participant U as User / CLI / TUI
+    participant PS as profile_store
+    participant BR as backend_runtime
+    participant DC as docker compose
+    participant C as container
+
+    U-&gt;&gt;PS: load_profile(name, backend)
+    PS-&gt;&gt;PS: read profiles.yaml → StoredProfile&lt;br/&gt;(merge defaults.&lt;backend&gt;)
+    PS-&gt;&gt;PS: render .runtime/&lt;backend&gt;/&lt;name&gt;.env
+    U-&gt;&gt;BR: stream_container_up(name)
+    alt backend == llamacpp
+        BR-&gt;&gt;BR: render-override.py →&lt;br/&gt;.runtime/llamacpp/override-&lt;name&gt;.yaml
+        BR-&gt;&gt;DC: compose -f base -f [dev] -f override&lt;br/&gt;--env-file &lt;name&gt;.env up -d
+    else backend == vllm
+        BR-&gt;&gt;BR: ensure config/vllm/&lt;name&gt;.yaml exists
+        BR-&gt;&gt;DC: compose -f base [-f lora] -f overrides&lt;br/&gt;--env-file &lt;name&gt;.env up -d
+    end
+    DC-&gt;&gt;C: start vLLM / llama.cpp
+    BR--&gt;&gt;U: stream ("log", line) … ("rc", n)</code></pre>
+
+    <h3 id="step-1-profiles-yaml-storedprofile">Step 1 — <code>profiles.yaml</code> → <code>StoredProfile</code></h3>
+    <p><code>tui/common/profile_store.py</code> reads <code>profiles.yaml</code>, merges each entry over <code>defaults.&lt;backend&gt;</code> (and the built-in <code>DEFAULTS</code>), and yields a <code>StoredProfile</code> dataclass — a <em>superset</em> record where fields that don't apply to a backend simply stay at their defaults.</p>
+
+    <h3 id="step-2-storedprofile-runtime-backend-name-env">Step 2 — <code>StoredProfile</code> → <code>.runtime/&lt;backend&gt;/&lt;name&gt;.env</code></h3>
+    <p><code>profile_store.render_env()</code> writes a shell-quoted env file that <code>docker compose --env-file</code> consumes. The rendered keys differ by backend:</p>
+    <ul>
+      <li><strong>vLLM</strong>: <code>CONTAINER_NAME</code>, <code>VLLM_PORT</code>, <code>GPU_ID</code>, <code>TENSOR_PARALLEL_SIZE</code>, <code>CONFIG_NAME</code>, <code>MODEL_ID</code>, <code>ENABLE_LORA</code>, plus optional <code>MAX_LORAS</code>, <code>MAX_LORA_RANK</code>, <code>LORA_MODULES</code>, <code>EXTRA_PIP_PACKAGES</code>, and any <code>env_vars</code>.</li>
+      <li><strong>llama.cpp</strong>: <code>CONTAINER_NAME</code>, <code>LLAMA_PORT</code>, <code>GPU_ID</code>, <code>CONFIG_NAME</code>, plus optional <code>MODEL_FILE</code>, <code>HF_REPO</code>, <code>HF_FILE</code>, and <code>LLAMACPP_DEV_TAG</code> (derived from a profile's <code>image_tag</code>).</li>
+    </ul>
+    <p>Re-render at any time with <a href="cli.html#container-render-env"><code>llmux render-env</code></a>.</p>
+
+    <h3 id="step-3-render-the-engine-command">Step 3 — render the engine command</h3>
+    <p>This is where the backends diverge:</p>
+    <ul>
+      <li><strong>llama.cpp</strong> — <code>scripts/llamacpp/render-override.py</code> reads the profile and <code>config/llamacpp/&lt;name&gt;.yaml</code> and emits <code>.runtime/llamacpp/override-&lt;name&gt;.yaml</code>, a Compose override that injects the full <code>llama-server</code> <code>command:</code> block (<code>-hf &lt;repo&gt; -hff &lt;file&gt;</code> plus every config flag). One override file per profile, so multiple llama.cpp profiles run concurrently without clobbering each other.</li>
+      <li><strong>vLLM</strong> — there is no command-rendering step. <code>compose/vllm/docker-compose.yaml</code> passes <code>--config /config/&lt;CONFIG_NAME&gt;.yaml</code> straight to <code>vllm serve</code>, so the per-model config is just <code>config/vllm/&lt;name&gt;.yaml</code> mounted into the container. <code>backend_runtime</code> only ensures that file exists (auto-creating a stub if needed).</li>
+    </ul>
+
+    <h3 id="step-4-docker-compose-up">Step 4 — <code>docker compose up</code></h3>
+    <p>Each backend's <code>backend_runtime.py</code> assembles the Compose invocation by layering files with <code>-f</code>:</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Backend</th>
+          <th>Compose files layered</th>
+          <th>Trigger</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>vLLM</td>
+          <td><code>docker-compose.yaml</code> → (<code>docker-compose.dev.yaml</code> if <code>--dev</code>) → (<code>docker-compose.lora.yaml</code> if <code>enable_lora</code>) → <code>docker-compose.overrides.yaml</code></td>
+          <td>always / flags</td>
+        </tr>
+        <tr>
+          <td>llama.cpp</td>
+          <td><code>docker-compose.yaml</code> → (<code>docker-compose.dev.yaml</code> if <code>image_tag</code> set) → <code>override-&lt;name&gt;.yaml</code></td>
+          <td>always / per-profile</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>The call streams <code>docker compose</code> output back as <code>("log", line)</code> events, ending with <code>("rc", int)</code> — the same async-generator contract the TUI and the CLI both consume.</p>
+
+    <div class="admonition note">
+      <p class="admonition-title">Why two GPU-passthrough styles</p>
+      <p>vLLM uses <code>runtime: nvidia</code> + <code>NVIDIA_VISIBLE_DEVICES=${GPU_ID}</code> because that cleanly supports comma-separated multi-GPU ids for tensor parallelism. llama.cpp uses Compose's <code>deploy.resources.reservations.devices</code> form. They are intentionally not forced into one shape.</p>
+    </div>
+
+    <h2 id="cross-backend-conflict-detection">Cross-backend conflict detection</h2>
+    <p>Before a profile starts, llmux checks for <strong>port and GPU conflicts across both backends</strong> — including containers it doesn't manage. <code>tui/common/conflicts.py</code> compares the target <code>DashboardRow</code> against all known rows (<code>port_conflicts</code>, <code>gpu_conflicts</code>) and against raw <code>docker ps</code> port mappings (<code>external_port_conflicts</code>). GPU-id parsing in <code>tui/common/docker.py</code> normalizes <code>all</code> / <code>-1</code> to a wildcard so an "all GPUs" profile is treated as overlapping everything. In the TUI this surfaces as a confirmation modal; the CLI's backends run the same checks inline.</p>
+
+    <h2 id="dev-build-pipeline">Dev-build pipeline</h2>
+    <p>Building an engine from source is identical in shape for both backends, so the mechanics live once in <code>tui/common/dev_build.py</code>. Each backend supplies a frozen <code>DevBuildSpec</code>:</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Field</th>
+          <th>vLLM</th>
+          <th>llama.cpp</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>image_prefix</code></td>
+          <td><code>vllm-dev</code></td>
+          <td><code>llamacpp-dev</code></td>
+        </tr>
+        <tr>
+          <td><code>src_dir</code></td>
+          <td><code>.vllm-src/</code></td>
+          <td><code>.llamacpp-src/</code></td>
+        </tr>
+        <tr>
+          <td><code>default_repo_url</code></td>
+          <td><code>github.com/vllm-project/vllm</code></td>
+          <td><code>github.com/ggml-org/llama.cpp</code></td>
+        </tr>
+        <tr>
+          <td><code>default_branch</code></td>
+          <td><code>main</code></td>
+          <td><code>master</code></td>
+        </tr>
+        <tr>
+          <td><code>dockerfile_relpath</code></td>
+          <td><code>docker/Dockerfile</code></td>
+          <td><code>.devops/cuda.Dockerfile</code></td>
+        </tr>
+        <tr>
+          <td><code>target</code></td>
+          <td><code>vllm-openai</code></td>
+          <td><code>server</code></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p><code>dev_build.stream_build()</code> then:</p>
+    <ol>
+      <li><strong>Clone or update</strong> the source checkout (<code>clone_or_update</code>) — refusing to silently switch remotes if <code>.git/origin</code> points elsewhere.</li>
+      <li>Optionally run a backend <code>pre_build</code> hook (vLLM patches the upstream Dockerfile so DeepEP respects the local <code>TORCH_CUDA_ARCH_LIST</code>).</li>
+      <li><strong><code>docker build</code></strong> with <code>--target</code>, GPU-arch build args, and <code>&lt;prefix&gt;.repo.url</code> / <code>.repo.branch</code> / <code>.commit.hash</code> / <code>.build.date</code> labels — so the image can later be matched back to its source.</li>
+      <li>Tag the result twice: <code>&lt;prefix&gt;:&lt;custom_tag or branch-YYYYMMDD&gt;</code> (unique) and <code>&lt;prefix&gt;:&lt;branch&gt;</code> (a stable alias to the latest build).</li>
+    </ol>
+
+    <p>GPU architecture is auto-detected from <code>nvidia-smi</code> (<code>detect_local_gpu_caps</code>) and formatted per backend convention — dotted/space-separated for vLLM/PyTorch, dot-stripped/semicolon-separated for llama.cpp's CMake. Drive it from <a href="cli.html#image-build-dev"><code>llmux image build-dev</code></a>.</p>
+
+    <h2 id="from-shell-scripts-to-a-python-runtime">From shell scripts to a Python runtime</h2>
+    <p>llama.cpp orchestration used to be a set of Bash scripts (<code>switch.sh</code>, <code>stop.sh</code>, <code>logs.sh</code>, <code>pull-model.sh</code>, <code>_common.sh</code>). They have been replaced by <code>tui/backends/llamacpp/backend_runtime.py</code> — a Python-native pipeline that mirrors the vLLM backend's async-generator contract — and the originals are archived under <code>scripts/llamacpp/legacy/</code> for reference only. The one Python script that remains active is <code>scripts/llamacpp/render-override.py</code>, which generates the per-profile Compose override described in <a href="#step-3-render-the-engine-command">Step 3</a>.</p>
+    <p>The benefits of the move: a single conflict-check / status / streaming code path shared with vLLM, no <code>current-profile</code> global state (multiple llama.cpp profiles run side by side), and the same logic reachable from both the TUI and the headless CLI.</p>
+
+    <h2 id="entrypoint-dispatch">Entrypoint dispatch</h2>
+    <p><code>pyproject.toml</code> declares one console script: <code>llmux = "tui.cli:main"</code>. The package also exposes <code>python -m tui</code> (via <code>tui/__main__.py</code> → <code>tui.app:main</code>), and <code>tui.app:main</code> itself just calls into <code>tui.cli:main</code>. The Typer root in <code>tui/cli/__init__.py</code> has an <code>invoke_without_command</code> callback: <strong>no subcommand → launch the Textual TUI</strong>; any subcommand → run headless. The TUI launcher is deliberately isolated in <code>tui/cli/_launch_tui.py</code> so that importing a CLI subcommand never pulls in <code>textual</code>.</p>
+
+    <p>See also: the <a href="cli.html">CLI Reference</a> for every command and flag, and the <a href="env-common.html"><code>.env.common</code> Reference</a> for the host-wide settings that feed into Step 4.</p>
+
+    <div class="docs-footer">
+      <a class="edit-link" href="https://github.com/Bae-ChangHyun/llmux/edit/main/docs/reference/architecture.html" target="_blank">Edit this page on GitHub</a>
+      <div class="prev-next">
+        <a href="env-common.html">&larr; .env.common</a>
+        <a href="../troubleshooting.html">Troubleshooting &rarr;</a>
+      </div>
+    </div>
+
+  </article>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="page-wrap">
+    <p>
+      MIT License &middot;
+      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a> &middot;
+      Made by <a href="https://github.com/Bae-ChangHyun">Bae-ChangHyun</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
