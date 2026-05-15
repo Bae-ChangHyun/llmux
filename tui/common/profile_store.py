@@ -69,6 +69,9 @@ class StoredProfile:
     model_file: str = ""
     hf_repo: str = ""
     hf_file: str = ""
+    # Per-profile docker image override (e.g. "llamacpp-dev:mtp_main"). Empty
+    # falls back to the default image declared in compose/<backend>/.
+    image_tag: str = ""
 
 
 def _load_yaml() -> dict:
@@ -141,6 +144,7 @@ def _to_profile(entry: dict, defaults: dict[str, Any] | None = None) -> StoredPr
         model_file=merged.get("model_file", ""),
         hf_repo=merged.get("hf_repo", ""),
         hf_file=merged.get("hf_file", ""),
+        image_tag=str(merged.get("image_tag", "") or ""),
     )
 
 
@@ -182,6 +186,8 @@ def _profile_to_entry(
             out["hf_repo"] = profile.hf_repo
         if profile.hf_file:
             out["hf_file"] = profile.hf_file
+    if profile.image_tag:
+        out["image_tag"] = profile.image_tag
     return out
 
 
@@ -291,6 +297,14 @@ def _render_env_lines(profile: StoredProfile) -> list[str]:
             lines.append(_env_line("HF_REPO", profile.hf_repo))
         if profile.hf_file:
             lines.append(_env_line("HF_FILE", profile.hf_file))
+        if profile.image_tag:
+            # llama.cpp consumes this in compose/llamacpp/docker-compose.dev.yaml
+            # as `image: llamacpp-dev:${LLAMACPP_DEV_TAG}`. The "<prefix>:" is
+            # stripped so the compose default-fallback chain stays consistent.
+            tag_value = profile.image_tag
+            if ":" in tag_value:
+                tag_value = tag_value.split(":", 1)[1]
+            lines.append(_env_line("LLAMACPP_DEV_TAG", tag_value))
     lines.append("")
     return lines
 

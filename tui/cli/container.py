@@ -65,12 +65,20 @@ def up(
     else:
         from tui.backends.llamacpp.backend_runtime import stream_container_up as lc_up
 
-        if dev or tag or pull or repo_url or branch:
+        if pull:
             typer.echo(
-                "Warning: --dev/--tag/--pull/--repo-url/--branch are vLLM-only and ignored for llama.cpp",
+                "Warning: --pull is vLLM-only and ignored for llama.cpp",
                 err=True,
             )
-        rc = stream_async(lc_up(profile))
+        rc = stream_async(
+            lc_up(
+                profile,
+                use_dev=dev,
+                tag=tag,
+                repo_url=repo_url,
+                branch=branch,
+            )
+        )
     raise typer.Exit(code=rc)
 
 

@@ -142,6 +142,14 @@ class ProfileFormScreen(ModalScreen[str | None]):
                         select_kwargs["value"] = p.config_name
                     yield Select(config_options, **select_kwargs)
 
+                with Horizontal(classes="form-row"):
+                    yield Label("Image Tag")
+                    yield Input(
+                        value=p.image_tag if p else "",
+                        placeholder="(비우면 기본 이미지) 예: llamacpp-dev:mtp-clean",
+                        id="image-tag-input",
+                    )
+
             with Horizontal(classes="form-buttons"):
                 yield Button("Save", id="save-btn", variant="primary")
                 yield Button("Close", id="cancel-btn", variant="default")
@@ -152,6 +160,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
         container = self.query_one("#container-input", Input).value.strip()
         port = self.query_one("#port-input", Input).value.strip()
         gpu_id = self.query_one("#gpu-input", Input).value.strip()
+        image_tag = self.query_one("#image-tag-input", Input).value.strip()
 
         config_select = self.query_one("#config-select", Select)
         config_name = (
@@ -191,6 +200,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             p.port = port_int
             p.gpu_id = gpu_id or "0"
             p.config_name = config_name or name
+            p.image_tag = image_tag
         else:
             p = Profile(
                 name=name,
@@ -198,6 +208,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 port=port_int,
                 gpu_id=gpu_id or "0",
                 config_name=config_name or name,
+                image_tag=image_tag,
             )
 
         save_profile(p)
