@@ -427,10 +427,10 @@ class DashboardScreen(Screen):
     ) -> None:
         name = row.profile_name
         if action == "start":
-            from tui.backends.llamacpp.screens.dashboard import StartScreen
+            from tui.backends.llamacpp.screens.container import ContainerUpScreen
 
             def launch() -> None:
-                self.app.push_screen(StartScreen(name), self._after_mutation)
+                self.app.push_screen(ContainerUpScreen(name), self._after_mutation)
 
             self._confirm_conflicts_before_start(row, launch)
             return
@@ -456,23 +456,6 @@ class DashboardScreen(Screen):
             from tui.backends.llamacpp.screens.profile import ProfileDeleteScreen
 
             self.app.push_screen(ProfileDeleteScreen(name), self._after_mutation)
-
-    @work(exclusive=True)
-    async def _run_llamacpp_switch(self, name: str) -> None:
-        log_lines: list[str] = []
-        code = -1
-        async for msg_type, data in lruntime.stream_container_up(name):
-            if msg_type == "log":
-                log_lines.append(data)
-            elif msg_type == "rc":
-                code = int(data)
-        if code == 0:
-            self.notify(f"✓ '{name}' 활성화")
-        else:
-            tail = log_lines[-3:]
-            msg = " / ".join(tail) if tail else f"code={code}"
-            self.notify(f"✗ switch 실패: {msg}", severity="error")
-        self._reload()
 
     def _confirm_llamacpp_stop(self, name: str) -> None:
         def on_ok(ok: bool) -> None:

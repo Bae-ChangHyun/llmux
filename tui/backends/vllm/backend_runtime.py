@@ -30,7 +30,7 @@ from .backend_storage import (
     save_config,
     save_profile,
 )
-from tui.common import profile_store
+from tui.common import dev_build, profile_store
 from tui.common.docker import GPU_WILDCARD, gpu_sets_overlap, parse_gpu_ids
 
 
@@ -218,21 +218,12 @@ def _format_gpu_label(gpu_id: str) -> str:
 
 
 async def _detect_gpu_arch() -> str:
-    """Return unique GPU compute capabilities as a space-separated list.
+    """Return PyTorch's TORCH_CUDA_ARCH_LIST format (space-separated dotted caps).
 
-    Preserves dot form ('8.6 8.9') so PyTorch's TORCH_CUDA_ARCH_LIST and
-    CMake recognize each arch. Covers mixed-SM setups rather than only GPU 0.
+    Thin wrapper around the shared dev_build.detect_local_gpu_caps() helper.
+    Kept here as a stable name for the rest of the vllm runtime to call.
     """
-    rc, out = await run_command(
-        "nvidia-smi",
-        "--query-gpu=compute_cap",
-        "--format=csv,noheader",
-        timeout=10,
-    )
-    if rc != 0 or not out.strip():
-        return ""
-    caps = sorted({line.strip() for line in out.splitlines() if line.strip()})
-    return " ".join(caps)
+    return dev_build.format_arch_torch(await dev_build.detect_local_gpu_caps())
 
 
 def _force_local_arch_for_deepep(dockerfile: os.PathLike[str] | str) -> tuple[bool, str]:
@@ -282,88 +273,6 @@ def _force_local_arch_for_deepep(dockerfile: os.PathLike[str] | str) -> tuple[bo
     return True, "DeepEP install step not found; skipping DeepEP arch patch."
 
 
-async def _clone_or_update_vllm(repo_url: str, branch: str):
-    if VLLM_SRC_DIR.joinpath(".git").exists():
-        yield ("log", "Updating existing vLLM source...")
-        rc, current_remote = await run_command_with_options(
-            "git",
-            "remote",
-            "get-url",
-            "origin",
-            cwd=VLLM_SRC_DIR,
-            timeout=30,
-        )
-        if rc != 0:
-            yield ("log", current_remote.strip() or "Error: failed to inspect existing vLLM source")
-            yield ("rc", 1)
-            return
-        if current_remote.strip() != repo_url:
-            yield (
-                "log",
-                "Error: existing .vllm-src remote URL differs from the requested repository.",
-            )
-            yield ("log", f"Existing: {current_remote.strip()}")
-            yield ("log", f"Requested: {repo_url}")
-            yield (
-                "log",
-                "Move or delete .vllm-src yourself if you want to replace the checkout.",
-            )
-            yield ("rc", 1)
-            return
-
-    if not VLLM_SRC_DIR.exists():
-        async for event in stream_command(["git", "clone", repo_url, str(VLLM_SRC_DIR)], cwd=SCRIPT_DIR):
-            if event[0] == "rc":
-                if event[1] != 0:
-                    yield event
-                    return
-                continue
-            yield event
-
-    rc, out = await run_command_with_options("git", "fetch", "origin", cwd=VLLM_SRC_DIR, timeout=120)
-    if rc != 0:
-        yield ("log", out.strip() or "Error: git fetch failed")
-        yield ("rc", rc)
-        return
-
-    rc, out = await run_command_with_options("git", "checkout", branch, cwd=VLLM_SRC_DIR, timeout=60)
-    if rc != 0:
-        rc, out = await run_command_with_options(
-            "git",
-            "checkout",
-            "-b",
-            branch,
-            f"origin/{branch}",
-            cwd=VLLM_SRC_DIR,
-            timeout=60,
-        )
-        if rc != 0:
-            yield ("log", out.strip() or f"Error: failed to checkout branch {branch}")
-            yield ("rc", rc)
-            return
-
-    rc, out = await run_command_with_options(
-        "git", "pull", "origin", branch, cwd=VLLM_SRC_DIR, timeout=120
-    )
-    if rc != 0:
-        yield ("log", out.strip() or f"Error: git pull failed for branch {branch}")
-        yield (
-            "log",
-            "Hint: stash or reset local changes in .vllm-src/, then retry.",
-        )
-        yield ("rc", rc)
-        return
-
-    rc, commit_hash = await run_command_with_options(
-        "git", "rev-parse", "--short", "HEAD", cwd=VLLM_SRC_DIR, timeout=30
-    )
-    if rc != 0:
-        yield ("log", commit_hash.strip() or "Error: failed to read commit hash")
-        yield ("rc", rc)
-        return
-    yield ("commit", commit_hash.strip())
-
-
 async def _stream_build_dev_image(
     branch: str,
     *,
@@ -386,6 +295,19 @@ async def _stream_build_dev_image(
             yield event
 
 
+VLLM_DEV_SPEC = dev_build.DevBuildSpec(
+    backend="vllm",
+    image_prefix="vllm-dev",
+    src_dir=VLLM_SRC_DIR,
+    default_repo_url=DEFAULT_VLLM_REPO_URL,
+    default_branch="main",
+    dockerfile_relpath="docker/Dockerfile",
+    target="vllm-openai",
+    base_build_args=(("RUN_WHEEL_CHECK", "false"),),
+    label_prefix="vllm",
+)
+
+
 async def _do_build_dev_image(
     branch: str,
     *,
@@ -406,99 +328,38 @@ async def _do_build_dev_image(
         )
         gpu_name = gpu_name.splitlines()[0].strip() if rc == 0 and gpu_name.strip() else "unknown"
 
-    from datetime import datetime, timezone
-
-    main_tag = custom_tag or f"{branch}-{datetime.now().strftime('%Y%m%d')}"
-    yield ("log", "Building vLLM from source")
-    yield ("log", f"Repository: {repo_url}")
-    yield ("log", f"Branch: {branch}")
+    extra_log: list[str] = []
     if use_official:
-        yield ("log", "Using official vLLM Dockerfile (ALL architectures)")
+        extra_log.append("Using official vLLM Dockerfile (ALL architectures)")
     else:
-        yield ("log", f"Detected GPU: {gpu_name} (compute: {gpu_arch})")
-        yield (
-            "log",
-            "Building with local GPU arch targets.",
-        )
-    yield ("log", f"Tag: vllm-dev:{main_tag}")
+        extra_log.append(f"Detected GPU: {gpu_name} (compute: {gpu_arch})")
+        extra_log.append("Building with local GPU arch targets.")
 
-    commit_hash = ""
-    async for event in _clone_or_update_vllm(repo_url, branch):
-        if event[0] == "commit":
-            commit_hash = event[1]
-        else:
-            yield event
-            if event[0] == "rc" and event[1] != 0:
-                return
-
+    extra_build_args: list[tuple[str, str]] = []
     if not use_official:
-        ok, patch_msg = _force_local_arch_for_deepep(VLLM_SRC_DIR / "docker/Dockerfile")
-        yield ("log", patch_msg)
-        if not ok:
-            yield ("rc", 1)
-            return
+        extra_build_args.append(("torch_cuda_arch_list", gpu_arch))
 
-    build_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    cmd = [
-        "docker",
-        "build",
-        "-f",
-        str(VLLM_SRC_DIR / "docker/Dockerfile"),
-        "--build-arg",
-        "RUN_WHEEL_CHECK=false",
-        "--target",
-        "vllm-openai",
-        "--label",
-        f"vllm.repo.url={repo_url}",
-        "--label",
-        f"vllm.repo.branch={branch}",
-        "--label",
-        f"vllm.commit.hash={commit_hash}",
-        "--label",
-        f"vllm.build.date={build_date}",
-        "--label",
-        f"vllm.build.type={'official' if use_official else 'fast'}",
-        "-t",
-        f"vllm-dev:{main_tag}",
-        "-t",
-        f"vllm-dev:{branch}",
-    ]
-    if not use_official:
-        cmd.extend(["--build-arg", f"torch_cuda_arch_list={gpu_arch}"])
-    cmd.append(str(VLLM_SRC_DIR))
+    async def _patch():
+        if use_official:
+            return True, ""
+        ok, msg = _force_local_arch_for_deepep(VLLM_SRC_DIR / "docker/Dockerfile")
+        return ok, msg
 
-    build_env = os.environ.copy()
-    build_env.setdefault("DOCKER_BUILDKIT", "1")
-
-    async for event in stream_command(cmd, cwd=SCRIPT_DIR, env=build_env):
-        if event[0] == "rc":
-            if event[1] != 0:
-                yield event
-            return
+    async for event in dev_build.stream_build(
+        VLLM_DEV_SPEC,
+        branch,
+        repo_url=repo_url,
+        custom_tag=custom_tag,
+        extra_build_args=tuple(extra_build_args),
+        extra_log_lines=tuple(extra_log),
+        pre_build=_patch,
+        extra_labels=(("vllm.build.type", "official" if use_official else "fast"),),
+    ):
         yield event
 
 
-async def _get_image_label(image_ref: str, label: str) -> str:
-    rc, out = await run_command(
-        "docker",
-        "inspect",
-        image_ref,
-        f"--format={{{{index .Config.Labels {label!r}}}}}",
-        timeout=20,
-    )
-    if rc != 0:
-        return ""
-    value = out.strip()
-    return "" if value == "<no value>" else value
-
-
 async def _dev_image_matches(image_tag: str, repo_url: str, branch: str) -> bool:
-    image_ref = f"vllm-dev:{image_tag}"
-    saved_repo = await _get_image_label(image_ref, "vllm.repo.url")
-    saved_branch = await _get_image_label(image_ref, "vllm.repo.branch")
-    if not saved_repo or not saved_branch:
-        return False
-    return saved_repo == repo_url and saved_branch == branch
+    return await dev_build.image_matches(VLLM_DEV_SPEC, image_tag, repo_url, branch)
 
 
 async def get_container_statuses() -> list[ContainerStatus]:

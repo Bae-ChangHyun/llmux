@@ -5,8 +5,11 @@ generator yielding ("log", str) / ("rc", int) events, `container_down()`
 returns (rc, message). Replaces the legacy shell scripts in
 scripts/llamacpp/ (switch.sh, stop.sh, _common.sh).
 
-Stage 1 scope: behavior-identical replacement of the shell path. Dev-build
-hooks land in Stage 2.
+Also hosts the llama.cpp side of the unified dev-build pipeline
+(get_dev_build_defaults, _stream_build_dev_image, _dev_image_matches).
+The mechanics live in tui.common.dev_build; this module supplies the
+DevBuildSpec and lets the user override CUDA_DOCKER_ARCH for faster
+builds.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import asyncio
 import os
 from pathlib import Path
 
-from tui.common import profile_store
+from tui.common import dev_build, profile_store
 from tui.common.docker import run_command as _docker_run
 
 from .backend import (
@@ -31,6 +34,105 @@ from .backend import (
 
 COMPOSE_DIR = PROJECT_ROOT / "compose" / "llamacpp"
 BASE_COMPOSE = COMPOSE_DIR / "docker-compose.yaml"
+DEV_COMPOSE = COMPOSE_DIR / "docker-compose.dev.yaml"
+
+LLAMACPP_SRC_DIR = PROJECT_ROOT / ".llamacpp-src"
+DEFAULT_LLAMACPP_REPO_URL = "https://github.com/ggml-org/llama.cpp.git"
+
+LLAMACPP_DEV_SPEC = dev_build.DevBuildSpec(
+    backend="llamacpp",
+    image_prefix="llamacpp-dev",
+    src_dir=LLAMACPP_SRC_DIR,
+    default_repo_url=DEFAULT_LLAMACPP_REPO_URL,
+    default_branch="master",
+    dockerfile_relpath=".devops/cuda.Dockerfile",
+    target="server",
+    label_prefix="llamacpp",
+)
+
+
+_BUILD_LOCK = asyncio.Lock()
+
+
+def get_dev_build_defaults() -> tuple[str, str]:
+    """Return (repo_url, branch) honoring .env.common overrides."""
+    env = _parse_env_file(COMMON_ENV) if COMMON_ENV.exists() else {}
+    repo_url = env.get("LLAMACPP_REPO_URL", "").strip() or DEFAULT_LLAMACPP_REPO_URL
+    branch = env.get("LLAMACPP_BRANCH", "").strip() or LLAMACPP_DEV_SPEC.default_branch
+    return repo_url, branch
+
+
+async def _stream_build_dev_image(
+    branch: str,
+    *,
+    repo_url: str = "",
+    custom_tag: str = "",
+    cuda_arch: str = "",
+    use_multi_arch: bool = False,
+):
+    """Lock-guarded wrapper around the unified builder."""
+    if _BUILD_LOCK.locked():
+        yield ("log", "Another llamacpp dev build is already running. Waiting...")
+    async with _BUILD_LOCK:
+        async for event in _do_build_dev_image(
+            branch,
+            repo_url=repo_url,
+            custom_tag=custom_tag,
+            cuda_arch=cuda_arch,
+            use_multi_arch=use_multi_arch,
+        ):
+            yield event
+
+
+async def _do_build_dev_image(
+    branch: str,
+    *,
+    repo_url: str,
+    custom_tag: str,
+    cuda_arch: str,
+    use_multi_arch: bool = False,
+):
+    """Build llamacpp-dev:<tag>.
+
+    cuda_arch precedence:
+      - explicit `cuda_arch` arg (e.g. "89" or "86;89") → use as-is
+      - else auto-detect local GPU via nvidia-smi → CMake-formatted value
+      - else (or use_multi_arch=True) fall back to "default" (Dockerfile's
+        multi-arch path)
+    """
+    resolved_arch = cuda_arch.strip()
+    log_lines: list[str] = []
+
+    if not resolved_arch and not use_multi_arch:
+        caps = await dev_build.detect_local_gpu_caps()
+        if caps:
+            resolved_arch = dev_build.format_arch_cmake(caps)
+            log_lines.append(f"Detected GPUs (compute_cap): {', '.join(caps)}")
+            log_lines.append(f"Building with CUDA_DOCKER_ARCH={resolved_arch} (fast)")
+        else:
+            log_lines.append(
+                "Could not auto-detect GPU (nvidia-smi unavailable) — falling back to multi-arch"
+            )
+
+    extra_build_args: list[tuple[str, str]] = []
+    if resolved_arch:
+        extra_build_args.append(("CUDA_DOCKER_ARCH", resolved_arch))
+    else:
+        log_lines.append("Building with CUDA_DOCKER_ARCH=default (multi-arch, slower)")
+
+    async for event in dev_build.stream_build(
+        LLAMACPP_DEV_SPEC,
+        branch,
+        repo_url=repo_url,
+        custom_tag=custom_tag,
+        extra_build_args=tuple(extra_build_args),
+        extra_log_lines=tuple(log_lines),
+    ):
+        yield event
+
+
+async def _dev_image_matches(image_tag: str, repo_url: str, branch: str) -> bool:
+    return await dev_build.image_matches(LLAMACPP_DEV_SPEC, image_tag, repo_url, branch)
 
 
 # ---------------------------------------------------------------------------
@@ -96,9 +198,17 @@ def _override_path(profile_name: str) -> Path:
 
 
 def _compose_files(profile: Profile) -> list[str]:
-    """Compose -f arguments. Override file MUST exist (rendered by render-override.py)."""
+    """Compose -f arguments. Override file MUST exist (rendered by render-override.py).
+
+    If the profile pins a `llamacpp-dev:*` image via `image_tag`, we layer
+    `docker-compose.dev.yaml` between base and the per-profile override so the
+    image: line gets swapped while command/volumes/env stay intact.
+    """
     override = _override_path(profile.name)
-    files = ["-f", str(BASE_COMPOSE), "-f", str(override)]
+    files = ["-f", str(BASE_COMPOSE)]
+    if profile.image_tag.startswith(f"{LLAMACPP_DEV_SPEC.image_prefix}:"):
+        files.extend(["-f", str(DEV_COMPOSE)])
+    files.extend(["-f", str(override)])
     return files
 
 
@@ -136,18 +246,6 @@ def _compose_base_args(profile: Profile) -> list[str]:
 # ---------------------------------------------------------------------------
 # Render helpers
 # ---------------------------------------------------------------------------
-
-
-async def _render_profile_env(profile_name: str) -> tuple[int, str]:
-    """Re-render .runtime/llamacpp/<name>.env via the unified profile_store CLI."""
-    return await _run(
-        "python3",
-        "-m",
-        "tui.common.profile_store",
-        "render",
-        "llamacpp",
-        profile_name,
-    )
 
 
 async def _render_override(profile_name: str) -> tuple[int, str]:
@@ -226,8 +324,24 @@ async def _post_start_validation(
 # ---------------------------------------------------------------------------
 
 
-async def stream_container_up(profile_name: str):
-    """Mirrors switch.sh: render profile/override, ensure model, compose up, validate.
+async def stream_container_up(
+    profile_name: str,
+    *,
+    use_dev: bool = False,
+    tag: str = "",
+    repo_url: str = "",
+    branch: str = "",
+):
+    """Mirrors vllm: render profile/override, optionally build dev image, compose up, validate.
+
+    Parameters mirror tui.backends.vllm.backend_runtime.stream_container_up:
+      - use_dev=True: TUI requested a `llamacpp-dev:<tag>` build/launch.
+        repo_url/branch resolve via .env.common defaults when empty.
+      - tag (non-dev path): user-supplied custom `<image>:<tag>`. When
+        empty, fall back to the profile's image_tag or the default image
+        from compose.
+      - All-zero (default) keeps the previous behavior — profile.image_tag
+        decides; default ghcr image otherwise.
 
     Yields ("log", str) lines and a final ("rc", int).
     """
@@ -244,11 +358,74 @@ async def stream_container_up(profile_name: str):
 
     profile = load_profile(profile_name)
 
-    rc, out = await _render_profile_env(profile_name)
-    if rc != 0:
-        yield ("log", out.strip() or f"✗ profile env render 실패: {profile_name}")
-        yield ("rc", rc)
+    # Apply TUI-side image override (a Dev Build / Custom Tag selection trumps
+    # whatever's pinned on the profile). This is identical to how the vllm
+    # screen passes use_dev/tag down to its stream_container_up.
+    resolved_image_tag = profile.image_tag
+    if use_dev:
+        # Resolve repo/branch defaults so callers can pass empty strings.
+        default_repo, default_branch = get_dev_build_defaults()
+        resolved_repo = (repo_url or default_repo).strip()
+        resolved_branch = (branch or default_branch).strip()
+        dev_tag = (tag or resolved_branch).strip()
+        resolved_image_tag = f"{LLAMACPP_DEV_SPEC.image_prefix}:{dev_tag}"
+
+        # Build the dev image on demand if missing OR if the locally cached
+        # tag was built from a different repo/branch. The builder stamps
+        # repo/branch labels on every image, so `<prefix>:master` from
+        # ggml-org and `<prefix>:master` from a fork collide on tag name —
+        # reusing blindly would silently start the wrong source.
+        exists = await dev_build.image_exists_locally(LLAMACPP_DEV_SPEC, dev_tag)
+        matches = exists and await dev_build.image_matches(
+            LLAMACPP_DEV_SPEC, dev_tag, resolved_repo, resolved_branch
+        )
+        if not exists:
+            yield ("log", f"▸ Dev image {resolved_image_tag} not found — building from {resolved_repo}@{resolved_branch}")
+        elif not matches:
+            yield ("log", f"▸ Dev image {resolved_image_tag} exists but was built from a different repo/branch — rebuilding from {resolved_repo}@{resolved_branch}")
+        if not matches:
+            async for event in _stream_build_dev_image(
+                resolved_branch, repo_url=resolved_repo, custom_tag=tag
+            ):
+                yield event
+                if event[0] == "rc" and event[1] != 0:
+                    return
+    elif tag:
+        # Custom Tag: pass through as-is (e.g. `ghcr.io/foo/bar:v1`).
+        resolved_image_tag = tag
+
+    # Apply the resolved tag to BOTH objects:
+    #  - `stored` (StoredProfile) feeds profile_store.render_env() → the
+    #    per-profile .env that compose reads as LLAMACPP_DEV_TAG.
+    #  - `profile` (backend.Profile) feeds _compose_files() → whether the
+    #    dev compose override gets layered in.
+    # Rendering in-process (not via a subprocess that re-reads profiles.yaml)
+    # is what makes a one-off TUI "Dev Build" / "Custom Tag" selection
+    # actually reach docker compose instead of silently falling back to the
+    # saved profile's image.
+    stored.image_tag = resolved_image_tag
+    profile.image_tag = resolved_image_tag
+    try:
+        profile_store.render_env(stored)
+    except Exception as exc:  # noqa: BLE001 — surface any render failure to the UI
+        yield ("log", f"✗ profile env render 실패: {exc}")
+        yield ("rc", 1)
         return
+
+    # Sanity-check pinned dev images that we didn't build above (e.g. profile
+    # was already pointed at a dev tag via `profile edit --image-tag`).
+    if (
+        not use_dev
+        and resolved_image_tag.startswith(f"{LLAMACPP_DEV_SPEC.image_prefix}:")
+    ):
+        dev_tag = resolved_image_tag.split(":", 1)[1]
+        if not await dev_build.image_exists_locally(LLAMACPP_DEV_SPEC, dev_tag):
+            yield ("log", f"✗ Dev image {resolved_image_tag} not found locally.")
+            yield ("log", "  Build it first:")
+            yield ("log", f"  uv run llmux image build-dev --backend llamacpp --branch {dev_tag}")
+            yield ("rc", 1)
+            return
+        yield ("log", f"▸ Dev image: {resolved_image_tag}")
 
     yield ("log", "▸ command 렌더링")
     rc, out = await _render_override(profile_name)
@@ -305,7 +482,10 @@ async def container_down(profile_name: str) -> tuple[int, str]:
     profile = load_profile(profile_name)
 
     # Re-render env so compose has the right CONTAINER_NAME / LLAMA_PORT.
-    await _render_profile_env(profile_name)
+    try:
+        profile_store.render_env(stored)
+    except Exception:  # noqa: BLE001 — best-effort; the rm -f fallback still works
+        pass
 
     override = _override_path(profile_name)
     if override.exists():
@@ -317,7 +497,7 @@ async def container_down(profile_name: str) -> tuple[int, str]:
         # fallthrough to docker rm -f if compose down fails
 
     rc_inspect, names = await _docker_run("docker", "ps", "-a", "--format", "{{.Names}}", timeout=10)
-    if rc_inspect == 0 and profile.container_name in names.split():
+    if rc_inspect == 0 and profile.container_name in names.splitlines():
         rc_rm, out_rm = await _docker_run("docker", "rm", "-f", profile.container_name, timeout=30)
         if rc_rm != 0:
             return rc_rm, out_rm.strip() or "✗ docker rm -f 실패"
