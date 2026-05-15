@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Installation &middot; llmux</title>
+  <meta name="description" content="Install llmux: system requirements, the uv tool install command, and one-time setup of .env.common and profiles.yaml." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/css/style.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="top">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-brand">llm<span class="brand-accent">ux</span></a>
+    <div class="nav-links">
+      <span class="nav-links-desktop">
+        <a href="../getting-started/installation.html" class="active">Getting Started</a>
+        <a href="../guide/profiles.html">Guide</a>
+        <a href="../backends/vllm.html">Backends</a>
+        <a href="../reference/cli.html">Reference</a>
+        <a href="../troubleshooting.html">Troubleshooting</a>
+      </span>
+      <a href="https://github.com/Bae-ChangHyun/llmux" class="nav-github" target="_blank">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="nav-github-stars">GitHub</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="docs-wrap">
+
+  <!-- SECTION NAV -->
+  <div class="section-nav">
+    <span class="crumb">Getting Started</span>
+    <a href="installation.html" class="active">Installation</a>
+    <a href="quickstart.html">Quick Start</a>
+  </div>
+
+  <article class="docs-content">
+
+    <div class="docs-header">
+      <h1>Installation</h1>
+      <p class="lede">
+        This page walks through everything you need to get <code>llmux</code> installed and configured: system requirements, the install command itself, and the three one-time setup steps (<code>.env.common</code>, <code>profiles.yaml</code>, and a sanity check).
+      </p>
+    </div>
+
+    <h2 id="requirements">Requirements</h2>
+    <p>llmux orchestrates GPU containers, so it expects a Linux host with NVIDIA hardware and a working Docker + CUDA stack.</p>
+    <table>
+      <thead>
+        <tr><th>Requirement</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Linux + NVIDIA GPU</strong></td><td>One or more NVIDIA GPUs with a recent driver installed (<code>nvidia-smi</code> should work).</td></tr>
+        <tr><td><strong>Docker + NVIDIA Container Toolkit</strong></td><td>Docker Engine with the <a href="https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html">NVIDIA Container Toolkit</a> so containers can see the GPU.</td></tr>
+        <tr><td><strong>Python 3.10+</strong></td><td>Managed through <a href="https://docs.astral.sh/uv/">uv</a> — uv installs and isolates the tool for you.</td></tr>
+        <tr><td><strong>Hugging Face CLI (<code>hf</code>)</strong></td><td>Only needed for llama.cpp GGUF auto-download: <code>uv tool install huggingface_hub</code>.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="admonition note">
+      <p class="admonition-title">Why Docker?</p>
+      <p>llmux never installs vLLM or llama.cpp on your host. Every profile runs in an official container image, and llmux only renders the Compose files and streams logs. That keeps the two toolchains fully isolated from each other and from your system Python.</p>
+    </div>
+
+    <div class="admonition warning">
+      <p class="admonition-title">GPU passthrough must already work</p>
+      <p>Before installing llmux, confirm <code>docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi</code> prints your GPUs. If it doesn't, fix the <a href="https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html">NVIDIA Container Toolkit</a> setup first — llmux can't work around a broken GPU runtime.</p>
+    </div>
+
+    <h2 id="install-llmux">Install llmux</h2>
+    <p>llmux is installed as a <a href="https://docs.astral.sh/uv/concepts/tools/">uv tool</a> in editable mode. This puts the <code>llmux</code> binary on your <code>PATH</code> while keeping it pinned to your local checkout, so any code edits are picked up live.</p>
+    <pre data-lang="bash"><code>git clone https://github.com/Bae-ChangHyun/llmux.git
+cd llmux
+
+# Install the `llmux` command globally (editable — local edits apply immediately)
+uv tool install --editable .
+
+# One-time: add ~/.local/bin to your PATH, then re-source your shell
+uv tool update-shell</code></pre>
+
+    <p>Once installed, the <code>llmux</code> binary lives in <code>~/.local/bin/llmux</code> and runs from any directory:</p>
+    <pre data-lang="bash"><code>llmux --help</code></pre>
+
+    <div class="admonition tip">
+      <p class="admonition-title">Upgrading and uninstalling</p>
+      <ul>
+        <li><strong>Upgrade:</strong> pull the latest commit and reinstall — <code>git pull &amp;&amp; uv tool install --editable . --reinstall</code></li>
+        <li><strong>Uninstall:</strong> <code>uv tool uninstall llmux</code></li>
+      </ul>
+    </div>
+
+    <div class="admonition tip">
+      <p class="admonition-title">Run without installing globally</p>
+      <p>From inside the repo you can also run it ad-hoc with <code>uv run llmux</code>. llmux resolves <code>profiles.yaml</code>, <code>compose/</code>, <code>config/</code>, <code>scripts/</code>, and <code>.env.common</code> relative to the project root — so if you run it from <strong>outside</strong> the repo, set <code>LLMUX_ROOT=/path/to/llmux</code> so it can find them.</p>
+    </div>
+
+    <h2 id="initial-setup">Initial setup</h2>
+    <p>llmux needs two files before it can start a model: <code>.env.common</code> (shared host paths and tokens) and <code>profiles.yaml</code> (your model definitions). Both are gitignored — they're yours to edit freely.</p>
+
+    <h3 id="1-create-and-edit-env-common">1. Create and edit <code>.env.common</code></h3>
+    <p><code>.env.common</code> holds host-side settings shared by every profile: where to cache Hugging Face downloads, where GGUF files live, the llama.cpp image tag, and so on. Copy the template and edit the values:</p>
+    <pre data-lang="bash"><code>cp .env.common.example .env.common
+$EDITOR .env.common</code></pre>
+
+    <p>The variables you can set:</p>
+    <table>
+      <thead>
+        <tr><th>Variable</th><th>Purpose</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>HF_TOKEN</code></td><td>Hugging Face access token for gated model downloads. Leave empty if you only use public repos.</td></tr>
+        <tr><td><code>HF_CACHE_PATH</code></td><td>Host path mounted into containers as the Hugging Face cache. <strong>Must be an absolute path.</strong></td></tr>
+        <tr><td><code>MODEL_DIR</code></td><td>Host directory where llama.cpp GGUF files are stored (mounted into the container as <code>/models</code>).</td></tr>
+        <tr><td><code>LORA_BASE_PATH</code></td><td>vLLM only: host path holding LoRA adapters (mounted into the container as <code>/app/lora</code>).</td></tr>
+        <tr><td><code>LLAMACPP_IMAGE</code></td><td>llama.cpp server image tag — defaults to <code>ghcr.io/ggml-org/llama.cpp:server-cuda</code>.</td></tr>
+        <tr><td><code>LLAMACPP_REPO_URL</code></td><td>Source repo URL used by <code>llmux image build-dev</code> for llama.cpp dev builds. Defaults to the upstream <code>ggml-org/llama.cpp</code> repo.</td></tr>
+        <tr><td><code>LLAMACPP_BRANCH</code></td><td>Branch cloned for llama.cpp dev builds. Defaults to <code>master</code>.</td></tr>
+        <tr><td><code>TZ</code></td><td>Container timezone, e.g. <code>Asia/Seoul</code>.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="admonition warning">
+      <p class="admonition-title"><code>HF_CACHE_PATH</code> must be absolute</p>
+      <p><code>env-check</code> rejects a relative <code>HF_CACHE_PATH</code>. Use a full path such as <code>/home/$USER/.cache/huggingface</code> so the bind mount resolves correctly.</p>
+    </div>
+
+    <div class="admonition note">
+      <p class="admonition-title">Gated models need <code>HF_TOKEN</code></p>
+      <p>Public models download fine with an empty <code>HF_TOKEN</code>. For gated repos (some Llama and Gemma weights, for example), set a token with access — and for llama.cpp's GGUF auto-download, make sure the <code>hf</code> CLI is installed too.</p>
+    </div>
+
+    <h3 id="2-prepare-profiles-yaml">2. Prepare <code>profiles.yaml</code></h3>
+    <p><code>profiles.yaml</code> is the single source of truth for your model profiles across both backends. Start from the bundled template:</p>
+    <pre data-lang="bash"><code>cp profiles.example.yaml profiles.yaml
+$EDITOR profiles.yaml</code></pre>
+
+    <p>The template defines a <code>defaults</code> block per backend plus one example profile for each engine:</p>
+    <pre data-lang="yaml"><code>version: 1
+
+defaults:
+  vllm:
+    port: 8000
+    gpu_id: "0"
+    tensor_parallel_size: 1
+    enable_lora: false
+  llamacpp:
+    port: 8080
+    gpu_id: "0"
+
+profiles:
+  - name: qwen3-0-6b
+    backend: vllm
+    config_name: qwen3-0-6b       # → config/vllm/qwen3-0-6b.yaml
+    model_id: Qwen/Qwen3-0.6B
+    gpu_id: "0"
+
+  - name: gemma-3-4b
+    backend: llamacpp
+    config_name: gemma-3-4b       # → config/llamacpp/gemma-3-4b.yaml
+    model_file: gemma-3-4b-it-q4_k_m.gguf
+    hf_repo: unsloth/gemma-3-4b-it-GGUF
+    hf_file: gemma-3-4b-it-q4_k_m.gguf</code></pre>
+
+    <p>Any field you omit from a profile inherits from <code>defaults.&lt;backend&gt;</code>. You don't need to hand-write the example profiles — the <a href="quickstart.html">Quick Start</a> generates a fresh profile for you with <code>llmux profile quick-setup</code>.</p>
+
+    <div class="admonition note">
+      <p class="admonition-title">You never hand-write <code>.env</code> files</p>
+      <p>At launch, each selected profile is rendered to <code>.runtime/&lt;backend&gt;/&lt;name&gt;.env</code> and passed to <code>docker compose --env-file</code>. <code>profiles.yaml</code> is the whole interface — the runtime renders are gitignored.</p>
+    </div>
+
+    <p>See the <a href="../guide/profiles.html">Profiles guide</a> for the full schema.</p>
+
+    <h3 id="3-verify-the-installation">3. Verify the installation</h3>
+    <p><code>llmux env-check</code> validates <code>.env.common</code> and reports the resolved project paths. Run it from inside the repo (or with <code>LLMUX_ROOT</code> set):</p>
+    <pre data-lang="bash"><code>llmux env-check</code></pre>
+
+    <p>A healthy setup ends with <code>Status       : OK</code>. If something is missing, the command lists each issue and exits non-zero — for example a missing <code>.env.common</code>, an unset <code>HF_TOKEN</code>, or a relative <code>HF_CACHE_PATH</code>.</p>
+
+    <p>You can also confirm the GPU runtime is visible to llmux:</p>
+    <pre data-lang="bash"><code>llmux gpu          # nvidia-smi summary, one row per GPU</code></pre>
+
+    <div class="admonition tip">
+      <p class="admonition-title"><code>--json</code> everywhere</p>
+      <p><code>env-check</code>, <code>gpu</code>, and every <code>list</code>/<code>show</code> command accept <code>--json</code> for clean piping into scripts and agents.</p>
+    </div>
+
+    <h2 id="next-steps">Next steps</h2>
+    <p>With llmux installed and configured, head to the <a href="quickstart.html">Quick Start</a> to create your first profile and serve a model in about five minutes.</p>
+
+    <div class="docs-footer">
+      <a class="edit-link" href="https://github.com/Bae-ChangHyun/llmux/edit/main/docs/getting-started/installation.md" target="_blank">Edit this page on GitHub</a>
+      <div class="prev-next">
+        <a href="../index.html">&larr; Home</a>
+        <a href="quickstart.html">Quick Start &rarr;</a>
+      </div>
+    </div>
+
+  </article>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="page-wrap">
+    <p>
+      MIT License &middot;
+      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a> &middot;
+      Made by <a href="https://github.com/Bae-ChangHyun">Bae-ChangHyun</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

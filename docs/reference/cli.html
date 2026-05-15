@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CLI Reference &middot; llmux</title>
+  <meta name="description" content="Complete CLI reference for llmux — every container, profile, config, image, and system subcommand with its options." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/css/style.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="top">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-brand">llm<span class="brand-accent">ux</span></a>
+    <div class="nav-links">
+      <span class="nav-links-desktop">
+        <a href="../getting-started/installation.html">Getting Started</a>
+        <a href="../guide/profiles.html">Guide</a>
+        <a href="../backends/vllm.html">Backends</a>
+        <a href="cli.html" class="active">Reference</a>
+        <a href="../troubleshooting.html">Troubleshooting</a>
+      </span>
+      <a href="https://github.com/Bae-ChangHyun/llmux" class="nav-github" target="_blank">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="nav-github-stars">GitHub</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="docs-wrap">
+
+  <!-- SECTION NAV -->
+  <div class="section-nav">
+    <span class="crumb">Reference</span>
+    <a href="cli.html" class="active">CLI Reference</a>
+    <a href="env-common.html">.env.common</a>
+    <a href="architecture.html">Architecture</a>
+  </div>
+
+  <article class="docs-content">
+
+    <div class="docs-header">
+      <h1>CLI Reference</h1>
+      <p class="lede">
+        <code>llmux</code> ships a single console script (<code>pyproject.toml</code> → <code>[project.scripts] llmux = "tui.cli:main"</code>). Running it with <strong>no arguments launches the TUI</strong>; every subcommand is a headless, scriptable equivalent of a TUI action.
+      </p>
+      <pre data-lang="text"><code>llmux                      # launch the interactive TUI (default)
+llmux tui                  # launch the TUI explicitly
+llmux &lt;group&gt; &lt;command&gt;    # headless control
+llmux &lt;alias&gt;              # top-level shortcut (see below)</code></pre>
+      <p>All commands accept <code>-h</code> / <code>--help</code>. The CLI is built with <a href="https://typer.tiangolo.com/" target="_blank">Typer</a>; the option tables below are extracted directly from the <code>typer.Option</code> / <code>typer.Argument</code> definitions in <code>tui/cli/</code>.</p>
+    </div>
+
+    <div class="admonition info">
+      <p class="admonition-title">How to run it</p>
+      <p>Examples use <code>uv run llmux …</code> (the project's standard <code>uv</code> workflow). If you installed the tool globally with <code>uv tool install</code>, drop the <code>uv run</code> prefix and call <code>llmux …</code> directly.</p>
+    </div>
+
+    <h2 id="command-map">Command map</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Group</th>
+          <th>Commands</th>
+          <th>Module</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>container</code></td>
+          <td><code>up</code> · <code>down</code> · <code>logs</code> · <code>ps</code> · <code>render-env</code></td>
+          <td><code>tui/cli/container.py</code></td>
+        </tr>
+        <tr>
+          <td><code>profile</code></td>
+          <td><code>list</code> · <code>show</code> · <code>new</code> · <code>edit</code> · <code>delete</code> · <code>quick-setup</code></td>
+          <td><code>tui/cli/profile.py</code></td>
+        </tr>
+        <tr>
+          <td><code>config</code></td>
+          <td><code>list</code> · <code>show</code> · <code>new</code> · <code>edit</code> · <code>delete</code></td>
+          <td><code>tui/cli/config.py</code></td>
+        </tr>
+        <tr>
+          <td><code>image</code></td>
+          <td><code>list</code> · <code>pull</code> · <code>build-dev</code></td>
+          <td><code>tui/cli/image.py</code></td>
+        </tr>
+        <tr>
+          <td><code>system</code></td>
+          <td><code>gpu</code> · <code>mem-estimate</code> · <code>env-check</code></td>
+          <td><code>tui/cli/system.py</code></td>
+        </tr>
+        <tr>
+          <td><em>(top-level)</em></td>
+          <td><code>tui</code> · <code>gpu</code> · <code>env-check</code> · <code>up</code> · <code>down</code> · <code>logs</code> · <code>ps</code> · <code>render-env</code></td>
+          <td><code>tui/cli/__init__.py</code></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2 id="common-concepts">Common concepts</h2>
+
+    <h3 id="backend-detection">Backend detection</h3>
+    <p>Most commands take a <strong>profile name</strong> and resolve its backend (<code>vllm</code> or <code>llamacpp</code>) automatically by scanning <code>profiles.yaml</code>:</p>
+    <ul>
+      <li>If the name exists in exactly one backend, that backend is used.</li>
+      <li>If it exists in <strong>both</strong>, you must disambiguate with <code>--backend</code> / <code>-b</code>.</li>
+      <li>If it exists in <strong>neither</strong>, the command fails with a clear usage error.</li>
+    </ul>
+    <p><code>--backend</code> always wins when supplied.</p>
+
+    <h3 id="json-output">JSON output</h3>
+    <p>Commands that produce structured data accept <code>--json</code> to emit a JSON payload (UTF-8, 2-space indent) instead of the default padded table or text. Commands with <code>--json</code> support:</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Command</th>
+          <th>Table/text default</th>
+          <th><code>--json</code></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><code>container ps</code></td><td>status table</td><td>list of rows</td></tr>
+        <tr><td><code>profile list</code></td><td>profile table</td><td>list of rows</td></tr>
+        <tr><td><code>profile show</code></td><td><code>key: value</code> text</td><td>object</td></tr>
+        <tr><td><code>config list</code></td><td>config table</td><td>list of rows</td></tr>
+        <tr><td><code>config show</code></td><td>YAML dump</td><td>object</td></tr>
+        <tr><td><code>image list</code></td><td>image table</td><td>list of rows</td></tr>
+        <tr><td><code>system gpu</code></td><td>GPU table</td><td>list of rows</td></tr>
+        <tr><td><code>system env-check</code></td><td>report text</td><td>findings object</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="exit-codes">Exit codes</h3>
+    <p>Lifecycle commands propagate the underlying <code>docker</code> / <code>docker compose</code> exit code. <code>Ctrl-C</code> while streaming (<code>up</code>, <code>logs</code>, <code>build-dev</code>) exits with <code>130</code>. <code>system env-check</code> exits <code>1</code> when <code>.env.common</code> is missing or has issues.</p>
+
+    <h2 id="container-container-lifecycle"><code>container</code> — container lifecycle</h2>
+    <pre data-lang="text"><code>llmux container up|down|logs|ps|render-env …</code></pre>
+    <p>Start, stop, inspect, and re-render profile containers. <code>up</code>, <code>down</code>, <code>logs</code>, <code>ps</code>, and <code>render-env</code> are also exposed as <a href="#top-level-aliases">top-level aliases</a>.</p>
+
+    <h3 id="container-up"><code>container up</code></h3>
+    <p>Start a profile's container. Streams <code>docker compose</code> output to stdout.</p>
+    <pre data-lang="text"><code>llmux container up PROFILE [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>PROFILE</code></td><td>Profile name (from <code>profiles.yaml</code>). Required.</td></tr>
+      </tbody>
+    </table>
+    <table>
+      <thead>
+        <tr><th>Option</th><th>Default</th><th>Backend</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>auto-detect</em></td><td>both</td><td>Force backend (<code>vllm</code>, <code>llamacpp</code>); auto-detect if omitted.</td></tr>
+        <tr><td><code>--tag</code>, <code>-t</code></td><td><code>""</code></td><td>both</td><td>Image tag override. vLLM: <code>vllm/vllm-openai:&lt;tag&gt;</code> or <code>vllm-dev:&lt;tag&gt;</code> with <code>--dev</code>. Empty = use highest local versioned tag.</td></tr>
+        <tr><td><code>--dev</code></td><td><code>False</code></td><td>vLLM</td><td>Use the locally-built <code>vllm-dev:&lt;tag&gt;</code> image.</td></tr>
+        <tr><td><code>--pull</code></td><td><code>False</code></td><td>vLLM</td><td>Force <code>--pull always</code> when bringing the container up. (Ignored for llama.cpp with a warning.)</td></tr>
+        <tr><td><code>--repo-url</code></td><td><code>""</code></td><td>vLLM</td><td>vLLM dev image: override default vLLM source repo URL.</td></tr>
+        <tr><td><code>--branch</code></td><td><code>""</code></td><td>vLLM</td><td>vLLM dev image: override default vLLM source branch.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code># Start a vLLM profile (official image, highest local versioned tag)
+uv run llmux container up qwen3-0-6b
+
+# Start it from a locally-built dev image
+uv run llmux container up qwen3-0-6b --dev --tag main-20260515
+
+# Start a llama.cpp profile, disambiguating an ambiguous name
+uv run llmux up gemma-3-4b --backend llamacpp</code></pre>
+    <div class="admonition note">
+      <p class="admonition-title">llama.cpp dev images</p>
+      <p>llama.cpp does not use <code>--dev</code>/<code>--tag</code> the same way vLLM does. Pin a llama.cpp profile to a dev image by setting <code>image_tag: llamacpp-dev:&lt;branch&gt;</code> in <code>profiles.yaml</code> (see <a href="#profile-edit"><code>profile edit --image-tag</code></a>); <code>container up</code> then layers <code>docker-compose.dev.yaml</code> automatically.</p>
+    </div>
+
+    <h3 id="container-down"><code>container down</code></h3>
+    <p>Stop a profile's container.</p>
+    <pre data-lang="text"><code>llmux container down PROFILE [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>PROFILE</code></td><td>Profile name (from <code>profiles.yaml</code>). Required.</td></tr></tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>auto-detect</em></td><td>Force backend; auto-detect if omitted.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux container down qwen3-0-6b</code></pre>
+
+    <h3 id="container-logs"><code>container logs</code></h3>
+    <p>Stream container logs (<code>Ctrl-C</code> to stop following).</p>
+    <pre data-lang="text"><code>llmux container logs PROFILE [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>PROFILE</code></td><td>Profile name (from <code>profiles.yaml</code>). Required.</td></tr></tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>auto-detect</em></td><td>Force backend; auto-detect if omitted.</td></tr>
+        <tr><td><code>--tail</code>, <code>-n</code></td><td><code>200</code></td><td>Number of recent lines to show before following.</td></tr>
+        <tr><td><code>--follow / --no-follow</code>, <code>-f / -F</code></td><td><code>--follow</code></td><td>Follow log output (default). Use <code>--no-follow</code> to print recent lines and exit.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code># Follow live logs
+uv run llmux logs qwen3-0-6b
+
+# Print the last 50 lines and exit
+uv run llmux container logs qwen3-0-6b -n 50 --no-follow</code></pre>
+
+    <h3 id="container-ps"><code>container ps</code></h3>
+    <p>List profiles and their container status across backends.</p>
+    <pre data-lang="text"><code>llmux container ps [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>all</em></td><td>Limit to one backend (<code>vllm</code>, <code>llamacpp</code>); show all if omitted.</td></tr>
+        <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit JSON instead of a table.</td></tr>
+        <tr><td><code>--running</code>, <code>-r</code></td><td><code>False</code></td><td>Only show running containers.</td></tr>
+      </tbody>
+    </table>
+    <p>Table columns: <code>backend</code>, <code>profile</code>, <code>status</code>, <code>port</code>, <code>gpu</code>, <code>container</code>, <code>model</code>. JSON rows additionally include a boolean <code>running</code> field.</p>
+    <pre data-lang="bash"><code>uv run llmux ps
+uv run llmux ps --running --json
+uv run llmux container ps -b vllm</code></pre>
+
+    <h3 id="container-render-env"><code>container render-env</code></h3>
+    <p>Re-render <code>.runtime/&lt;backend&gt;/&lt;profile&gt;.env</code> from <code>profiles.yaml</code>. Useful after editing <code>profiles.yaml</code> by hand. Prints the rendered path(s).</p>
+    <pre data-lang="text"><code>llmux container render-env [PROFILE] [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>PROFILE</code></td><td>Profile name to render. <strong>Omit to re-render all profiles.</strong></td></tr></tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>all</em></td><td>Limit when rendering all (no <code>PROFILE</code> given).</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code># Re-render a single profile
+uv run llmux render-env qwen3-0-6b
+
+# Re-render every llama.cpp profile
+uv run llmux container render-env --backend llamacpp</code></pre>
+
+    <h2 id="profile-profile-crud-quick-setup"><code>profile</code> — profile CRUD + quick-setup</h2>
+    <pre data-lang="text"><code>llmux profile list|show|new|edit|delete|quick-setup …</code></pre>
+    <p>Profiles live in <code>profiles.yaml</code> at the repo root — the single source of truth for both backends. Fields not applicable to a backend stay at their defaults.</p>
+
+    <h3 id="profile-list"><code>profile list</code></h3>
+    <p>List all profiles across (or within) backends.</p>
+    <pre data-lang="text"><code>llmux profile list [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>all</em></td><td>Limit to one backend (<code>vllm</code>, <code>llamacpp</code>).</td></tr>
+        <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit JSON instead of a table.</td></tr>
+      </tbody>
+    </table>
+    <p>Columns: <code>backend</code>, <code>name</code>, <code>port</code>, <code>gpu_id</code>, <code>config</code>, <code>model</code>.</p>
+    <pre data-lang="bash"><code>uv run llmux profile list
+uv run llmux profile list -b vllm --json</code></pre>
+
+    <h3 id="profile-show"><code>profile show</code></h3>
+    <p>Show a profile's full record.</p>
+    <pre data-lang="text"><code>llmux profile show NAME [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>NAME</code></td><td>Profile name. Required.</td></tr></tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>auto-detect</em></td><td>Force backend; auto-detect if omitted.</td></tr>
+        <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit JSON instead of YAML-ish <code>key: value</code> text.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux profile show qwen3-0-6b --json</code></pre>
+
+    <h3 id="profile-new"><code>profile new</code></h3>
+    <p>Create a new profile entry in <code>profiles.yaml</code>. The name must start with an alphanumeric and contain only <code>[A-Za-z0-9_-]</code>; creation fails if the name already exists in the chosen backend.</p>
+    <pre data-lang="text"><code>llmux profile new NAME [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>NAME</code></td><td>Profile name (alphanumeric, dash, underscore). Required.</td></tr></tbody>
+    </table>
+    <table>
+      <thead>
+        <tr><th>Option</th><th>Default</th><th>Backend</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><code>vllm</code></td><td>both</td><td>Backend (<code>vllm</code>, <code>llamacpp</code>).</td></tr>
+        <tr><td><code>--port</code>, <code>-p</code></td><td><code>0</code></td><td>both</td><td>Host port (<code>0</code> = backend default: 8000 vLLM / 8080 llama.cpp).</td></tr>
+        <tr><td><code>--gpu-id</code>, <code>-g</code></td><td><code>"0"</code></td><td>both</td><td>GPU id(s), comma-separated. (vLLM: <code>tensor_parallel_size</code> is derived from the count.)</td></tr>
+        <tr><td><code>--model</code>, <code>-m</code></td><td><code>""</code></td><td>vLLM</td><td>Hugging Face model id.</td></tr>
+        <tr><td><code>--config</code>, <code>-c</code></td><td><em>profile name</em></td><td>both</td><td>Linked config name.</td></tr>
+        <tr><td><code>--container</code></td><td><em>profile name</em></td><td>both</td><td>Container name.</td></tr>
+        <tr><td><code>--lora / --no-lora</code></td><td><code>--no-lora</code></td><td>vLLM</td><td>Enable LoRA.</td></tr>
+        <tr><td><code>--extra-pip</code></td><td><code>""</code></td><td>vLLM</td><td>Extra pip packages installed before serve.</td></tr>
+        <tr><td><code>--set</code></td><td><em>(none)</em></td><td>vLLM</td><td>Repeatable: <code>KEY=VALUE</code> entries appended to <code>env_vars</code>. Key must be a valid env-var name.</td></tr>
+        <tr><td><code>--model-file</code></td><td><code>""</code></td><td>llama.cpp</td><td>GGUF filename.</td></tr>
+        <tr><td><code>--hf-repo</code></td><td><code>""</code></td><td>llama.cpp</td><td>Hugging Face repo for download.</td></tr>
+        <tr><td><code>--hf-file</code></td><td><code>""</code></td><td>llama.cpp</td><td>HF file for download.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code># vLLM profile
+uv run llmux profile new qwen3-8b --backend vllm --model Qwen/Qwen3-8B \
+    --gpu-id 0,1 --port 8000 --set VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
+
+# llama.cpp profile
+uv run llmux profile new gemma-3-4b --backend llamacpp --port 8080 \
+    --model-file gemma-3-4b-it-q4_k_m.gguf \
+    --hf-repo unsloth/gemma-3-4b-it-GGUF --hf-file gemma-3-4b-it-q4_k_m.gguf</code></pre>
+
+    <h3 id="profile-edit"><code>profile edit</code></h3>
+    <p>Edit fields of an existing profile. <strong>Only the options you pass change</strong>; everything else is left untouched.</p>
+    <pre data-lang="text"><code>llmux profile edit NAME [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>NAME</code></td><td>Profile name. Required.</td></tr></tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Backend</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td>both</td><td>Force backend; auto-detect if omitted.</td></tr>
+        <tr><td><code>--port</code>, <code>-p</code></td><td>both</td><td>New host port.</td></tr>
+        <tr><td><code>--gpu-id</code>, <code>-g</code></td><td>both</td><td>New GPU id(s); also re-derives <code>tensor_parallel_size</code>.</td></tr>
+        <tr><td><code>--model</code>, <code>-m</code></td><td>vLLM</td><td>New Hugging Face model id.</td></tr>
+        <tr><td><code>--config</code>, <code>-c</code></td><td>both</td><td>New linked config name.</td></tr>
+        <tr><td><code>--container</code></td><td>both</td><td>New container name.</td></tr>
+        <tr><td><code>--lora / --no-lora</code></td><td>vLLM</td><td>Toggle LoRA.</td></tr>
+        <tr><td><code>--extra-pip</code></td><td>vLLM</td><td>Extra pip packages.</td></tr>
+        <tr><td><code>--set</code></td><td>vLLM</td><td>Repeatable: <code>KEY=VALUE</code> to add/override in <code>env_vars</code>.</td></tr>
+        <tr><td><code>--unset</code></td><td>vLLM</td><td>Repeatable: <code>KEY</code> to remove from <code>env_vars</code>.</td></tr>
+        <tr><td><code>--model-file</code></td><td>llama.cpp</td><td>New GGUF filename.</td></tr>
+        <tr><td><code>--hf-repo</code></td><td>llama.cpp</td><td>New HF download repo.</td></tr>
+        <tr><td><code>--hf-file</code></td><td>llama.cpp</td><td>New HF download file.</td></tr>
+        <tr><td><code>--image-tag</code></td><td>both</td><td>Docker image override (e.g. <code>llamacpp-dev:mtp_main</code>). Pass an empty string to clear.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code># Pin a llama.cpp profile to a locally-built dev image
+uv run llmux profile edit gemma-3-4b --image-tag llamacpp-dev:mtp_main
+
+# Add an env var, remove another
+uv run llmux profile edit qwen3-8b --set VLLM_ATTENTION_BACKEND=FLASHINFER --unset OLD_VAR</code></pre>
+
+    <h3 id="profile-delete"><code>profile delete</code></h3>
+    <p>Delete a profile (and optionally its linked config YAML).</p>
+    <pre data-lang="text"><code>llmux profile delete NAME [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>NAME</code></td><td>Profile name. Required.</td></tr></tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>auto-detect</em></td><td>Force backend; auto-detect if omitted.</td></tr>
+        <tr><td><code>--with-config</code></td><td><code>False</code></td><td>Also delete the linked config YAML.</td></tr>
+        <tr><td><code>--yes</code>, <code>-y</code></td><td><code>False</code></td><td>Skip the interactive confirmation prompt.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux profile delete old-profile --with-config --yes</code></pre>
+
+    <h3 id="profile-quick-setup"><code>profile quick-setup</code></h3>
+    <p>Create a profile <strong>and</strong> a config from a model id in one step — mirrors the TUI's "Quick Setup". If <code>--name</code> is omitted, a name is derived from the model id (lowercased, non-alphanumerics replaced with <code>-</code>); collisions get a numeric suffix.</p>
+    <div class="admonition warning">
+      <p class="admonition-title">vLLM only</p>
+      <p><code>quick-setup</code> currently supports <code>--backend vllm</code> only. For llama.cpp use <code>profile new --backend llamacpp</code> directly (it needs <code>hf_repo</code> / <code>hf_file</code>).</p>
+    </div>
+    <pre data-lang="text"><code>llmux profile quick-setup MODEL [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>MODEL</code></td><td>HF model id, e.g. <code>Qwen/Qwen3-8B</code>. Required.</td></tr></tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><code>vllm</code></td><td>Backend (vLLM only is currently accepted).</td></tr>
+        <tr><td><code>--name</code>, <code>-n</code></td><td><em>derived from model</em></td><td>Profile name.</td></tr>
+        <tr><td><code>--port</code>, <code>-p</code></td><td><code>8000</code></td><td>Host port.</td></tr>
+        <tr><td><code>--gpu-id</code>, <code>-g</code></td><td><code>"0"</code></td><td>GPU id(s), comma-separated.</td></tr>
+        <tr><td><code>--gpu-mem</code></td><td><code>"0.9"</code></td><td>vLLM <code>gpu-memory-utilization</code> (0.0–1.0).</td></tr>
+        <tr><td><code>--lora / --no-lora</code></td><td><code>--no-lora</code></td><td>Enable LoRA.</td></tr>
+        <tr><td><code>--copy-from</code></td><td><code>""</code></td><td>Copy <code>extra_params</code> from an existing config name.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux profile quick-setup Qwen/Qwen3-8B --gpu-id 0,1 --gpu-mem 0.92</code></pre>
+
+    <h2 id="config-config-yaml-crud"><code>config</code> — config (YAML) CRUD</h2>
+    <pre data-lang="text"><code>llmux config list|show|new|edit|delete …</code></pre>
+    <p>Per-model engine configs live in <code>config/&lt;backend&gt;/&lt;name&gt;.yaml</code>:</p>
+    <ul>
+      <li><strong>vLLM</strong> — <code>config/vllm/&lt;name&gt;.yaml</code>: <code>model:</code> + <code>gpu-memory-utilization:</code> plus arbitrary <code>vllm serve</code> flags.</li>
+      <li><strong>llama.cpp</strong> — <code>config/llamacpp/&lt;name&gt;.yaml</code>: a flat dict of <code>llama-server</code> flags.</li>
+    </ul>
+    <p>Config names are validated against <code>^[a-zA-Z0-9][a-zA-Z0-9._-]*$</code> to prevent path traversal. For <code>show</code> / <code>edit</code> / <code>delete</code>, if the same name exists in both backends you must disambiguate with <code>--backend</code>.</p>
+
+    <h3 id="config-list"><code>config list</code></h3>
+    <p>List config files.</p>
+    <pre data-lang="text"><code>llmux config list [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>all</em></td><td>Limit to one backend.</td></tr>
+        <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit JSON instead of a table.</td></tr>
+      </tbody>
+    </table>
+    <p>Columns: <code>backend</code>, <code>name</code>, <code>model</code>, <code>params</code> (number of keys in the YAML).</p>
+
+    <h3 id="config-show"><code>config show</code></h3>
+    <p>Print a config YAML.</p>
+    <pre data-lang="text"><code>llmux config show NAME [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>NAME</code></td><td>Config name. Required.</td></tr></tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>auto-resolve</em></td><td>Force backend (resolved from existing files if omitted).</td></tr>
+        <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit JSON instead of a YAML dump.</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="config-new"><code>config new</code></h3>
+    <p>Create a new config YAML. For vLLM, the file is seeded with <code>model:</code> and <code>gpu-memory-utilization:</code>; for llama.cpp it starts empty. <code>--set</code> values are YAML-parsed, so <code>--set foo=2</code> stores an int and a bare <code>--set bar</code> stores <code>true</code>.</p>
+    <pre data-lang="text"><code>llmux config new NAME [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>NAME</code></td><td>Config name (becomes <code>&lt;name&gt;.yaml</code>). Required.</td></tr></tbody>
+    </table>
+    <table>
+      <thead>
+        <tr><th>Option</th><th>Default</th><th>Backend</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><code>vllm</code></td><td>both</td><td>Backend.</td></tr>
+        <tr><td><code>--model</code>, <code>-m</code></td><td><code>""</code></td><td>vLLM</td><td><code>model:</code> field.</td></tr>
+        <tr><td><code>--gpu-mem</code></td><td><code>"0.9"</code></td><td>vLLM</td><td><code>gpu-memory-utilization:</code>.</td></tr>
+        <tr><td><code>--set</code></td><td><em>(none)</em></td><td>both</td><td>Repeatable: <code>KEY=VALUE</code> entries (YAML-typed values).</td></tr>
+        <tr><td><code>--overwrite</code></td><td><code>False</code></td><td>both</td><td>Overwrite if the file already exists.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code># vLLM config
+uv run llmux config new qwen3-8b --model Qwen/Qwen3-8B --gpu-mem 0.9 \
+    --set max-model-len=8192 --set enable-prefix-caching
+
+# llama.cpp config
+uv run llmux config new gemma-3-4b --backend llamacpp \
+    --set ctx-size=8192 --set n-gpu-layers=999 --set flash-attn</code></pre>
+
+    <h3 id="config-edit"><code>config edit</code></h3>
+    <p>Patch fields in an existing config.</p>
+    <pre data-lang="text"><code>llmux config edit NAME [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>NAME</code></td><td>Config name. Required.</td></tr></tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Backend</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td>both</td><td>Force backend; auto-resolved otherwise.</td></tr>
+        <tr><td><code>--set</code></td><td>both</td><td>Repeatable: <code>KEY=VALUE</code> (YAML-typed values).</td></tr>
+        <tr><td><code>--unset</code></td><td>both</td><td>Repeatable: <code>KEY</code> to remove.</td></tr>
+        <tr><td><code>--model</code>, <code>-m</code></td><td>vLLM</td><td>Set the <code>model:</code> field.</td></tr>
+        <tr><td><code>--gpu-mem</code></td><td>vLLM</td><td>Set <code>gpu-memory-utilization:</code>.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux config edit qwen3-8b --set max-model-len=16384 --unset enable-prefix-caching</code></pre>
+
+    <h3 id="config-delete"><code>config delete</code></h3>
+    <p>Delete a config YAML.</p>
+    <pre data-lang="text"><code>llmux config delete NAME [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>NAME</code></td><td>Config name. Required.</td></tr></tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>auto-resolve</em></td><td>Force backend; auto-resolved otherwise.</td></tr>
+        <tr><td><code>--yes</code>, <code>-y</code></td><td><code>False</code></td><td>Skip the interactive confirmation prompt.</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="image-docker-image-inventory-dev-build"><code>image</code> — Docker image inventory + dev build</h2>
+    <pre data-lang="text"><code>llmux image list|pull|build-dev …</code></pre>
+
+    <h3 id="image-list"><code>image list</code></h3>
+    <p>List local (and optionally remote) Docker images.</p>
+    <pre data-lang="text"><code>llmux image list [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--repo</code></td><td><code>vllm/vllm-openai</code></td><td>Image repo to list locally.</td></tr>
+        <tr><td><code>--dev</code></td><td><code>False</code></td><td>Also list local <code>vllm-dev:*</code> <strong>and</strong> <code>llamacpp-dev:*</code> images.</td></tr>
+        <tr><td><code>--remote</code></td><td><code>False</code></td><td>Query DockerHub for the latest stable + nightly tags of <code>vllm/vllm-openai</code>.</td></tr>
+        <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit JSON instead of a table.</td></tr>
+      </tbody>
+    </table>
+    <p>Columns: <code>source</code> (<code>local</code> / <code>local-dev</code> / <code>remote</code>), <code>repository</code>, <code>tag</code>, <code>size</code>, <code>created</code>.</p>
+    <pre data-lang="bash"><code>uv run llmux image list --dev
+uv run llmux image list --remote --json</code></pre>
+
+    <h3 id="image-pull"><code>image pull</code></h3>
+    <p><code>docker pull &lt;repo&gt;:&lt;tag&gt;</code> — surfaces raw <code>docker</code> output and exit code.</p>
+    <pre data-lang="text"><code>llmux image pull TAG [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>TAG</code></td><td>Image tag, e.g. <code>v0.20.1</code> or <code>nightly</code>. Required.</td></tr></tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--repo</code></td><td><code>vllm/vllm-openai</code></td><td>Image repo to pull from.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux image pull v0.20.1
+uv run llmux image pull nightly</code></pre>
+
+    <h3 id="image-build-dev"><code>image build-dev</code></h3>
+    <p>Build a <code>&lt;backend&gt;-dev:&lt;tag&gt;</code> image from source, streaming <code>docker build</code> output. The build pipeline (git clone/update → <code>docker build</code> → image labels) is shared; the tags applied are <code>&lt;prefix&gt;:&lt;custom_tag or branch-YYYYMMDD&gt;</code> and <code>&lt;prefix&gt;:&lt;branch&gt;</code> (a stable alias to the latest build).</p>
+    <ul>
+      <li><strong>vLLM</strong> → <code>vllm-dev:&lt;tag&gt;</code> (target <code>vllm-openai</code>, <code>docker/Dockerfile</code>)</li>
+      <li><strong>llama.cpp</strong> → <code>llamacpp-dev:&lt;tag&gt;</code> (target <code>server</code>, <code>.devops/cuda.Dockerfile</code>)</li>
+    </ul>
+    <pre data-lang="text"><code>llmux image build-dev [OPTIONS]</code></pre>
+    <table>
+      <thead>
+        <tr><th>Option</th><th>Default</th><th>Backend</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>--backend</code></td><td><code>vllm</code></td><td>both</td><td>Which backend to build for (<code>vllm</code> or <code>llamacpp</code>).</td></tr>
+        <tr><td><code>--branch</code>, <code>-b</code></td><td><em>from <code>.env.common</code></em></td><td>both</td><td>Source branch. Falls back to <code>VLLM_BRANCH</code> / <code>LLAMACPP_BRANCH</code> (default <code>main</code> / <code>master</code>).</td></tr>
+        <tr><td><code>--repo-url</code></td><td><em>from <code>.env.common</code></em></td><td>both</td><td>Source repo URL. Falls back to <code>VLLM_REPO_URL</code> / <code>LLAMACPP_REPO_URL</code>.</td></tr>
+        <tr><td><code>--tag</code>, <code>-t</code></td><td><em>branch name</em></td><td>both</td><td>Custom output tag.</td></tr>
+        <tr><td><code>--official</code></td><td><code>False</code></td><td>vLLM</td><td>Build with upstream Dockerfile defaults (skips local GPU-arch detection patches). Ignored for llama.cpp with a warning.</td></tr>
+        <tr><td><code>--cuda-arch</code></td><td><code>""</code></td><td>llama.cpp</td><td>Override auto-detection. CMake-format, e.g. <code>89</code> (Ada) or <code>86;89</code> (mixed). Empty = auto-detect via <code>nvidia-smi</code>. Ignored for vLLM with a warning.</td></tr>
+        <tr><td><code>--multi-arch</code></td><td><code>False</code></td><td>llama.cpp</td><td>Disable GPU auto-detection and build for all archs (portable, slow). Ignored for vLLM with a warning.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code># vLLM dev image from an unmerged PR branch
+uv run llmux image build-dev --backend vllm --branch my-feature \
+    --repo-url https://github.com/me/vllm.git
+
+# llama.cpp dev image, pinned to a single GPU arch for a fast build
+uv run llmux image build-dev --backend llamacpp --branch master --cuda-arch 89</code></pre>
+    <p>See <a href="../guide/dev-build.html">Dev Builds</a> for the full workflow, and <a href="architecture.html#dev-build-pipeline">Architecture</a> for how the pipeline works.</p>
+
+    <h2 id="system-system-info-env-validation"><code>system</code> — system info &amp; env validation</h2>
+    <pre data-lang="text"><code>llmux system gpu|mem-estimate|env-check …</code></pre>
+
+    <h3 id="system-gpu"><code>system gpu</code></h3>
+    <p>Print an <code>nvidia-smi</code> summary, one row per GPU. Also available as the top-level alias <code>llmux gpu</code>.</p>
+    <pre data-lang="text"><code>llmux system gpu [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit JSON instead of a table.</td></tr>
+      </tbody>
+    </table>
+    <p>Columns: <code>index</code>, <code>name</code>, <code>memory_used</code>, <code>memory_total</code>, <code>utilization</code>, <code>temperature</code>. Prints <code>(no GPUs detected — is nvidia-smi installed?)</code> if none are found.</p>
+    <pre data-lang="bash"><code>uv run llmux gpu
+uv run llmux system gpu --json</code></pre>
+
+    <h3 id="system-mem-estimate"><code>system mem-estimate</code></h3>
+    <p>Estimate a Hugging Face model's VRAM footprint via <a href="https://pypi.org/project/hf-mem/" target="_blank"><code>hf-mem</code></a> — the same engine the TUI's memory estimator uses. Reads <code>HF_TOKEN</code> from <code>.env.common</code> (or the environment) for gated models.</p>
+    <pre data-lang="text"><code>llmux system mem-estimate MODEL_ID</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>MODEL_ID</code></td><td>Hugging Face model id, e.g. <code>Qwen/Qwen3-8B</code>. Required.</td></tr></tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux system mem-estimate Qwen/Qwen3-8B
+# → ~17.2GB (model: 15.3GB + KV: 1.9GB)</code></pre>
+
+    <h3 id="system-env-check"><code>system env-check</code></h3>
+    <p>Validate <code>.env.common</code> and report key paths. Checks that the file exists, that <code>HF_TOKEN</code> / <code>HF_CACHE_PATH</code> / <code>VLLM_VERSION</code> are set, and that <code>HF_CACHE_PATH</code> is absolute. Also available as the top-level alias <code>llmux env-check</code>.</p>
+    <pre data-lang="text"><code>llmux system env-check [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit JSON findings instead of a text report.</td></tr>
+      </tbody>
+    </table>
+    <p>Exits <code>0</code> when everything checks out, <code>1</code> when <code>.env.common</code> is missing or any issue is found. <code>HF_TOKEN</code> is masked in the text report (shown as <code>&lt;set, N chars&gt;</code>).</p>
+    <pre data-lang="bash"><code>uv run llmux env-check
+uv run llmux system env-check --json</code></pre>
+    <p>See <a href="env-common.html"><code>.env.common</code> Reference</a> for every variable this command validates.</p>
+
+    <h2 id="top-level-aliases">Top-level aliases</h2>
+    <p>For convenience — and so agents can write <code>llmux up &lt;profile&gt;</code> directly — the most-used commands are mirrored at the top level:</p>
+    <table>
+      <thead><tr><th>Alias</th><th>Equivalent to</th></tr></thead>
+      <tbody>
+        <tr><td><code>llmux tui</code></td><td>launch the TUI explicitly</td></tr>
+        <tr><td><code>llmux gpu</code></td><td><code>llmux system gpu</code></td></tr>
+        <tr><td><code>llmux env-check</code></td><td><code>llmux system env-check</code></td></tr>
+        <tr><td><code>llmux up</code></td><td><code>llmux container up</code></td></tr>
+        <tr><td><code>llmux down</code></td><td><code>llmux container down</code></td></tr>
+        <tr><td><code>llmux logs</code></td><td><code>llmux container logs</code></td></tr>
+        <tr><td><code>llmux ps</code></td><td><code>llmux container ps</code></td></tr>
+        <tr><td><code>llmux render-env</code></td><td><code>llmux container render-env</code></td></tr>
+      </tbody>
+    </table>
+    <p>These aliases share the exact arguments, options, and defaults of their canonical commands.</p>
+
+    <div class="docs-footer">
+      <a class="edit-link" href="https://github.com/Bae-ChangHyun/llmux/edit/main/docs/reference/cli.md" target="_blank">Edit this page on GitHub</a>
+      <div class="prev-next">
+        <a href="../backends/comparison.html">&larr; Comparison</a>
+        <a href="env-common.html">.env.common &rarr;</a>
+      </div>
+    </div>
+
+  </article>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="page-wrap">
+    <p>
+      MIT License &middot;
+      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a> &middot;
+      Made by <a href="https://github.com/Bae-ChangHyun">Bae-ChangHyun</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Using the TUI &middot; llmux</title>
+  <meta name="description" content="The Textual-based llmux dashboard: keyboard shortcuts, action menu, Quick Setup, and the Container Start screen." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/css/style.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="top">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-brand">llm<span class="brand-accent">ux</span></a>
+    <div class="nav-links">
+      <span class="nav-links-desktop">
+        <a href="../getting-started/installation.html">Getting Started</a>
+        <a href="../guide/profiles.html" class="active">Guide</a>
+        <a href="../backends/vllm.html">Backends</a>
+        <a href="../reference/cli.html">Reference</a>
+        <a href="../troubleshooting.html">Troubleshooting</a>
+      </span>
+      <a href="https://github.com/Bae-ChangHyun/llmux" class="nav-github" target="_blank">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="nav-github-stars">GitHub</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="docs-wrap">
+
+  <!-- SECTION NAV -->
+  <div class="section-nav">
+    <span class="crumb">Guide</span>
+    <a href="profiles.html">Profiles</a>
+    <a href="configs.html">Model Configs</a>
+    <a href="container-lifecycle.html">Container Lifecycle</a>
+    <a href="tui.html" class="active">Using the TUI</a>
+    <a href="dev-build.html">Dev Builds</a>
+  </div>
+
+  <article class="docs-content">
+
+    <div class="docs-header">
+      <h1>Using the TUI</h1>
+      <p class="lede">
+        The TUI is llmux's default interface — a single <a href="https://textual.textualize.io/" target="_blank">Textual</a> dashboard that manages vLLM <strong>and</strong> llama.cpp profiles side by side. Everything the <a href="../reference/cli.html">headless CLI</a> does is available here as keyboard-driven screens and forms.
+      </p>
+    </div>
+
+    <h2 id="launching">Launching</h2>
+    <pre data-lang="bash"><code>llmux          # no arguments &rarr; launches the TUI
+llmux tui      # explicit</code></pre>
+    <p>Running <code>llmux</code> with no subcommand drops you straight into the unified dashboard.</p>
+
+    <h2 id="the-dashboard">The dashboard</h2>
+    <p>The dashboard is one <code>DataTable</code> showing every profile from both backends. Running containers float to the top so the active workload is always visible without scrolling; within the running / stopped groups, rows stay sorted by <code>(backend, name)</code>.</p>
+    <pre data-lang="text"><code>&#9484; llmux &#9472; vLLM + llama.cpp &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9488;
+&#9474;  vLLM 1/2  &middot;  llama.cpp 0/1  &middot;  Enter = actions                   &#9474;
+&#9500;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9508;
+&#9474; Backend    Profile      Status      Port   Model        Detail    &#9474;
+&#9474; vLLM       qwen3-8b     &#9679; running   8000   Qwen3-8B     TP=1      &#9474;
+&#9474; llama.cpp  gemma-3-4b   &#9675; stopped   8080   gemma-3-4b   &#8212;         &#9474;
+&#9474; vLLM       qwen3-0-6b   &#9675; stopped   8001   Qwen3-0.6B   &#8212;         &#9474;
+&#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9496;
+ GPU0 &#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9617;&#9617;&#9617;&#9617; 64%  12.1/24GB
+ &#128269;  Estimate HF model memory (press m then type, Enter to run)</code></pre>
+    <p>A status bar shows running / total counts per backend. A GPU bar below the table auto-refreshes every few seconds, and the table itself re-scans every 5 seconds.</p>
+
+    <h2 id="keyboard-shortcuts">Keyboard shortcuts</h2>
+    <p>Move the cursor with <kbd>&uarr;</kbd> / <kbd>&darr;</kbd>, then act on the selected row.</p>
+
+    <h3 id="dashboard">Dashboard</h3>
+    <table>
+      <thead>
+        <tr><th>Key</th><th>Action</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><kbd>Enter</kbd></td><td>Open the action menu for the selected profile</td><td>Context-aware (running vs. stopped)</td></tr>
+        <tr><td><kbd>n</kbd></td><td>New profile</td><td>Opens the backend picker, then Quick Setup</td></tr>
+        <tr><td><kbd>m</kbd></td><td>Memory estimator</td><td>Focuses the HF model search input</td></tr>
+        <tr><td><kbd>s</kbd></td><td>System info</td><td>For the selected row's backend (or asks)</td></tr>
+        <tr><td><kbd>r</kbd></td><td>Refresh</td><td>Re-scan all profiles and container status</td></tr>
+        <tr><td><kbd>q</kbd></td><td>Quit</td><td></td></tr>
+        <tr><td><kbd>u</kbd></td><td>Start container</td><td>Power-user shortcut (hidden from footer)</td></tr>
+        <tr><td><kbd>d</kbd></td><td>Stop container</td><td>Power-user shortcut</td></tr>
+        <tr><td><kbd>l</kbd></td><td>View logs</td><td>Running containers only</td></tr>
+        <tr><td><kbd>e</kbd></td><td>Edit profile</td><td>Power-user shortcut</td></tr>
+        <tr><td><kbd>c</kbd></td><td>Edit config</td><td>Power-user shortcut</td></tr>
+        <tr><td><kbd>x</kbd></td><td>Delete profile</td><td>Stopped containers only</td></tr>
+        <tr><td><kbd>?</kbd></td><td>Help</td><td>Quick key reference popup</td></tr>
+      </tbody>
+    </table>
+    <p>The <kbd>u</kbd> / <kbd>d</kbd> / <kbd>l</kbd> / <kbd>e</kbd> / <kbd>c</kbd> / <kbd>x</kbd> keys are deliberately hidden from the footer — they do exactly the same thing as picking the matching item from the <kbd>Enter</kbd> action menu.</p>
+
+    <h3 id="app-level">App-level</h3>
+    <table>
+      <thead>
+        <tr><th>Key</th><th>Action</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><kbd>q</kbd></td><td>Quit</td></tr>
+        <tr><td><kbd>F1</kbd></td><td>Return to the dashboard</td></tr>
+        <tr><td><kbd>?</kbd></td><td>Help</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="log-startup-viewers">Log / startup viewers</h3>
+    <table>
+      <thead>
+        <tr><th>Key</th><th>Action</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><kbd>f</kbd></td><td>Toggle auto-follow on/off</td></tr>
+        <tr><td><kbd>&uarr;</kbd> / <kbd>&darr;</kbd> / <kbd>PgUp</kbd> / <kbd>PgDn</kbd></td><td>Scroll</td></tr>
+        <tr><td><kbd>q</kbd> / <kbd>Esc</kbd></td><td>Back / close</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="the-action-menu">The action menu</h2>
+    <p>Pressing <kbd>Enter</kbd> on a profile opens a context menu. The options depend on whether the container is running:</p>
+    <table>
+      <thead>
+        <tr><th>State</th><th>Available actions</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Running</strong></td><td>Stop Container &middot; View Logs &middot; Benchmark &middot; Edit Profile &middot; Edit Config</td></tr>
+        <tr><td><strong>Stopped</strong></td><td>Start Container &middot; Edit Profile &middot; Edit Config &middot; Delete Profile</td></tr>
+      </tbody>
+    </table>
+    <p><strong>Benchmark</strong> fires a single <code>/v1/chat/completions</code> request at the running server and reports tokens/second. <strong>Delete</strong> is blocked while a container is running — stop it first.</p>
+
+    <h2 id="quick-setup">Quick Setup</h2>
+    <p><kbd>n</kbd> opens a backend picker, then a Quick Setup form that creates a matching <strong>profile + config</strong> in one step. For vLLM the form takes a Hugging Face model id, GPU id, port, GPU-memory-utilization, an Enable-LoRA toggle, and an optional "copy params from" existing config. The profile name is derived from the model id automatically.</p>
+
+    <h2 id="memory-estimator">Memory estimator</h2>
+    <p>Press <kbd>m</kbd> (or click the search box) and type a Hugging Face model id, then <kbd>Enter</kbd>. llmux estimates the model's memory footprint and renders it against your detected GPUs:</p>
+    <ul>
+      <li>A per-GPU bar shows the estimated fit ratio — green / yellow / red, or a red <code>OVER</code> marker when the estimate exceeds available VRAM.</li>
+      <li>With multiple GPUs, it also shows the per-GPU figure assuming tensor parallelism (<code>TP=N</code>).</li>
+    </ul>
+    <p>This runs entirely on the dashboard — no profile or container needed.</p>
+
+    <h2 id="container-start-screen">Container start screen</h2>
+    <p>Picking <strong>Start Container</strong> opens a full-screen launcher with a <strong>Version</strong> radio set. The options differ per backend:</p>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="active" onclick="switchTab(this, 'tab-tui-vllm')">vLLM</button>
+        <button onclick="switchTab(this, 'tab-tui-llamacpp')">llama.cpp</button>
+      </div>
+      <div class="tab-panel active" id="tab-tui-vllm">
+        <p>Five startup modes:</p>
+        <table>
+          <thead>
+            <tr><th>Mode</th><th>What it does</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Local Latest</strong></td><td>Highest local <code>vllm/vllm-openai</code> versioned tag</td></tr>
+            <tr><td><strong>Official Release</strong></td><td>Pulls Docker Hub's latest <em>stable</em> version (explicit semver, never <code>:latest</code>)</td></tr>
+            <tr><td><strong>Nightly</strong></td><td>Pulls <code>vllm/vllm-openai:nightly</code></td></tr>
+            <tr><td><strong>Dev Build</strong></td><td>Uses / builds <code>vllm-dev:&lt;branch&gt;</code> from source — reveals Repo URL + Branch inputs</td></tr>
+            <tr><td><strong>Custom Tag</strong></td><td>An arbitrary image tag you type in</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="tab-panel" id="tab-tui-llamacpp">
+        <p>Three startup modes — llama.cpp has a single official <code>ghcr.io</code> tag, so "Local / Official / Nightly" collapses into one:</p>
+        <table>
+          <thead>
+            <tr><th>Mode</th><th>What it does</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Default Image</strong></td><td><code>ghcr.io/ggml-org/llama.cpp:server-cuda</code></td></tr>
+            <tr><td><strong>Dev Build</strong></td><td>Uses / builds <code>llamacpp-dev:&lt;branch&gt;</code> from source — reveals Repo URL + Branch inputs</td></tr>
+            <tr><td><strong>Custom Tag</strong></td><td>An arbitrary <code>&lt;repo&gt;:&lt;tag&gt;</code> you type in</td></tr>
+          </tbody>
+        </table>
+        <p>If the profile is already pinned to a <code>llamacpp-dev:</code> image via its <code>image_tag</code>, the screen shows that pin — selecting Default Image or Custom Tag overrides it for that launch only.</p>
+      </div>
+    </div>
+
+    <p>Selecting <strong>Dev Build</strong> reveals <strong>Repo URL</strong> and <strong>Branch</strong> inputs, pre-filled from <code>.env.common</code>. Pressing <strong>Start</strong> streams the startup log live, then switches to following the container's logs. See <a href="dev-build.html">Dev Builds</a> for the build mechanics.</p>
+
+    <div class="admonition note">
+      <p class="admonition-title">Conflict gate before start</p>
+      <p>The dashboard runs a cross-backend port + GPU conflict check before opening the start screen. If something clashes, you get a confirmation dialog with the details and a <strong>Start anyway</strong> button.</p>
+    </div>
+
+    <h2 id="profile-and-config-forms">Profile and config forms</h2>
+    <p><strong>Edit Profile</strong> and <strong>Edit Config</strong> open modal forms:</p>
+    <ul>
+      <li>The <strong>profile form</strong> edits container name, port, GPU id, the linked config, and <code>image_tag</code>. The profile name itself is locked once created.</li>
+      <li>The <strong>config form</strong> is a dynamic list of flag rows — add a row, type a flag name (with autocompletion against known <code>llama-server</code> / <code>vllm serve</code> flags), and a value. Leaving a boolean flag's value blank stores <code>true</code>. A help line shows a one-line description of the focused flag.</li>
+    </ul>
+    <p>Both forms map straight onto <a href="profiles.html"><code>profiles.yaml</code></a> and the <a href="configs.html">config YAML</a> — there is no separate TUI state.</p>
+
+    <h2 id="see-also">See also</h2>
+    <ul>
+      <li><a href="profiles.html">Profiles</a> / <a href="configs.html">Model Configs</a> — what the forms edit</li>
+      <li><a href="container-lifecycle.html">Container Lifecycle</a> — what Start / Stop / Logs do</li>
+      <li><a href="dev-build.html">Dev Builds</a> — the Dev Build start mode</li>
+      <li><a href="../reference/cli.html">CLI Reference</a> — the same operations, headless</li>
+    </ul>
+
+    <div class="docs-footer">
+      <a class="edit-link" href="https://github.com/Bae-ChangHyun/llmux/edit/main/docs/guide/tui.md" target="_blank">Edit this page on GitHub</a>
+      <div class="prev-next">
+        <a href="container-lifecycle.html">&larr; Container Lifecycle</a>
+        <a href="dev-build.html">Dev Builds &rarr;</a>
+      </div>
+    </div>
+
+  </article>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="page-wrap">
+    <p>
+      MIT License &middot;
+      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a> &middot;
+      Made by <a href="https://github.com/Bae-ChangHyun">Bae-ChangHyun</a>
+    </p>
+  </div>
+</footer>
+
+<script>
+function switchTab(btn, panelId) {
+  const tabs = btn.closest('.tabs');
+  tabs.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
+  tabs.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById(panelId).classList.add('active');
+}
+</script>
+
+</body>
+</html>

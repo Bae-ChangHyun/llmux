@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Backend Comparison &middot; llmux</title>
+  <meta name="description" content="vLLM vs. llama.cpp in llmux — feature matrix, image-source asymmetry, multi-GPU support, and when to use which." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/css/style.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="top">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-brand">llm<span class="brand-accent">ux</span></a>
+    <div class="nav-links">
+      <span class="nav-links-desktop">
+        <a href="../getting-started/installation.html">Getting Started</a>
+        <a href="../guide/profiles.html">Guide</a>
+        <a href="vllm.html" class="active">Backends</a>
+        <a href="../reference/cli.html">Reference</a>
+        <a href="../troubleshooting.html">Troubleshooting</a>
+      </span>
+      <a href="https://github.com/Bae-ChangHyun/llmux" class="nav-github" target="_blank">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="nav-github-stars">GitHub</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="docs-wrap">
+
+  <!-- SECTION NAV -->
+  <div class="section-nav">
+    <span class="crumb">Backends</span>
+    <a href="vllm.html">vLLM</a>
+    <a href="llamacpp.html">llama.cpp</a>
+    <a href="comparison.html" class="active">Comparison</a>
+  </div>
+
+  <article class="docs-content">
+
+    <div class="docs-header">
+      <h1>Backend Comparison</h1>
+      <p class="lede">
+        llmux drives two engines from one dashboard, but they are built for different jobs. vLLM serves <strong>Hugging Face Transformers models</strong> for high-throughput inference; llama.cpp serves <strong>GGUF models</strong> with fine-grained control over quantization and CPU/GPU placement. This page lays out the feature differences and a "when to use which" guide.
+      </p>
+    </div>
+
+    <h2 id="feature-matrix">Feature matrix</h2>
+    <table>
+      <thead>
+        <tr><th>Feature</th><th>vLLM</th><th>llama.cpp</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Model format</td><td>HF Transformers (safetensors)</td><td>GGUF</td></tr>
+        <tr><td>Container image</td><td><code>vllm/vllm-openai</code></td><td><code>ghcr.io/ggml-org/llama.cpp:server-cuda</code></td></tr>
+        <tr><td>In-container port</td><td>8000</td><td>8080</td></tr>
+        <tr><td>Multi-GPU tensor parallelism</td><td>Yes (<code>gpu_id: "0,1"</code> + <code>tensor_parallel_size</code>)</td><td>No (single-GPU device list)</td></tr>
+        <tr><td>GPU passthrough mechanism</td><td><code>runtime: nvidia</code> + <code>NVIDIA_VISIBLE_DEVICES</code></td><td><code>deploy.resources</code> device-id list</td></tr>
+        <tr><td>LoRA adapters</td><td>Yes (<code>enable_lora</code> + <code>docker-compose.lora.yaml</code> mount)</td><td>No</td></tr>
+        <tr><td>KV cache precision control</td><td>No</td><td>Yes (<code>cache-type-k</code> / <code>cache-type-v</code>)</td></tr>
+        <tr><td>CPU/GPU layer offload</td><td>No</td><td>Yes (<code>n-gpu-layers</code>)</td></tr>
+        <tr><td>MoE expert CPU offload</td><td>No</td><td>Yes (<code>override-tensors</code>, regex &rarr; CPU)</td></tr>
+        <tr><td>Speculative / multi-token decoding</td><td>&mdash;</td><td>Yes via MTP (dev build + MTP GGUF + <code>extra-args</code>)</td></tr>
+        <tr><td>Model auto-download</td><td>HF cache (engine downloads)</td><td>HF cache (<code>-hf</code>/<code>-hff</code>, engine downloads)</td></tr>
+        <tr><td>Host <code>hf</code> CLI required</td><td>No</td><td>No</td></tr>
+        <tr><td>Image source options</td><td>5 (Local Latest / Official Release / Nightly / Dev Build / Custom Tag)</td><td>3 (Default Image / Dev Build / Custom Tag)</td></tr>
+        <tr><td>Refuses <code>:latest</code> alias</td><td>Yes</td><td>&mdash; (single official tag)</td></tr>
+        <tr><td>In-container version verification</td><td>Yes (<code>vllm.__version__</code> checked after start)</td><td>No</td></tr>
+        <tr><td>Dev build from source</td><td>Yes (<code>vllm-dev:&lt;tag&gt;</code>, <code>docker/Dockerfile</code>)</td><td>Yes (<code>llamacpp-dev:&lt;tag&gt;</code>, <code>.devops/cuda.Dockerfile</code>)</td></tr>
+        <tr><td>Extra pip packages at start</td><td>Yes (<code>extra_pip_packages</code>)</td><td>No</td></tr>
+        <tr><td>Per-profile env var overrides</td><td>Yes (<code>env_vars</code>)</td><td>No</td></tr>
+        <tr><td>Command injection method</td><td>Compose <code>command:</code> with <code>--config</code> flag</td><td>Per-profile override file from <code>render-override.py</code></td></tr>
+        <tr><td>Post-start health probe</td><td><code>/v1/models</code> returns a served model id</td><td><code>/health</code> responds</td></tr>
+        <tr><td>Cross-backend conflict gate</td><td>Yes (port + GPU overlap, both backends)</td><td>Yes (port + GPU overlap, both backends)</td></tr>
+        <tr><td>Built-in OpenAI-compatible benchmark</td><td>Yes</td><td>Yes</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="why-the-image-source-counts-differ">Why the image-source counts differ</h2>
+    <p>The asymmetry — vLLM has <strong>five</strong> image sources, llama.cpp has <strong>three</strong> — is intentional, not an oversight.</p>
+    <ul>
+      <li><strong>vLLM</strong> publishes many tags to Docker Hub: versioned <code>vX.Y.Z</code> releases, a rolling <code>nightly</code>, and the <code>:latest</code> alias. llmux refuses <code>:latest</code> outright (it does not describe its own contents) and instead exposes <strong>Local Latest</strong> (highest local semver tag), <strong>Official Release</strong> (Docker Hub's current stable version), and <strong>Nightly</strong> as distinct, well-defined choices — plus <strong>Dev Build</strong> and <strong>Custom Tag</strong>.</li>
+      <li><strong>llama.cpp</strong> publishes effectively a <strong>single official <code>ghcr.io</code> tag</strong> (<code>server-cuda</code>). There is no versioned-vs-nightly-vs-latest distinction to expose, so "Local Latest / Official Release / Nightly" collapses into one <strong>Default Image</strong> option — leaving <strong>Default Image</strong>, <strong>Dev Build</strong>, and <strong>Custom Tag</strong>.</li>
+    </ul>
+    <p>In other words, both backends expose exactly the choices their upstream registry actually offers.</p>
+
+    <h2 id="why-only-vllm-does-multi-gpu">Why only vLLM does multi-GPU</h2>
+    <p>vLLM's container uses <code>runtime: nvidia</code> with <code>NVIDIA_VISIBLE_DEVICES=${GPU_ID}</code>, so a <code>gpu_id</code> of <code>"0,1"</code> exposes both GPUs and <code>tensor_parallel_size: 2</code> shards the model across them. llama.cpp's container uses Compose's <code>deploy.resources.reservations.devices</code> device-id list, which cannot reliably expand a comma-separated value into a multi-GPU list. Tensor parallelism is a core vLLM feature, so llmux keeps the two engines on the GPU-passthrough mechanism each one needs rather than forcing a single format.</p>
+
+    <h2 id="when-to-use-which">When to use which</h2>
+
+    <div class="admonition tip">
+      <p class="admonition-title">Use <strong>vLLM</strong> when...</p>
+      <ul>
+        <li>You want to run a model straight from its <strong>Hugging Face Transformers repo</strong> (safetensors weights, no separate quantization step).</li>
+        <li>You need <strong>multi-GPU tensor parallelism</strong> to fit or speed up a large model.</li>
+        <li>You want to attach <strong>LoRA adapters</strong> at serve time.</li>
+        <li>You need a specific, <strong>verifiable engine version</strong> (llmux checks <code>vllm.__version__</code> inside the container after start).</li>
+        <li>You want high-throughput batched serving and are happy with full/half-precision weights on the GPU.</li>
+      </ul>
+    </div>
+
+    <div class="admonition tip">
+      <p class="admonition-title">Use <strong>llama.cpp</strong> when...</p>
+      <ul>
+        <li>Your model is a <strong>GGUF</strong> (or you want quantized inference: Q4/Q5/Q8).</li>
+        <li>The model is <strong>too large for VRAM</strong> and you need <strong>CPU/GPU layer offload</strong> (<code>n-gpu-layers</code>).</li>
+        <li>You are running a <strong>MoE model</strong> and want to push expert tensors to system RAM with <code>override-tensors</code> while keeping attention on the GPU.</li>
+        <li>You want to <strong>squeeze context length</strong> out of a fixed VRAM budget by quantizing the KV cache (<code>cache-type-k</code> / <code>cache-type-v</code>).</li>
+        <li>You want to experiment with <strong>MTP / multi-token prediction</strong> (via a dev build and an MTP-enabled GGUF).</li>
+      </ul>
+    </div>
+
+    <p>Both backends speak the <strong>OpenAI-compatible API</strong>, render from the same <code>profiles.yaml</code>, and share the cross-backend conflict gate and the built-in benchmark — so you can run a vLLM and a llama.cpp profile side by side and A/B test them with the identical request protocol.</p>
+
+    <h2 id="see-also">See also</h2>
+    <ul>
+      <li><a href="vllm.html">vLLM backend</a> — full detail on the vLLM path</li>
+      <li><a href="llamacpp.html">llama.cpp backend</a> — full detail on the llama.cpp path</li>
+      <li><a href="../troubleshooting.html">Troubleshooting</a> — common problems for both backends</li>
+    </ul>
+
+    <div class="docs-footer">
+      <a class="edit-link" href="https://github.com/Bae-ChangHyun/llmux/edit/main/docs/backends/comparison.md" target="_blank">Edit this page on GitHub</a>
+      <div class="prev-next">
+        <a href="llamacpp.html">&larr; llama.cpp</a>
+        <a href="../reference/cli.html">CLI Reference &rarr;</a>
+      </div>
+    </div>
+
+  </article>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="page-wrap">
+    <p>
+      MIT License &middot;
+      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a> &middot;
+      Made by <a href="https://github.com/Bae-ChangHyun">Bae-ChangHyun</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
