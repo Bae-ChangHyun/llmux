@@ -43,7 +43,8 @@ jinja: true
 # api-key: sk-your-key
 
 # ═══ 성능 추가 옵션 (선택) ═══
-# flash-attn: true           # flash attention 활성화
+# flash-attn: true           # flash attention 활성화 (true → "--flash-attn on")
+#                            # `on`/`off`/`auto` 문자열도 사용 가능 (modern llama-server)
 # parallel: 4                # 병렬 요청 슬롯
 # cont-batching: true        # continuous batching
 # metrics: true              # /metrics 엔드포인트 활성화

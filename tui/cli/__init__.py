@@ -71,6 +71,10 @@ app.command(
     "render-env",
     help="Re-render runtime env file from profiles.yaml (alias for `container render-env`).",
 )(_container.render_env)
+app.command(
+    "bench",
+    help="Benchmark a running container's tok/s (alias for `container benchmark`).",
+)(_container.benchmark)
 
 
 def main() -> None:

@@ -284,6 +284,10 @@ def _render_env_lines(profile: StoredProfile) -> list[str]:
             lines.append(_env_line("EXTRA_PIP_PACKAGES", profile.extra_pip_packages))
         for k, v in profile.env_vars.items():
             lines.append(_env_line(k, v))
+        if profile.image_tag:
+            # Per-profile docker image override; compose consumes it as
+            # `image: ${VLLM_IMAGE}` with a default-fallback chain.
+            lines.append(_env_line("VLLM_IMAGE", profile.image_tag))
     else:
         lines += [
             _env_line("CONTAINER_NAME", profile.container_name or profile.name),
@@ -298,13 +302,21 @@ def _render_env_lines(profile: StoredProfile) -> list[str]:
         if profile.hf_file:
             lines.append(_env_line("HF_FILE", profile.hf_file))
         if profile.image_tag:
-            # llama.cpp consumes this in compose/llamacpp/docker-compose.dev.yaml
-            # as `image: llamacpp-dev:${LLAMACPP_DEV_TAG}`. The "<prefix>:" is
-            # stripped so the compose default-fallback chain stays consistent.
-            tag_value = profile.image_tag
-            if ":" in tag_value:
-                tag_value = tag_value.split(":", 1)[1]
-            lines.append(_env_line("LLAMACPP_DEV_TAG", tag_value))
+            if profile.image_tag.startswith("llamacpp-dev:"):
+                # llama.cpp dev-build images are consumed in
+                # compose/llamacpp/docker-compose.dev.yaml as
+                # `image: llamacpp-dev:${LLAMACPP_DEV_TAG}`. The "llamacpp-dev:"
+                # prefix is stripped so the compose default-fallback chain
+                # stays consistent.
+                lines.append(
+                    _env_line(
+                        "LLAMACPP_DEV_TAG", profile.image_tag.split(":", 1)[1]
+                    )
+                )
+            else:
+                # Any other reference is a full image used verbatim via
+                # `image: ${LLAMACPP_IMAGE}`.
+                lines.append(_env_line("LLAMACPP_IMAGE", profile.image_tag))
     lines.append("")
     return lines
 

@@ -71,6 +71,38 @@ def _run_cli(tmp: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _run_cli_stubbed_hf(
+    tmp: Path, gguf_files: list[str], *args: str
+) -> subprocess.CompletedProcess:
+    """Run the CLI with `list_hf_repo_files` stubbed to return a synthetic
+    GGUF file listing. Used by the llama.cpp quick-setup regression test so
+    it doesn't depend on huggingface.co reachability (`NameError: run_async`
+    would otherwise be masked by network flake — see T17 regression).
+    """
+    env = {**os.environ, "LLMUX_ROOT": str(tmp), "NO_COLOR": "1"}
+    # Build the in-process stub: monkey-patch the backend symbol *before*
+    # tui.cli is imported, so _quick_setup_llamacpp's local
+    # `from ...backend import list_hf_repo_files` picks up the stub.
+    stub_src = (
+        "import sys\n"
+        "import tui.backends.llamacpp.backend as _b\n"
+        f"_FAKE_FILES = {[{'type': 'file', 'path': p} for p in gguf_files]!r}\n"
+        "async def _stub(*_a, **_k): return _FAKE_FILES\n"
+        "_b.list_hf_repo_files = _stub\n"
+        "from tui.cli import main\n"
+        f"sys.argv = ['llmux', *{list(args)!r}]\n"
+        "main()\n"
+    )
+    return subprocess.run(
+        [sys.executable, "-c", stub_src],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
 class CliSmokeTests(unittest.TestCase):
     """Side-effect-free dispatch + read-only command coverage."""
 
@@ -287,6 +319,140 @@ class CliSmokeTests(unittest.TestCase):
         data = json.loads(r.stdout)
         self.assertEqual(data["backend"], "llamacpp")
         self.assertEqual(data["port"], 8080)
+
+    # --- llama.cpp quick-setup (T17) ------------------------------------------
+
+    def test_quick_setup_llamacpp_writes_profile_and_config(self):
+        """Regression: `_quick_setup_llamacpp` used `run_async` without
+        importing it from `_runtime`, causing NameError on first call. This
+        exercises the full end-to-end path with `list_hf_repo_files` stubbed
+        so the test stays hermetic.
+        """
+        r = _run_cli_stubbed_hf(
+            self.tmp,
+            ["model-Q4_K_M.gguf", "model-Q8_0.gguf"],
+            "profile", "quick-setup",
+            "--backend", "llamacpp",
+            "--hf-repo", "fake/Model-GGUF",
+            "--hf-file", "model-Q4_K_M.gguf",
+            "--name", "lc-smoke",
+            "--port", "8087",
+            "--gpu-id", "0",
+            "--ctx-size", "1024",
+            "--n-gpu-layers", "0",
+            "--cache-type-k", "f16",
+            "--cache-type-v", "f16",
+            "--no-flash-attn",
+            "--no-jinja",
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Created profile + config: lc-smoke", r.stdout)
+
+        # Profile written through profile_store.save_profile
+        r2 = _run_cli(self.tmp, "profile", "show", "lc-smoke", "--json")
+        self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
+        data = json.loads(r2.stdout)
+        self.assertEqual(data["backend"], "llamacpp")
+        self.assertEqual(data["port"], 8087)
+        self.assertEqual(data["hf_repo"], "fake/Model-GGUF")
+        self.assertEqual(data["hf_file"], "model-Q4_K_M.gguf")
+        self.assertEqual(data["model_file"], "model-Q4_K_M.gguf")
+
+        # Config written through llamacpp backend save_config — verify the
+        # key set + ints are typed (not str).
+        cfg_path = self.tmp / "config" / "llamacpp" / "lc-smoke.yaml"
+        self.assertTrue(cfg_path.exists(), cfg_path)
+        cfg = yaml.safe_load(cfg_path.read_text())
+        self.assertEqual(cfg.get("model-file"), "model-Q4_K_M.gguf")
+        self.assertEqual(cfg.get("alias"), "lc-smoke")
+        self.assertEqual(cfg.get("ctx-size"), 1024)
+        self.assertEqual(cfg.get("n-gpu-layers"), 0)
+        self.assertEqual(cfg.get("cache-type-k"), "f16")
+        self.assertEqual(cfg.get("cache-type-v"), "f16")
+        # --no-flash-attn / --no-jinja → keys must NOT be present.
+        self.assertNotIn("flash-attn", cfg)
+        self.assertNotIn("jinja", cfg)
+        # Cleanup.
+        _run_cli(self.tmp, "profile", "delete", "lc-smoke", "-y")
+
+    def test_quick_setup_llamacpp_warns_on_positional_model(self):
+        """Positional MODEL has no meaning for --backend llamacpp (GGUF profiles
+        derive their identity from --hf-repo / --hf-file). Silently dropping
+        the argument hides scripted typos — verify we warn on stderr but still
+        proceed with the auto-derived name (no hard fail, no behavior change).
+        """
+        r = _run_cli_stubbed_hf(
+            self.tmp,
+            ["model-Q4_K_M.gguf"],
+            "profile", "quick-setup",
+            "smalltest",  # positional MODEL — meaningless for llamacpp
+            "--backend", "llamacpp",
+            "--hf-repo", "fake/Model-GGUF",
+            "--hf-file", "model-Q4_K_M.gguf",
+            "--port", "8089",
+            "--gpu-id", "0",
+        )
+        # Should still succeed — auto-derive from repo tail.
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Warning", r.stderr)
+        self.assertIn("smalltest", r.stderr)
+        self.assertIn("ignored", r.stderr.lower())
+        self.assertIn("--name", r.stderr)
+        # Auto-derived name (lowercased, stripped, -GGUF removed).
+        self.assertIn("Created profile + config: model", r.stdout)
+        # Cleanup any auto-derived name that actually got created.
+        r2 = _run_cli(self.tmp, "profile", "list", "--json", "--backend", "llamacpp")
+        if r2.returncode == 0:
+            for row in json.loads(r2.stdout):
+                if row["name"].startswith("model"):
+                    _run_cli(
+                        self.tmp, "profile", "delete", row["name"],
+                        "-y", "--with-config",
+                    )
+
+    def test_quick_setup_llamacpp_warns_when_positional_with_explicit_name(self):
+        """When both positional MODEL and --name are given for --backend
+        llamacpp, the positional is still ignored — but the warning should
+        reference the explicit --name so the user can see which one won.
+        """
+        r = _run_cli_stubbed_hf(
+            self.tmp,
+            ["model-Q4_K_M.gguf"],
+            "profile", "quick-setup",
+            "smalltest",
+            "--backend", "llamacpp",
+            "--hf-repo", "fake/Model-GGUF",
+            "--hf-file", "model-Q4_K_M.gguf",
+            "--name", "lc-explicit",
+            "--port", "8090",
+            "--gpu-id", "0",
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Warning", r.stderr)
+        self.assertIn("smalltest", r.stderr)
+        self.assertIn("lc-explicit", r.stderr)
+        self.assertIn("Created profile + config: lc-explicit", r.stdout)
+        _run_cli(self.tmp, "profile", "delete", "lc-explicit", "-y", "--with-config")
+
+    def test_quick_setup_llamacpp_rejects_file_not_in_repo(self):
+        """If the HF API returns a listing and --hf-file isn't in it, error
+        out with a clear message (parity with the TUI's Fetch+select gate).
+        """
+        r = _run_cli_stubbed_hf(
+            self.tmp,
+            ["only-Q4_K_M.gguf"],
+            "profile", "quick-setup",
+            "--backend", "llamacpp",
+            "--hf-repo", "fake/Model-GGUF",
+            "--hf-file", "missing-Q8_0.gguf",
+            "--name", "lc-bad",
+            "--port", "8088",
+            "--gpu-id", "0",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        combined = (r.stdout or "") + (r.stderr or "")
+        self.assertIn("not found", combined.lower())
+        self.assertIn("only-Q4_K_M.gguf", combined)
 
 
 if __name__ == "__main__":

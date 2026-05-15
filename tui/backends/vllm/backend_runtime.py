@@ -160,6 +160,7 @@ def _compose_env(
     use_dev: bool,
     image_tag: str = "",
     version_tag: str = "",
+    vllm_image: str = "",
 ) -> dict[str, str]:
     env = os.environ.copy()
     env.update(_common_env())
@@ -171,7 +172,28 @@ def _compose_env(
         env["VLLM_DEV_TAG"] = image_tag
     else:
         env["VLLM_VERSION"] = version_tag
+    # Explicitly pin (or clear) VLLM_IMAGE. The rendered profile .env may
+    # already carry VLLM_IMAGE when the profile pins an image_tag; setting it
+    # here — to the desired value, or to "" for a UI/version-tag launch —
+    # ensures it never leaks past the priority order. An empty value lets
+    # compose's `${VLLM_IMAGE:-...}` fall back to the version-tag default.
+    env["VLLM_IMAGE"] = vllm_image
     return env
+
+
+def _env_file_args(profile: Profile) -> list[str]:
+    """Return `--env-file` args, including each file only when it exists.
+
+    `docker compose` aborts up-front if an `--env-file` path is missing; that
+    would make `container_down` skip its clean network teardown and leak the
+    compose network, forcing the docker stop/rm fallback.
+    """
+    args: list[str] = []
+    if COMMON_ENV.exists():
+        args.extend(["--env-file", str(COMMON_ENV)])
+    if profile.path.exists():
+        args.extend(["--env-file", str(profile.path)])
+    return args
 
 
 async def _container_exists(container_name: str) -> bool:
@@ -447,6 +469,16 @@ async def check_port_conflict(profile: Profile) -> str | None:
                 return f"container '{container_name}'"
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # SO_REUSEADDR is required here: our own _post_start_validation hits
+    # /v1/models on this same port after every successful `up`, which leaves
+    # a TIME-WAIT entry on 127.0.0.1:<port> for ~60s. Without SO_REUSEADDR a
+    # plain bind() refuses TIME-WAIT ports and we'd falsely report
+    # "another local process on 127.0.0.1:<port>" on every `up→down→up`
+    # cycle within that window. An actively LISTENING socket on the port
+    # still fails the bind (that's the real conflict we care about), so
+    # this only relaxes the spurious TIME-WAIT false positive — do not
+    # remove without re-introducing the bug.
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         sock.bind(("127.0.0.1", int(profile.port)))
     except OSError:
@@ -627,10 +659,25 @@ async def stream_container_up(
             "docker",
             "compose",
             *compose_files,
-            "--env-file",
-            str(COMMON_ENV),
-            "--env-file",
-            str(profile.path),
+            *_env_file_args(profile),
+            "-p",
+            profile.name,
+            "up",
+            "-d",
+        ]
+    elif not tag and profile.image_tag:
+        # Per-profile pinned image. UI overrides (Dev Build / explicit Custom
+        # Tag) take precedence and are handled above; absent those, honor the
+        # profile's image_tag over the version-tag default. version_tag stays
+        # empty so the shared block below skips version verification.
+        version_tag = ""
+        yield ("log", f"Using image: {profile.image_tag}")
+        env = _compose_env(profile, use_dev=False, vllm_image=profile.image_tag)
+        compose_cmd = [
+            "docker",
+            "compose",
+            *compose_files,
+            *_env_file_args(profile),
             "-p",
             profile.name,
             "up",
@@ -679,10 +726,7 @@ async def stream_container_up(
             "docker",
             "compose",
             *compose_files,
-            "--env-file",
-            str(COMMON_ENV),
-            "--env-file",
-            str(profile.path),
+            *_env_file_args(profile),
             "-p",
             profile.name,
             "up",
@@ -798,10 +842,7 @@ async def container_down(profile_name: str) -> tuple[int, str]:
         "docker",
         "compose",
         *_compose_files(profile, use_dev),
-        "--env-file",
-        str(COMMON_ENV),
-        "--env-file",
-        str(profile.path),
+        *_env_file_args(profile),
         "-p",
         profile.name,
         "down",
@@ -819,14 +860,18 @@ async def container_down(profile_name: str) -> tuple[int, str]:
     return 0, f"{profile_name} stopped successfully!"
 
 
-async def stream_container_logs(container_name: str):
-    """Async generator that yields log lines."""
+async def stream_container_logs(container_name: str, *, tail: int = 100):
+    """Async generator that yields log lines.
+
+    `tail` controls how many recent lines `docker logs` prints before it
+    starts following live output.
+    """
     proc = await asyncio.create_subprocess_exec(
         "docker",
         "logs",
         "-f",
         "--tail",
-        "100",
+        str(tail),
         container_name,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
