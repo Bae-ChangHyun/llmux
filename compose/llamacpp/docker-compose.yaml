@@ -1,13 +1,16 @@
 # llmux llama.cpp base compose
 #
 # 사용법:
-#   uv run llmux  # 또는 ./scripts/llamacpp/switch.sh <profile-name>
+#   uv run llmux up <profile> -b llamacpp
 #
 # 동작:
 #   1. profiles.yaml 의 llamacpp/<name> 을 .runtime/llamacpp/<name>.env 로 렌더.
 #   2. scripts/llamacpp/render-override.py 가 config/llamacpp/<name>.yaml 를
 #      읽어 .runtime/llamacpp/override-<name>.yaml 를 생성 (command: 블록 주입).
 #   3. docker compose up -d 가 base + per-profile override 를 병합해 기동.
+#   4. llama-server 가 `-hf <repo> -hff <file>` 로 HF 에서 직접 받음.
+#      받은 GGUF 는 호스트 ~/.cache/huggingface (= HF_CACHE_PATH) 에 영구 저장.
+#      vllm 흐름과 동일 — 호스트 hf CLI 의존성 없음.
 
 services:
   llama-server:
@@ -17,9 +20,11 @@ services:
     ports:
       - "${LLAMA_PORT:-8080}:8080"
     volumes:
-      - ${MODEL_DIR}:/models:ro
+      # vllm 과 동일 — HF cache 만 mount. llama-server 가 컨테이너 안에서 직접 받음.
+      - ${HF_CACHE_PATH}:/root/.cache/huggingface
     environment:
       - TZ=${TZ:-UTC}
+      - HF_TOKEN=${HF_TOKEN}
     deploy:
       resources:
         reservations:

@@ -320,85 +320,8 @@ async def extract_llama_server_flags() -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Script / subprocess wrappers
+# Log streaming
 # ---------------------------------------------------------------------------
-
-
-async def run_script(
-    script: str, *args: str, timeout: float | None = 1800.0
-) -> tuple[int, str]:
-    """스크립트 실행, (exitcode, combined_output) 반환.
-
-    기본 timeout 30분 — HF GGUF 다운로드는 수십 GB 규모라 긴 여유를 둔다.
-    타임아웃 시 프로세스를 kill 하고 (124, '<stdout+...TIMED OUT>') 를 돌려준다.
-    """
-    proc = await asyncio.create_subprocess_exec(
-        str(SCRIPTS_DIR / script),
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        cwd=str(PROJECT_ROOT),
-    )
-    try:
-        if timeout is None:
-            stdout, _ = await proc.communicate()
-        else:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.CancelledError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5)
-        except asyncio.TimeoutError:
-            pass
-        raise
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5)
-        except asyncio.TimeoutError:
-            pass
-        return 124, f"✗ '{script}' timed out after {timeout}s"
-    return proc.returncode or 0, stdout.decode("utf-8", errors="replace")
-
-
-async def stream_script(
-    script: str, *args: str
-):
-    """스크립트 실행을 라인 단위로 스트리밍."""
-    proc = await asyncio.create_subprocess_exec(
-        str(SCRIPTS_DIR / script),
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        cwd=str(PROJECT_ROOT),
-    )
-    if proc.stdout is None:
-        yield ("rc", 1)
-        return
-    try:
-        while True:
-            line = await proc.stdout.readline()
-            if not line:
-                break
-            yield ("log", line.decode("utf-8", errors="replace").rstrip())
-        await proc.wait()
-        yield ("rc", proc.returncode or 0)
-    except asyncio.CancelledError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5)
-        except asyncio.TimeoutError:
-            pass
-        raise
 
 
 async def stream_logs(container_name: str, lines: int = 200):

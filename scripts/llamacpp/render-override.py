@@ -56,15 +56,34 @@ def parse_env_file(path: Path) -> dict[str, str]:
     return env
 
 
-def render_command(cfg: dict, model_file: str = "") -> list[str]:
-    """config yaml → llama-server CLI 인자 리스트."""
+def render_command(
+    cfg: dict,
+    *,
+    model_file: str = "",
+    hf_repo: str = "",
+    hf_file: str = "",
+) -> list[str]:
+    """config yaml + profile → llama-server CLI 인자 리스트.
+
+    Model source resolution mirrors the vllm flow — `-hf <repo> -hff <file>`
+    so llama-server downloads into the HF cache mounted from the host.
+    """
     args: list[str] = ["--host", "0.0.0.0", "--port", "8080", "--no-webui"]
 
-    # 특수 키 먼저 처리
-    resolved_model = str(cfg.pop("model-file", "") or model_file).strip()
-    if not resolved_model:
-        raise ValueError("model-file missing in config and profile.model_file is empty")
-    args.extend(["--model", f"/models/{resolved_model}"])
+    # 모델 식별: profile 의 hf_repo/hf_file 이 1순위. config 의 model-file 은
+    # display 용 fallback (예: HF cache 에 이미 받아둔 파일명을 의도).
+    resolved_file = (hf_file or str(cfg.pop("model-file", "") or model_file)).strip()
+    resolved_repo = hf_repo.strip()
+    if not resolved_repo:
+        raise ValueError(
+            "hf_repo is empty — set profile.hf_repo so llama-server can `-hf` download"
+        )
+    if not resolved_file:
+        raise ValueError("hf_file / model_file is empty — need a specific .gguf filename")
+    args.extend(["-hf", resolved_repo])
+    args.extend(["-hff", resolved_file])
+    # 옛 model-file 키가 cfg 에 남아 있으면 무시 (위에서 이미 pop 했지만 안전).
+    cfg.pop("model-file", None)
 
     # WebUI 는 강제 off. 사용자가 webui 활성화하려 해도 무시.
     cfg.pop("no-webui", None)
@@ -116,7 +135,12 @@ def main() -> int:
         print(f"config 형식 오류: mapping YAML 이 필요합니다: {config_path}", file=sys.stderr)
         return 1
     try:
-        command = render_command(cfg, stored.model_file)
+        command = render_command(
+            cfg,
+            model_file=stored.model_file,
+            hf_repo=stored.hf_repo,
+            hf_file=stored.hf_file,
+        )
     except ValueError as exc:
         print(f"config 렌더 실패: {exc}", file=sys.stderr)
         return 1
