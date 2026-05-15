@@ -248,18 +248,6 @@ def _compose_base_args(profile: Profile) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-async def _render_profile_env(profile_name: str) -> tuple[int, str]:
-    """Re-render .runtime/llamacpp/<name>.env via the unified profile_store CLI."""
-    return await _run(
-        "python3",
-        "-m",
-        "tui.common.profile_store",
-        "render",
-        "llamacpp",
-        profile_name,
-    )
-
-
 async def _render_override(profile_name: str) -> tuple[int, str]:
     """Re-render .runtime/llamacpp/override-<name>.yaml."""
     return await _run(
@@ -382,10 +370,20 @@ async def stream_container_up(
         dev_tag = (tag or resolved_branch).strip()
         resolved_image_tag = f"{LLAMACPP_DEV_SPEC.image_prefix}:{dev_tag}"
 
-        # Build the dev image on demand if missing (TUI affordance — CLI users
-        # are expected to run `llmux image build-dev` themselves).
-        if not await dev_build.image_exists_locally(LLAMACPP_DEV_SPEC, dev_tag):
+        # Build the dev image on demand if missing OR if the locally cached
+        # tag was built from a different repo/branch. The builder stamps
+        # repo/branch labels on every image, so `<prefix>:master` from
+        # ggml-org and `<prefix>:master` from a fork collide on tag name —
+        # reusing blindly would silently start the wrong source.
+        exists = await dev_build.image_exists_locally(LLAMACPP_DEV_SPEC, dev_tag)
+        matches = exists and await dev_build.image_matches(
+            LLAMACPP_DEV_SPEC, dev_tag, resolved_repo, resolved_branch
+        )
+        if not exists:
             yield ("log", f"▸ Dev image {resolved_image_tag} not found — building from {resolved_repo}@{resolved_branch}")
+        elif not matches:
+            yield ("log", f"▸ Dev image {resolved_image_tag} exists but was built from a different repo/branch — rebuilding from {resolved_repo}@{resolved_branch}")
+        if not matches:
             async for event in _stream_build_dev_image(
                 resolved_branch, repo_url=resolved_repo, custom_tag=tag
             ):
@@ -396,12 +394,22 @@ async def stream_container_up(
         # Custom Tag: pass through as-is (e.g. `ghcr.io/foo/bar:v1`).
         resolved_image_tag = tag
 
+    # Apply the resolved tag to BOTH objects:
+    #  - `stored` (StoredProfile) feeds profile_store.render_env() → the
+    #    per-profile .env that compose reads as LLAMACPP_DEV_TAG.
+    #  - `profile` (backend.Profile) feeds _compose_files() → whether the
+    #    dev compose override gets layered in.
+    # Rendering in-process (not via a subprocess that re-reads profiles.yaml)
+    # is what makes a one-off TUI "Dev Build" / "Custom Tag" selection
+    # actually reach docker compose instead of silently falling back to the
+    # saved profile's image.
+    stored.image_tag = resolved_image_tag
     profile.image_tag = resolved_image_tag
-
-    rc, out = await _render_profile_env(profile_name)
-    if rc != 0:
-        yield ("log", out.strip() or f"✗ profile env render 실패: {profile_name}")
-        yield ("rc", rc)
+    try:
+        profile_store.render_env(stored)
+    except Exception as exc:  # noqa: BLE001 — surface any render failure to the UI
+        yield ("log", f"✗ profile env render 실패: {exc}")
+        yield ("rc", 1)
         return
 
     # Sanity-check pinned dev images that we didn't build above (e.g. profile
@@ -474,7 +482,10 @@ async def container_down(profile_name: str) -> tuple[int, str]:
     profile = load_profile(profile_name)
 
     # Re-render env so compose has the right CONTAINER_NAME / LLAMA_PORT.
-    await _render_profile_env(profile_name)
+    try:
+        profile_store.render_env(stored)
+    except Exception:  # noqa: BLE001 — best-effort; the rm -f fallback still works
+        pass
 
     override = _override_path(profile_name)
     if override.exists():
@@ -486,7 +497,7 @@ async def container_down(profile_name: str) -> tuple[int, str]:
         # fallthrough to docker rm -f if compose down fails
 
     rc_inspect, names = await _docker_run("docker", "ps", "-a", "--format", "{{.Names}}", timeout=10)
-    if rc_inspect == 0 and profile.container_name in names.split():
+    if rc_inspect == 0 and profile.container_name in names.splitlines():
         rc_rm, out_rm = await _docker_run("docker", "rm", "-f", profile.container_name, timeout=30)
         if rc_rm != 0:
             return rc_rm, out_rm.strip() or "✗ docker rm -f 실패"

@@ -360,9 +360,6 @@ async def _do_build_dev_image(
 
 async def _dev_image_matches(image_tag: str, repo_url: str, branch: str) -> bool:
     return await dev_build.image_matches(VLLM_DEV_SPEC, image_tag, repo_url, branch)
-    if not saved_repo or not saved_branch:
-        return False
-    return saved_repo == repo_url and saved_branch == branch
 
 
 async def get_container_statuses() -> list[ContainerStatus]:

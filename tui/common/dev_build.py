@@ -52,12 +52,18 @@ def _label(spec: DevBuildSpec) -> str:
 
 
 async def _run(*args: str, cwd: Path | None = None, timeout: float = 30) -> tuple[int, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        cwd=str(cwd) if cwd else None,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(cwd) if cwd else None,
+        )
+    except FileNotFoundError:
+        # Binary not on PATH (e.g. nvidia-smi on a CPU-only host or CI).
+        # Callers treat a non-zero rc as "command unavailable" and degrade
+        # gracefully — e.g. detect_local_gpu_caps() returns [] → multi-arch.
+        return -1, f"command not found: {args[0]}"
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
