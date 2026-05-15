@@ -76,12 +76,47 @@ def list_images(
     emit_table(rows, columns=["source", "repository", "tag", "size", "created"])
 
 
+_PULL_DEFAULTS = {
+    # (default repo, default tag). vLLM has no canonical "current" tag — users
+    # almost always pin a version — so we don't default a tag there. llama.cpp
+    # ships a single official server image tagged `server-cuda`.
+    "vllm": ("vllm/vllm-openai", ""),
+    "llamacpp": ("ghcr.io/ggml-org/llama.cpp", "server-cuda"),
+}
+
+
 @app.command("pull")
 def pull_image(
-    tag: str = typer.Argument(..., help="Image tag, e.g. 'v0.20.1' or 'nightly'."),
-    repo: str = typer.Option("vllm/vllm-openai", "--repo"),
+    tag: Optional[str] = typer.Argument(
+        None,
+        help="Image tag. vLLM requires an explicit tag (e.g. 'v0.20.1', 'nightly'). "
+             "llama.cpp defaults to 'server-cuda'.",
+    ),
+    backend: str = typer.Option(
+        "vllm", "--backend",
+        help="Selects per-backend default repo/tag (vllm → vllm/vllm-openai, "
+             "llamacpp → ghcr.io/ggml-org/llama.cpp:server-cuda).",
+    ),
+    repo: str = typer.Option(
+        "", "--repo",
+        help="Repo override; empty = backend default.",
+    ),
 ) -> None:
-    """`docker pull <repo>:<tag>` — surface raw output."""
+    """`docker pull <repo>:<tag>` — backend-aware defaults, raw docker output."""
+    if backend not in _PULL_DEFAULTS:
+        raise typer.BadParameter(
+            f"unknown backend: {backend!r} (choose vllm or llamacpp)",
+            param_hint="--backend",
+        )
+    default_repo, default_tag = _PULL_DEFAULTS[backend]
+    repo = repo or default_repo
+    tag = tag or default_tag
+    if not tag:
+        raise typer.BadParameter(
+            "vLLM has no default tag — pass a TAG (e.g. 'v0.20.1' or 'nightly').",
+            param_hint="TAG",
+        )
+
     import subprocess
 
     full = f"{repo}:{tag}"

@@ -190,6 +190,14 @@ class ProfileFormScreen(ModalScreen[str | None]):
                         id="extra-pip-input",
                     )
 
+                with Horizontal(classes="form-row"):
+                    yield Label("Image Tag")
+                    yield Input(
+                        value=p.image_tag if p else "",
+                        placeholder="(blank = default image) e.g. myregistry/vllm:custom",
+                        id="image-tag-input",
+                    )
+
             with Horizontal(classes="form-buttons"):
                 yield Button("Save", id="save-btn", variant="primary")
                 yield Button("Close", id="cancel-btn", variant="default")
@@ -252,6 +260,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 return
 
         extra_pip = self.query_one("#extra-pip-input", Input).value.strip()
+        image_tag = self.query_one("#image-tag-input", Input).value.strip()
 
         # --- Build and save ---
         if self._edit_mode and self._profile is not None:
@@ -263,6 +272,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             profile.config_name = config_name
             profile.model_id = model_id
             profile.enable_lora = "true" if lora else "false"
+            profile.image_tag = image_tag
         else:
             profile = Profile(
                 name=name,
@@ -273,6 +283,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 config_name=config_name,
                 model_id=model_id,
                 enable_lora="true" if lora else "false",
+                image_tag=image_tag,
             )
 
         # Handle EXTRA_PIP_PACKAGES
