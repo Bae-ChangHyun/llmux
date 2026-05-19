@@ -18,7 +18,6 @@ from textual.widgets import (
 )
 
 from tui.backends.llamacpp.backend import (
-    DockerImage,
     GpuInfo,
     ROOT,
     _get_model_dir,

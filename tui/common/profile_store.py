@@ -47,6 +47,49 @@ DEFAULTS: dict[str, dict[str, Any]] = {
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Reserved env keys are emitted from StoredProfile fields (port, gpu_id, etc.).
+# If env_vars overrides one of these, the rendered .env would contain duplicate
+# lines whose final value silently overrides what the conflict checker, TUI,
+# and CLI all believe is in effect. Refuse those overrides at render time.
+_RESERVED_ENV_KEYS_BY_BACKEND: dict[str, frozenset[str]] = {
+    "vllm": frozenset(
+        {
+            "CONTAINER_NAME",
+            "VLLM_PORT",
+            "GPU_ID",
+            "TENSOR_PARALLEL_SIZE",
+            "CONFIG_NAME",
+            "MODEL_ID",
+            "ENABLE_LORA",
+            "MAX_LORAS",
+            "MAX_LORA_RANK",
+            "LORA_MODULES",
+            "EXTRA_PIP_PACKAGES",
+            "VLLM_IMAGE",
+        }
+    ),
+    "llamacpp": frozenset(
+        {
+            "CONTAINER_NAME",
+            "LLAMA_PORT",
+            "GPU_ID",
+            "CONFIG_NAME",
+            "MODEL_FILE",
+            "HF_REPO",
+            "HF_FILE",
+            "LLAMACPP_IMAGE",
+            "LLAMACPP_DEV_TAG",
+        }
+    ),
+}
+
+
+def reserved_env_keys(backend: str) -> frozenset[str]:
+    """Reserved env keys for a backend. Public so the CLI/TUI can validate
+    user-supplied --set foo=bar before persisting (better error message there
+    than on the next `up`)."""
+    return _RESERVED_ENV_KEYS_BY_BACKEND.get(backend, frozenset())
+
 
 @dataclass
 class StoredProfile:
@@ -98,16 +141,33 @@ def _backend_defaults(data: dict, backend: str) -> dict[str, Any]:
     return defaults
 
 
-def _write_yaml(data: dict) -> None:
-    PROFILES_YAML.write_text(
-        yaml.safe_dump(
-            data,
-            sort_keys=False,
-            allow_unicode=True,
-            default_flow_style=False,
-            width=120,
-        )
+def _dump_yaml(data: dict) -> str:
+    return yaml.safe_dump(
+        data,
+        sort_keys=False,
+        allow_unicode=True,
+        default_flow_style=False,
+        width=120,
     )
+
+
+def _write_yaml(data: dict) -> None:
+    PROFILES_YAML.write_text(_dump_yaml(data))
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """Write `content` to `path` via a sibling `.tmp` + os.replace.
+
+    Same-filesystem rename is atomic on POSIX, so a process crash between
+    create and replace can leave a stray `.tmp` but never a half-written
+    target. Callers that need cross-file atomicity (e.g. save_profile updating
+    both profiles.yaml and a .env) should stage every file as `.tmp` first and
+    only os.replace once all stages succeed.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content)
+    os.replace(tmp, path)
 
 
 def _parse_bool(value: Any) -> bool:
@@ -213,9 +273,17 @@ def load_profile(name: str, backend: str) -> StoredProfile | None:
 
 
 def save_profile(profile: StoredProfile) -> None:
+    """Persist a profile atomically across both profiles.yaml and the runtime .env.
+
+    Stages both files as siblings with a `.tmp` suffix, then os.replace each
+    into place once both stage writes have succeeded. If the env render or yaml
+    dump raises, neither file on disk is mutated — so a permission error on
+    .runtime/ no longer leaves profiles.yaml updated while .env stays stale
+    (the silent-corruption pattern that fed the next `compose up` an out-of-
+    sync configuration).
+    """
     data = _load_yaml()
     profiles = data.get("profiles", [])
-    _render_env_lines(profile)
     entry = _profile_to_entry(profile, _backend_defaults(data, profile.backend))
     for idx, existing in enumerate(profiles):
         if (
@@ -227,8 +295,27 @@ def save_profile(profile: StoredProfile) -> None:
     else:
         profiles.append(entry)
     data["profiles"] = profiles
-    _write_yaml(data)
-    render_env(profile)
+
+    env_path = runtime_env_path(profile.name, profile.backend)
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_lines = _render_env_lines(profile)
+    env_text = "\n".join(env_lines)
+    yaml_text = _dump_yaml(data)
+
+    env_tmp = env_path.with_suffix(env_path.suffix + ".tmp")
+    yaml_tmp = PROFILES_YAML.with_suffix(PROFILES_YAML.suffix + ".tmp")
+    try:
+        env_tmp.write_text(env_text)
+        yaml_tmp.write_text(yaml_text)
+    except OSError:
+        for stale in (env_tmp, yaml_tmp):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        raise
+    os.replace(env_tmp, env_path)
+    os.replace(yaml_tmp, PROFILES_YAML)
 
 
 def delete_profile(name: str, backend: str) -> bool:
@@ -282,7 +369,17 @@ def _render_env_lines(profile: StoredProfile) -> list[str]:
             lines.append(_env_line("LORA_MODULES", profile.lora_modules))
         if profile.extra_pip_packages:
             lines.append(_env_line("EXTRA_PIP_PACKAGES", profile.extra_pip_packages))
+        reserved = _RESERVED_ENV_KEYS_BY_BACKEND["vllm"]
         for k, v in profile.env_vars.items():
+            if k in reserved:
+                # Silently dropping would let an attacker (or just a confused
+                # caller) shadow GPU_ID/VLLM_PORT through env_vars after
+                # passing the conflict check on the StoredProfile fields.
+                # Raise so the bad write never lands in profiles.yaml.
+                raise ValueError(
+                    f"env_vars cannot override reserved profile key {k!r}; "
+                    f"set it on the profile itself (gpu_id/port/etc.) instead."
+                )
             lines.append(_env_line(k, v))
         if profile.image_tag:
             # Per-profile docker image override; compose consumes it as
@@ -323,9 +420,8 @@ def _render_env_lines(profile: StoredProfile) -> list[str]:
 
 def render_env(profile: StoredProfile) -> Path:
     out_path = runtime_env_path(profile.name, profile.backend)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     lines = _render_env_lines(profile)
-    out_path.write_text("\n".join(lines))
+    _atomic_write(out_path, "\n".join(lines))
     return out_path
 
 

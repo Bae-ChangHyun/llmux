@@ -29,9 +29,13 @@ DEFAULT_VLLM_REPO_URL = "https://github.com/vllm-project/vllm.git"
 
 
 def validate_name(name: str) -> bool:
-    """Check that name contains only alphanumeric, dash, and underscore.
-    Also prevents argument injection (names starting with -)."""
-    return bool(re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$", name))
+    """compose-safe lowercase name. Also prevents argv/path injection.
+
+    Mirrors tui.backends.llamacpp.backend.validate_name — docker compose project
+    names are lowercase-only, so a cross-backend profile created with uppercase
+    here would fail validation on the llama.cpp side.
+    """
+    return bool(re.match(r"^[a-z0-9][a-z0-9_-]*$", name))
 
 
 @dataclass
@@ -47,6 +51,7 @@ class Profile:
     max_loras: str = ""
     max_lora_rank: str = ""
     lora_modules: str = ""
+    extra_pip_packages: str = ""
     image_tag: str = ""
     env_vars: dict[str, str] = field(default_factory=dict)
 
@@ -82,7 +87,7 @@ class ContainerStatus:
     lora: bool = False
 
 
-from tui.common.docker import GpuInfo  # re-export from common
+from tui.common.docker import GpuInfo  # noqa: F401 — re-exported from common
 
 
 @dataclass

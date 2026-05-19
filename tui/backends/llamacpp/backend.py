@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 from tui.common import profile_store
+from tui.common.env import parse_env_file as _parse_env_file  # noqa: F401 — re-exported for callers
 
 def _resolve_project_root() -> Path:
     env_root = os.environ.get("LLMUX_ROOT", "").strip()
@@ -46,22 +47,6 @@ def validate_name(name: str) -> bool:
 # ---------------------------------------------------------------------------
 # .env / YAML helpers
 # ---------------------------------------------------------------------------
-
-
-def _parse_env_file(path: Path) -> dict[str, str]:
-    env: dict[str, str] = {}
-    if not path.exists():
-        return env
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        v = v.strip()
-        if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
-            v = v[1:-1]
-        env[k.strip()] = v
-    return env
 
 
 def _host_expand(path: str) -> str:
@@ -364,7 +349,7 @@ def strip_ansi(s: str) -> str:
     return _ANSI_RE.sub("", s)
 
 
-from tui.common.http import chat_completion_bench as chat_completion  # re-export
+from tui.common.http import chat_completion_bench as chat_completion  # noqa: F401 — re-exported
 
 
 # ---------------------------------------------------------------------------
@@ -372,9 +357,10 @@ from tui.common.http import chat_completion_bench as chat_completion  # re-expor
 # ---------------------------------------------------------------------------
 
 
-from tui.common.docker import (  # re-export — 공통 구현 사용
+from tui.common.docker import (  # noqa: F401 — re-exported for backward compat
     GpuInfo,
     format_gpu_bar,
+    get_disk_usage,
     get_gpu_info,
     run_command,
 )
@@ -402,21 +388,6 @@ async def get_docker_images(repo: str = "ghcr.io/ggml-org/llama.cpp") -> list[Do
         if len(parts) >= 4 and parts[1] != "<none>":
             images.append(DockerImage(*parts[:4]))
     return images
-
-
-async def get_disk_usage(path: str) -> tuple[str, str, str]:
-    """return (used, avail, percent) for the filesystem containing `path`."""
-    rc, out = await run_command("df", "-h", path, timeout=5)
-    if rc != 0:
-        return "", "", ""
-    lines = out.strip().splitlines()
-    if len(lines) < 2:
-        return "", "", ""
-    parts = lines[1].split()
-    # Filesystem  Size  Used Avail Use% Mounted
-    if len(parts) < 5:
-        return "", "", ""
-    return parts[2], parts[3], parts[4]
 
 
 # ---------------------------------------------------------------------------

@@ -141,7 +141,14 @@ class ValidateNameTests(unittest.TestCase):
     def test_accepts_plain_names(self) -> None:
         self.assertTrue(backend.validate_name("abc"))
         self.assertTrue(backend.validate_name("my-profile_01"))
-        self.assertTrue(backend.validate_name("Qwen3-0-8b"))
+        self.assertTrue(backend.validate_name("qwen3-0-8b"))
+
+    def test_rejects_uppercase(self) -> None:
+        # docker compose project names are lowercase-only — both backends
+        # now share that rule so a profile cannot validate on one backend
+        # and fail on the other.
+        self.assertFalse(backend.validate_name("Qwen3-0-8b"))
+        self.assertFalse(backend.validate_name("UPPER"))
 
     def test_rejects_leading_dash(self) -> None:
         self.assertFalse(backend.validate_name("-injection"))
@@ -210,7 +217,8 @@ class SaveLoadProfileRoundTripTests(unittest.TestCase):
             max_loras="4",
             max_lora_rank="32",
             lora_modules="alpha=/path/a,beta=/path/b",
-            env_vars={"EXTRA_PIP_PACKAGES": "pkg-a pkg-b", "CUSTOM": "x"},
+            extra_pip_packages="pkg-a pkg-b",
+            env_vars={"CUSTOM": "x"},
         )
         backend.save_profile(profile)
 
@@ -225,8 +233,22 @@ class SaveLoadProfileRoundTripTests(unittest.TestCase):
         self.assertEqual(loaded.max_loras, "4")
         self.assertEqual(loaded.max_lora_rank, "32")
         self.assertEqual(loaded.lora_modules, "alpha=/path/a,beta=/path/b")
-        self.assertEqual(loaded.env_vars["EXTRA_PIP_PACKAGES"], "pkg-a pkg-b")
+        # `extra_pip_packages` is now a first-class field on Profile (no
+        # longer stuffed through env_vars["EXTRA_PIP_PACKAGES"]).
+        self.assertEqual(loaded.extra_pip_packages, "pkg-a pkg-b")
         self.assertEqual(loaded.env_vars["CUSTOM"], "x")
+
+    def test_save_rejects_reserved_env_var(self) -> None:
+        # env_vars must not be able to shadow GPU_ID / VLLM_PORT / etc — that
+        # would let conflict checks see one value and the rendered .env emit
+        # another. Saving with such an override raises at render time and
+        # leaves profiles.yaml untouched (atomic save_profile).
+        profile = backend.Profile(
+            name=self._name,
+            env_vars={"GPU_ID": "9"},
+        )
+        with self.assertRaises(ValueError):
+            backend.save_profile(profile)
 
 
 class ProfileStoreYamlTests(unittest.TestCase):
@@ -935,7 +957,11 @@ class PostStartValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("exited during startup" in m for m in messages))
         self.assertTrue(any("line-b" in m for m in messages))
 
-    async def test_warns_when_models_endpoint_not_ready_before_timeout(self) -> None:
+    async def test_fails_when_models_endpoint_not_ready_before_timeout(self) -> None:
+        # Timeout no longer reports success: a container that started but has
+        # not finished loading the model is NOT ready, and chaining a
+        # benchmark on it used to mask real failures. Validation now returns
+        # (False, [...]) so callers stop the success cascade.
         profile = backend.Profile(name="p", container_name="p", port="8000")
 
         async def fake_run_command(*args, **kwargs):
@@ -952,8 +978,8 @@ class PostStartValidationTests(unittest.IsolatedAsyncioTestCase):
         ):
             ok, messages = await _post_start_validation(profile, timeout=0.1, poll_interval=0.05)
 
-        self.assertTrue(ok)
-        self.assertTrue(any("/v1/models is not ready yet" in m for m in messages))
+        self.assertFalse(ok)
+        self.assertTrue(any("/v1/models is not ready within timeout" in m for m in messages))
 
 
 class VllmRuntimeWarningTests(unittest.IsolatedAsyncioTestCase):
@@ -971,7 +997,17 @@ class VllmRuntimeWarningTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("could not verify vLLM version", events[0][1])
 
     async def test_gpu_conflicts_include_llamacpp_profiles(self) -> None:
-        profile = backend.Profile(name="v", container_name="v", gpu_id="0")
+        # vLLM and llama.cpp now both call the shared
+        # tui.common.conflicts.gpu_conflict_messages, so this scenario is
+        # patched at the common module instead of per-backend globals.
+        from tui.common import conflicts as _conflicts
+
+        vllm_profile = profile_store.StoredProfile(
+            name="v",
+            backend="vllm",
+            container_name="v",
+            gpu_id="0",
+        )
         other = profile_store.StoredProfile(
             name="l",
             backend="llamacpp",
@@ -980,21 +1016,21 @@ class VllmRuntimeWarningTests(unittest.IsolatedAsyncioTestCase):
         )
 
         async def fake_run_command(*args, **kwargs):
+            # The running container is "l" (the llama.cpp profile), and the
+            # caller is the vLLM profile "v" — exactly the cross-backend
+            # clash we care about reporting.
             return 0, "l\n"
 
+        def fake_list_profiles(backend_name):
+            return {"vllm": [vllm_profile], "llamacpp": [other]}[backend_name]
+
         with patch.dict(
-            _gpu_conflict_messages.__globals__,
-            {
-                "run_command": fake_run_command,
-                "list_profile_names": lambda: ["v"],
-                "profile_store": type(
-                    "ProfileStoreStub",
-                    (),
-                    {"list_profiles": staticmethod(lambda backend_name: [other])},
-                ),
-            },
-        ):
-            messages = await _gpu_conflict_messages(profile)
+            _conflicts.__dict__,
+            {"run_command": fake_run_command},
+        ), patch.object(profile_store, "list_profiles", side_effect=fake_list_profiles):
+            messages = await _gpu_conflict_messages(
+                backend.Profile(name="v", container_name="v", gpu_id="0")
+            )
 
         self.assertTrue(any("llama.cpp" in m and "GPU 0" in m for m in messages))
 

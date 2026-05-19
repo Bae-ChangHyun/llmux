@@ -124,6 +124,31 @@ def pull_image(
     raise typer.Exit(code=rc)
 
 
+@app.command("remove")
+def remove_image(
+    ref: str = typer.Argument(
+        ...,
+        help=(
+            "Image reference to remove (e.g. 'vllm/vllm-openai:v0.10.0', "
+            "'vllm-dev:main', 'llamacpp-dev:mtp-clean', or a 12-char id)."
+        ),
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f",
+        help="Pass --force to `docker rmi` (removes even if a stopped container references it).",
+    ),
+) -> None:
+    """`docker rmi <ref>` — drop a local image without leaving the CLI."""
+    import subprocess
+
+    cmd = ["docker", "rmi"]
+    if force:
+        cmd.append("--force")
+    cmd.append(ref)
+    rc = subprocess.run(cmd).returncode
+    raise typer.Exit(code=rc)
+
+
 @app.command("build-dev")
 def build_dev(
     backend: str = typer.Option(
