@@ -2,41 +2,14 @@
 
 from __future__ import annotations
 
-import shlex
-from pathlib import Path
 from typing import Any
 
 import yaml
 
 from tui.common import profile_store
+from tui.common.env import parse_env_file as _parse_env_file  # noqa: F401 — re-exported for callers
 
 from .backend_common import CONFIG_DIR, Config, Profile
-
-
-def _parse_env_file(path: Path | str) -> dict[str, str]:
-    """Parse a .env file into a dict (comments and blanks skipped). Missing file = {}."""
-    path = Path(path)
-    data: dict[str, str] = {}
-    if not path.exists():
-        return data
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        value = value.strip()
-        if " #" in value and not value.startswith(("'", '"')):
-            value = value[: value.index(" #")].rstrip()
-        try:
-            parsed = shlex.split(value, comments=False, posix=True)
-        except ValueError:
-            parsed = []
-        if len(parsed) == 1:
-            value = parsed[0]
-        elif len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
-            value = value[1:-1]
-        data[key.strip()] = value
-    return data
 
 
 def _to_profile(stored: profile_store.StoredProfile) -> Profile:
@@ -52,17 +25,17 @@ def _to_profile(stored: profile_store.StoredProfile) -> Profile:
         max_loras=str(stored.max_loras) if stored.max_loras is not None else "",
         max_lora_rank=str(stored.max_lora_rank) if stored.max_lora_rank is not None else "",
         lora_modules=stored.lora_modules,
+        extra_pip_packages=stored.extra_pip_packages,
         image_tag=stored.image_tag,
-        env_vars={
-            **({"EXTRA_PIP_PACKAGES": stored.extra_pip_packages} if stored.extra_pip_packages else {}),
-            **stored.env_vars,
-        },
+        env_vars=dict(stored.env_vars),
     )
 
 
 def _to_stored(profile: Profile) -> profile_store.StoredProfile:
-    env_vars = dict(profile.env_vars)
-    extra_pip = env_vars.pop("EXTRA_PIP_PACKAGES", "").strip()
+    # `extra_pip_packages` is now a first-class field on Profile (no longer
+    # stuffed through env_vars["EXTRA_PIP_PACKAGES"] and popped here). The
+    # reserved-key denylist in profile_store rejects any leftover env_vars
+    # entry under that name, so this conversion stays a straight 1:1 mapping.
     return profile_store.StoredProfile(
         name=profile.name,
         backend="vllm",
@@ -77,8 +50,8 @@ def _to_stored(profile: Profile) -> profile_store.StoredProfile:
         max_lora_rank=int(profile.max_lora_rank) if str(profile.max_lora_rank).strip() else None,
         lora_modules=profile.lora_modules,
         image_tag=profile.image_tag,
-        extra_pip_packages=extra_pip,
-        env_vars=env_vars,
+        extra_pip_packages=profile.extra_pip_packages or "",
+        env_vars=dict(profile.env_vars),
     )
 
 

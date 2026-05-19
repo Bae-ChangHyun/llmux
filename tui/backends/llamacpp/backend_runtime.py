@@ -19,17 +19,17 @@ import json
 import os
 import re
 import socket
+import sys
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
 from tui.common import dev_build, profile_store
+from tui.common.conflicts import gpu_conflict_messages as _shared_gpu_conflict_messages
 from tui.common.docker import (
-    GPU_WILDCARD,
-    gpu_sets_overlap,
-    parse_gpu_ids,
     run_command as _docker_run,
 )
+from tui.common.env import validate_common_env
 
 from .backend import (
     COMMON_ENV,
@@ -37,9 +37,9 @@ from .backend import (
     RUNTIME_DIR,
     SCRIPTS_DIR,
     Profile,
-    _get_model_dir,
     _parse_env_file,
     list_profile_names,
+    load_config,
     load_profile,
 )
 
@@ -173,30 +173,42 @@ async def _dev_image_matches(image_tag: str, repo_url: str, branch: str) -> bool
 
 
 async def _run(*args: str, env: dict[str, str] | None = None, timeout: float = 60) -> tuple[int, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        cwd=str(PROJECT_ROOT),
-        env=env,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+        )
+    except FileNotFoundError:
+        # `docker` (or whichever binary) is not on PATH. Surface a clear error
+        # rather than letting the missing-executable exception bubble up and
+        # crash container_down().
+        return -1, f"Executable not found: {args[0] if args else '<empty>'}"
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
         return -1, "Command timed out"
-    return proc.returncode or 0, (stdout or b"").decode(errors="replace")
+    rc = proc.returncode if proc.returncode is not None else -1
+    return rc, (stdout or b"").decode(errors="replace")
 
 
 async def _stream(args: list[str], *, env: dict[str, str] | None = None):
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        cwd=str(PROJECT_ROOT),
-        env=env,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+        )
+    except FileNotFoundError:
+        yield ("log", f"✗ Executable not found: {args[0] if args else '<empty>'}")
+        yield ("rc", -1)
+        return
     if proc.stdout is None:
         yield ("rc", 1)
         return
@@ -207,7 +219,8 @@ async def _stream(args: list[str], *, env: dict[str, str] | None = None):
                 break
             yield ("log", line.decode(errors="replace").rstrip("\n"))
         await proc.wait()
-        yield ("rc", proc.returncode or 0)
+        rc = proc.returncode if proc.returncode is not None else -1
+        yield ("rc", rc)
     except asyncio.CancelledError:
         try:
             proc.kill()
@@ -281,9 +294,15 @@ def _compose_base_args(profile: Profile) -> list[str]:
 
 
 async def _render_override(profile_name: str) -> tuple[int, str]:
-    """Re-render .runtime/llamacpp/override-<name>.yaml."""
+    """Re-render .runtime/llamacpp/override-<name>.yaml.
+
+    Uses `sys.executable` so that under `uv run llmux` the venv's Python (and
+    its installed PyYAML) is used — `"python3"` would resolve to the system
+    interpreter, which usually lacks the dev dependencies and would fail the
+    render step right before compose up.
+    """
     return await _run(
-        "python3",
+        sys.executable,
         str(SCRIPTS_DIR / "render-override.py"),
         profile_name,
     )
@@ -294,47 +313,14 @@ async def _render_override(profile_name: str) -> tuple[int, str]:
 # ---------------------------------------------------------------------------
 
 
-def _format_gpu_label(gpu_id: str) -> str:
-    return "all GPUs" if gpu_id == GPU_WILDCARD else f"GPU {gpu_id}"
-
-
 async def _gpu_conflict_messages(profile: Profile) -> list[str]:
-    """Non-fatal warnings when the profile's GPU ids overlap a running
-    container. Mirrors vllm._gpu_conflict_messages — scans BOTH llama.cpp and
-    vLLM profiles so a cross-backend GPU clash is surfaced too.
-    """
-    rc, out = await _docker_run("docker", "ps", "--format", "{{.Names}}", timeout=10)
-    if rc != 0:
-        return [
-            "Warning: could not inspect running containers for GPU overlap "
-            f"({out.strip() or 'docker ps failed'})."
-        ]
-    running_names = set(out.strip().splitlines())
-    profile_gpu_ids = parse_gpu_ids(profile.gpu_id)
-    messages: list[str] = []
-    for name in list_profile_names():
-        if name == profile.name:
-            continue
-        other = load_profile(name)
-        if other.container_name not in running_names:
-            continue
-        other_gpu_ids = parse_gpu_ids(other.gpu_id)
-        for gpu_id in sorted(gpu_sets_overlap(profile_gpu_ids, other_gpu_ids)):
-            messages.append(
-                f"Warning: {_format_gpu_label(gpu_id)} is also used by running "
-                f"llama.cpp container '{other.container_name}'"
-            )
-    for other in profile_store.list_profiles("vllm"):
-        container_name = other.container_name or other.name
-        if container_name not in running_names:
-            continue
-        other_gpu_ids = parse_gpu_ids(other.gpu_id)
-        for gpu_id in sorted(gpu_sets_overlap(profile_gpu_ids, other_gpu_ids)):
-            messages.append(
-                f"Warning: {_format_gpu_label(gpu_id)} is also used by running "
-                f"vLLM container '{container_name}'"
-            )
-    return messages
+    """Thin wrapper over the shared cross-backend helper (see vllm side)."""
+    return await _shared_gpu_conflict_messages(
+        profile_name=profile.name,
+        container_name=profile.container_name or profile.name,
+        profile_gpu_id=profile.gpu_id,
+        backend="llamacpp",
+    )
 
 
 async def check_port_conflict(profile: Profile) -> str | None:
@@ -430,6 +416,19 @@ async def get_container_statuses() -> list[ContainerStatus]:
                 status_text = "exited"
             else:
                 status_text = "created"
+        # Resolve a meaningful model label, matching vLLM's behavior of
+        # surfacing the served alias rather than just the on-disk filename.
+        # Priority: config.alias (what /v1/models actually returns) →
+        # hf_repo (HF model id) → model_file (GGUF filename).
+        model_label = ""
+        if profile.config_name:
+            cfg = load_config(profile.config_name)
+            alias = cfg.get("alias")
+            if isinstance(alias, str) and alias.strip():
+                model_label = alias.strip()
+        if not model_label:
+            model_label = profile.hf_repo or profile.model_file or ""
+
         statuses.append(
             ContainerStatus(
                 profile_name=name,
@@ -440,7 +439,7 @@ async def get_container_statuses() -> list[ContainerStatus]:
                 port=str(profile.port),
                 gpu_id=profile.gpu_id,
                 image=profile.image_tag,
-                model=profile.model_file or "",
+                model=model_label,
                 lora=False,
             )
         )
@@ -522,9 +521,13 @@ async def _post_start_validation(
             return True, []
 
         if loop.time() >= deadline:
-            return True, [
-                "Warning: container started but /v1/models is not ready yet.",
-                "Watch logs and retry once the model finishes loading.",
+            # Timeout: container is running but /v1/models has no served entry
+            # yet. Return False so a chained benchmark or success banner does
+            # not fire on a half-ready model. See vllm._post_start_validation
+            # for the mirror change and rationale.
+            return False, [
+                "Error: container started but /v1/models is not ready within timeout.",
+                "  Model is likely still loading — watch logs and retry once ready.",
             ]
 
         await asyncio.sleep(poll_interval)
@@ -564,8 +567,10 @@ async def stream_container_up(
 
     Yields ("log", str) lines and a final ("rc", int).
     """
-    if not COMMON_ENV.exists():
-        yield ("log", "✗ .env.common 없음. 'cp .env.common.example .env.common' 후 값 수정.")
+    ok, env_messages = validate_common_env(COMMON_ENV)
+    for message in env_messages:
+        yield ("log", message)
+    if not ok:
         yield ("rc", 1)
         return
 
@@ -740,6 +745,13 @@ async def container_down(profile_name: str) -> tuple[int, str]:
         rc_rm, out_rm = await _docker_run("docker", "rm", "-f", profile.container_name, timeout=30)
         if rc_rm != 0:
             return rc_rm, out_rm.strip() or "✗ docker rm -f 실패"
+        # Mirror the vLLM fallback: best-effort tear down the compose network so
+        # repeated stop fallbacks don't leave `<profile>_default` networks
+        # accumulating. Errors ignored — network may not exist or may still be
+        # in use by an external attachment.
+        await _docker_run(
+            "docker", "network", "rm", f"{profile.name}_default", timeout=10
+        )
         return 0, f"✓ '{profile_name}' 중지 완료 (rm -f)"
 
     return 0, f"({profile_name}) 컨테이너 없음 — 이미 중지됨"

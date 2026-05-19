@@ -13,10 +13,13 @@ import os
 import re
 import ssl
 import urllib.request
-from datetime import datetime
 
-from tui.common.docker import GpuInfo, format_gpu_bar, get_gpu_info  # re-export
-from tui.common.mem import estimate_model_memory  # re-export
+from tui.common.docker import (  # noqa: F401 — re-exported for backward compat
+    GpuInfo,
+    format_gpu_bar,
+    get_gpu_info,
+)
+from tui.common.mem import estimate_model_memory  # noqa: F401 — re-exported
 
 from .backend_common import CONFIG_DIR, DockerImage
 from .backend_process import run_command

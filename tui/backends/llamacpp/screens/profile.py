@@ -143,6 +143,30 @@ class ProfileFormScreen(ModalScreen[str | None]):
                     yield Select(config_options, **select_kwargs)
 
                 with Horizontal(classes="form-row"):
+                    yield Label("HF Repo")
+                    yield Input(
+                        value=p.hf_repo if p else "",
+                        placeholder="(선택) org/Model-GGUF — 컨테이너 내 -hf 다운로드 소스",
+                        id="hf-repo-input",
+                    )
+
+                with Horizontal(classes="form-row"):
+                    yield Label("HF File")
+                    yield Input(
+                        value=p.hf_file if p else "",
+                        placeholder="(선택) model-Q4_K_M.gguf",
+                        id="hf-file-input",
+                    )
+
+                with Horizontal(classes="form-row"):
+                    yield Label("Model File")
+                    yield Input(
+                        value=p.model_file if p else "",
+                        placeholder="(선택) GGUF 파일명 — HF File과 다를 때만",
+                        id="model-file-input",
+                    )
+
+                with Horizontal(classes="form-row"):
                     yield Label("Image Tag")
                     yield Input(
                         value=p.image_tag if p else "",
@@ -161,6 +185,9 @@ class ProfileFormScreen(ModalScreen[str | None]):
         port = self.query_one("#port-input", Input).value.strip()
         gpu_id = self.query_one("#gpu-input", Input).value.strip()
         image_tag = self.query_one("#image-tag-input", Input).value.strip()
+        hf_repo = self.query_one("#hf-repo-input", Input).value.strip()
+        hf_file = self.query_one("#hf-file-input", Input).value.strip()
+        model_file = self.query_one("#model-file-input", Input).value.strip()
 
         config_select = self.query_one("#config-select", Select)
         config_name = (
@@ -192,8 +219,16 @@ class ProfileFormScreen(ModalScreen[str | None]):
         if gpu_id and not re.match(r"^[0-9](,[0-9])*$", gpu_id):
             self.notify("GPU ID 는 숫자/콤마 (예: 0 또는 0,1)", severity="error")
             return
+        if hf_repo and not re.match(r"^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$", hf_repo):
+            self.notify("HF Repo 형식: org/name (예: unsloth/Qwen3-8B-GGUF)", severity="error")
+            return
 
-        # --- Build --- (HF 필드는 quick_setup 에서 설정, 편집 시 보존)
+        # --- Build ---
+        # model_file defaults to hf_file when only the HF coordinates were
+        # provided — mirrors what Quick Setup does so a hand-built profile
+        # doesn't have to repeat the filename.
+        effective_model_file = model_file or hf_file
+
         if self._edit_mode and self._profile is not None:
             p = self._profile
             p.container_name = container or name
@@ -201,6 +236,9 @@ class ProfileFormScreen(ModalScreen[str | None]):
             p.gpu_id = gpu_id or "0"
             p.config_name = config_name or name
             p.image_tag = image_tag
+            p.hf_repo = hf_repo
+            p.hf_file = hf_file
+            p.model_file = effective_model_file
         else:
             p = Profile(
                 name=name,
@@ -209,6 +247,9 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 gpu_id=gpu_id or "0",
                 config_name=config_name or name,
                 image_tag=image_tag,
+                hf_repo=hf_repo,
+                hf_file=hf_file,
+                model_file=effective_model_file,
             )
 
         save_profile(p)

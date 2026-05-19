@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import urllib.request
+
+log = logging.getLogger(__name__)
 
 
 async def chat_completion_bench(
@@ -45,7 +48,16 @@ async def chat_completion_bench(
 
 
 async def list_served_models(port: int | str, timeout: int = 5) -> list[str]:
-    """GET /v1/models → id 리스트. 실패 시 []."""
+    """GET /v1/models → id 리스트. 실패 시 []. 실패 원인은 debug 로그로.
+
+    Used by benchmark and readiness paths — callers treat `[]` as 'no model
+    served yet' regardless of cause. The previous bare `except: return []`
+    swallowed network errors, JSON parse failures, and server crashes
+    indistinguishably, so a hung benchmark gave the user no hint of *why*
+    discovery failed. Logging at DEBUG keeps the silent-success contract
+    intact for happy paths while letting `--log-level=DEBUG` (or similar)
+    surface the actual exception.
+    """
     loop = asyncio.get_running_loop()
 
     def _do() -> list[str]:
@@ -55,7 +67,9 @@ async def list_served_models(port: int | str, timeout: int = 5) -> list[str]:
             ) as r:
                 d = json.loads(r.read())
             return [m.get("id", "") for m in d.get("data", []) if m.get("id")]
-        except Exception:
+        except Exception as exc:
+            log.debug("list_served_models(%s) failed: %s: %s",
+                      port, type(exc).__name__, exc)
             return []
 
     return await loop.run_in_executor(None, _do)

@@ -142,3 +142,19 @@ def gpu_sets_overlap(a: set[str], b: set[str]) -> set[str]:
     if GPU_WILDCARD in b:
         return set(a) if a else {GPU_WILDCARD}
     return a & b
+
+
+async def get_disk_usage(path: str) -> tuple[str, str, str]:
+    """`df -h <path>` → (used, avail, percent). Shared by both backends'
+    System / Disk view so the same parsing rules apply."""
+    rc, out = await run_command("df", "-h", path, timeout=5)
+    if rc != 0:
+        return "", "", ""
+    lines = out.strip().splitlines()
+    if len(lines) < 2:
+        return "", "", ""
+    parts = lines[1].split()
+    # Filesystem  Size  Used Avail Use% Mounted
+    if len(parts) < 5:
+        return "", "", ""
+    return parts[2], parts[3], parts[4]
