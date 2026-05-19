@@ -83,17 +83,17 @@ llmux &lt;alias&gt;              # top-level shortcut (see below)</code></pre>
         </tr>
         <tr>
           <td><code>config</code></td>
-          <td><code>list</code> · <code>show</code> · <code>new</code> · <code>edit</code> · <code>delete</code></td>
+          <td><code>list</code> · <code>show</code> · <code>new</code> · <code>edit</code> · <code>clone</code> · <code>delete</code></td>
           <td><code>tui/cli/config.py</code></td>
         </tr>
         <tr>
           <td><code>image</code></td>
-          <td><code>list</code> · <code>pull</code> · <code>build-dev</code></td>
+          <td><code>list</code> · <code>pull</code> · <code>remove</code> · <code>build-dev</code></td>
           <td><code>tui/cli/image.py</code></td>
         </tr>
         <tr>
           <td><code>system</code></td>
-          <td><code>gpu</code> · <code>mem-estimate</code> · <code>env-check</code></td>
+          <td><code>gpu</code> · <code>mem-estimate</code> · <code>disk</code> · <code>env-check</code></td>
           <td><code>tui/cli/system.py</code></td>
         </tr>
         <tr>
@@ -159,11 +159,13 @@ llmux &lt;alias&gt;              # top-level shortcut (see below)</code></pre>
       </thead>
       <tbody>
         <tr><td><code>--backend</code>, <code>-b</code></td><td><em>auto-detect</em></td><td>both</td><td>Force backend (<code>vllm</code>, <code>llamacpp</code>); auto-detect if omitted.</td></tr>
-        <tr><td><code>--tag</code>, <code>-t</code></td><td><code>""</code></td><td>both</td><td>Image tag override. vLLM: <code>vllm/vllm-openai:&lt;tag&gt;</code> or <code>vllm-dev:&lt;tag&gt;</code> with <code>--dev</code>. Empty = use highest local versioned tag.</td></tr>
-        <tr><td><code>--dev</code></td><td><code>False</code></td><td>vLLM</td><td>Use the locally-built <code>vllm-dev:&lt;tag&gt;</code> image.</td></tr>
+        <tr><td><code>--tag</code>, <code>-t</code></td><td><code>""</code></td><td>both</td><td>Image tag override. vLLM: <code>vllm/vllm-openai:&lt;tag&gt;</code> or <code>vllm-dev:&lt;tag&gt;</code> with <code>--dev</code>. llama.cpp: full image ref (e.g. <code>ghcr.io/foo/bar:v1</code>) or <code>llamacpp-dev:&lt;tag&gt;</code> with <code>--dev</code>. Empty = profile's pinned <code>image_tag</code> or backend default.</td></tr>
+        <tr><td><code>--dev</code></td><td><code>False</code></td><td>both</td><td>Use the locally-built dev image (<code>vllm-dev:&lt;tag&gt;</code> for vLLM, <code>llamacpp-dev:&lt;tag&gt;</code> for llama.cpp). Triggers a one-off build if the tag is missing locally or was built from a different repo/branch.</td></tr>
+        <tr><td><code>--default-image</code></td><td><code>False</code></td><td>both</td><td>Mirrors the TUI's "Default Image" selection — explicitly drop the profile's pinned <code>image_tag</code> for this run only and fall back to the compose default. Useful when a profile has a stale dev tag pinned. Mutually exclusive with <code>--dev</code>.</td></tr>
         <tr><td><code>--pull</code></td><td><code>False</code></td><td>vLLM</td><td>Force <code>--pull always</code> when bringing the container up. (Ignored for llama.cpp with a warning.)</td></tr>
-        <tr><td><code>--repo-url</code></td><td><code>""</code></td><td>vLLM</td><td>vLLM dev image: override default vLLM source repo URL.</td></tr>
-        <tr><td><code>--branch</code></td><td><code>""</code></td><td>vLLM</td><td>vLLM dev image: override default vLLM source branch.</td></tr>
+        <tr><td><code>--repo-url</code></td><td><em>from <code>.env.common</code></em></td><td>both</td><td><code>--dev</code> only: override the source repo URL (default from <code>VLLM_REPO_URL</code> / <code>LLAMACPP_REPO_URL</code>).</td></tr>
+        <tr><td><code>--branch</code></td><td><em>from <code>.env.common</code></em></td><td>both</td><td><code>--dev</code> only: override the source branch (default from <code>VLLM_BRANCH</code> / <code>LLAMACPP_BRANCH</code>).</td></tr>
+        <tr><td><code>--force</code></td><td><code>False</code></td><td>both</td><td>Skip the cross-backend port/GPU conflict pre-flight. Required to start a container when llmux detects a conflict (matches the TUI dashboard's pre-start gate).</td></tr>
       </tbody>
     </table>
     <pre data-lang="bash"><code># Start a vLLM profile (official image, highest local versioned tag)
@@ -172,11 +174,18 @@ uv run llmux container up qwen3-0-6b
 # Start it from a locally-built dev image
 uv run llmux container up qwen3-0-6b --dev --tag main-20260515
 
+# One-off: ignore a stale pinned image_tag and use the compose default
+uv run llmux up qwen3-0-6b --default-image
+
 # Start a llama.cpp profile, disambiguating an ambiguous name
-uv run llmux up gemma-3-4b --backend llamacpp</code></pre>
+uv run llmux up gemma-3-4b --backend llamacpp
+
+# llama.cpp dev image from a personal fork
+uv run llmux up gemma-3-4b --dev \
+    --repo-url https://github.com/me/llama.cpp.git --branch master</code></pre>
     <div class="admonition note">
-      <p class="admonition-title">llama.cpp dev images</p>
-      <p>llama.cpp does not use <code>--dev</code>/<code>--tag</code> the same way vLLM does. Pin a llama.cpp profile to a dev image by setting <code>image_tag: llamacpp-dev:&lt;branch&gt;</code> in <code>profiles.yaml</code> (see <a href="#profile-edit"><code>profile edit --image-tag</code></a>); <code>container up</code> then layers <code>docker-compose.dev.yaml</code> automatically.</p>
+      <p class="admonition-title">Pinning a dev image to a profile</p>
+      <p>To persist a dev image choice, edit the profile with <code>llmux profile edit &lt;name&gt; --image-tag llamacpp-dev:&lt;tag&gt;</code> (or <code>vllm-dev:&lt;tag&gt;</code>). <code>container up</code> then layers the appropriate compose override automatically. Use <code>--default-image</code> to bypass the pin for a single run.</p>
     </div>
 
     <h3 id="container-down"><code>container down</code></h3>
@@ -285,11 +294,11 @@ uv run llmux profile list -b vllm --json</code></pre>
     <pre data-lang="bash"><code>uv run llmux profile show qwen3-0-6b --json</code></pre>
 
     <h3 id="profile-new"><code>profile new</code></h3>
-    <p>Create a new profile entry in <code>profiles.yaml</code>. The name must start with an alphanumeric and contain only <code>[A-Za-z0-9_-]</code>; creation fails if the name already exists in the chosen backend.</p>
+    <p>Create a new profile entry in <code>profiles.yaml</code>. The name must match <code>^[a-z0-9][a-z0-9_-]*$</code> — <strong>lowercase only</strong>, because docker compose project names are lowercase-only and a cross-backend profile must validate on both sides. Creation fails if the name already exists in the chosen backend.</p>
     <pre data-lang="text"><code>llmux profile new NAME [OPTIONS]</code></pre>
     <table>
       <thead><tr><th>Argument</th><th>Description</th></tr></thead>
-      <tbody><tr><td><code>NAME</code></td><td>Profile name (alphanumeric, dash, underscore). Required.</td></tr></tbody>
+      <tbody><tr><td><code>NAME</code></td><td>Profile name (lowercase: <code>[a-z0-9_-]</code>). Required.</td></tr></tbody>
     </table>
     <table>
       <thead>
@@ -303,8 +312,8 @@ uv run llmux profile list -b vllm --json</code></pre>
         <tr><td><code>--config</code>, <code>-c</code></td><td><em>profile name</em></td><td>both</td><td>Linked config name.</td></tr>
         <tr><td><code>--container</code></td><td><em>profile name</em></td><td>both</td><td>Container name.</td></tr>
         <tr><td><code>--lora / --no-lora</code></td><td><code>--no-lora</code></td><td>vLLM</td><td>Enable LoRA.</td></tr>
-        <tr><td><code>--extra-pip</code></td><td><code>""</code></td><td>vLLM</td><td>Extra pip packages installed before serve.</td></tr>
-        <tr><td><code>--set</code></td><td><em>(none)</em></td><td>vLLM</td><td>Repeatable: <code>KEY=VALUE</code> entries appended to <code>env_vars</code>. Key must be a valid env-var name.</td></tr>
+        <tr><td><code>--extra-pip</code></td><td><code>""</code></td><td>vLLM</td><td>Extra pip packages installed before serve. (First-class profile field — <strong>do not</strong> pass via <code>--set EXTRA_PIP_PACKAGES=…</code>.)</td></tr>
+        <tr><td><code>--set</code></td><td><em>(none)</em></td><td>both</td><td>Repeatable: <code>KEY=VALUE</code> entries appended to <code>env_vars</code>. Key must be a valid env-var name and <strong>cannot</strong> shadow a reserved profile field (<code>GPU_ID</code>, <code>VLLM_PORT</code>, <code>LLAMA_PORT</code>, <code>CONFIG_NAME</code>, <code>CONTAINER_NAME</code>, <code>EXTRA_PIP_PACKAGES</code>, …). Use the dedicated profile option instead.</td></tr>
         <tr><td><code>--model-file</code></td><td><code>""</code></td><td>llama.cpp</td><td>GGUF filename.</td></tr>
         <tr><td><code>--hf-repo</code></td><td><code>""</code></td><td>llama.cpp</td><td>Hugging Face repo for download.</td></tr>
         <tr><td><code>--hf-file</code></td><td><code>""</code></td><td>llama.cpp</td><td>HF file for download.</td></tr>
@@ -394,7 +403,7 @@ uv run llmux profile edit qwen3-8b --set VLLM_ATTENTION_BACKEND=FLASHINFER --uns
     <pre data-lang="bash"><code>uv run llmux profile quick-setup Qwen/Qwen3-8B --gpu-id 0,1 --gpu-mem 0.92</code></pre>
 
     <h2 id="config-config-yaml-crud"><code>config</code> — config (YAML) CRUD</h2>
-    <pre data-lang="text"><code>llmux config list|show|new|edit|delete …</code></pre>
+    <pre data-lang="text"><code>llmux config list|show|new|edit|clone|delete …</code></pre>
     <p>Per-model engine configs live in <code>config/&lt;backend&gt;/&lt;name&gt;.yaml</code>:</p>
     <ul>
       <li><strong>vLLM</strong> — <code>config/vllm/&lt;name&gt;.yaml</code>: <code>model:</code> + <code>gpu-memory-utilization:</code> plus arbitrary <code>vllm serve</code> flags.</li>
@@ -475,6 +484,25 @@ uv run llmux config new gemma-3-4b --backend llamacpp \
     </table>
     <pre data-lang="bash"><code>uv run llmux config edit qwen3-8b --set max-model-len=16384 --unset enable-prefix-caching</code></pre>
 
+    <h3 id="config-clone"><code>config clone</code></h3>
+    <p>Clone <code>SRC</code> config to <code>DST</code> within the same backend. Useful when <code>profile quick-setup --copy-from</code> isn't enough — for example, when you want to clone a tuned config to a new name without creating a profile in the same step. Routes through the backend's canonical serializer so the resulting YAML is byte-identical to a TUI-edited config.</p>
+    <pre data-lang="text"><code>llmux config clone SRC DST [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>SRC</code></td><td>Source config name to copy from. Required.</td></tr>
+        <tr><td><code>DST</code></td><td>New config name to create. Required.</td></tr>
+      </tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>auto-resolve</em></td><td>Backend of <code>SRC</code>; required only if <code>SRC</code> exists in both backends.</td></tr>
+        <tr><td><code>--overwrite</code></td><td><code>False</code></td><td>Overwrite <code>DST</code> if it already exists.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux config clone qwen3-0-6b qwen3-0-6b-experiment</code></pre>
+
     <h3 id="config-delete"><code>config delete</code></h3>
     <p>Delete a config YAML.</p>
     <pre data-lang="text"><code>llmux config delete NAME [OPTIONS]</code></pre>
@@ -491,7 +519,7 @@ uv run llmux config new gemma-3-4b --backend llamacpp \
     </table>
 
     <h2 id="image-docker-image-inventory-dev-build"><code>image</code> — Docker image inventory + dev build</h2>
-    <pre data-lang="text"><code>llmux image list|pull|build-dev …</code></pre>
+    <pre data-lang="text"><code>llmux image list|pull|remove|build-dev …</code></pre>
 
     <h3 id="image-list"><code>image list</code></h3>
     <p>List local (and optionally remote) Docker images.</p>
@@ -525,6 +553,22 @@ uv run llmux image list --remote --json</code></pre>
     <pre data-lang="bash"><code>uv run llmux image pull v0.20.1
 uv run llmux image pull nightly</code></pre>
 
+    <h3 id="image-remove"><code>image remove</code></h3>
+    <p>Wraps <code>docker rmi &lt;ref&gt;</code> so you can drop a local image without leaving the CLI. Use <code>--force</code> to drop images that are still referenced by a stopped container.</p>
+    <pre data-lang="text"><code>llmux image remove REF [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>REF</code></td><td>Image reference (e.g. <code>vllm/vllm-openai:v0.10.0</code>, <code>vllm-dev:main</code>, <code>llamacpp-dev:fork-master</code>, or a 12-char id). Required.</td></tr></tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--force</code>, <code>-f</code></td><td><code>False</code></td><td>Pass <code>--force</code> to <code>docker rmi</code>.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux image remove llamacpp-dev:fork-master
+uv run llmux image remove vllm/vllm-openai:v0.20.0 --force</code></pre>
+
     <h3 id="image-build-dev"><code>image build-dev</code></h3>
     <p>Build a <code>&lt;backend&gt;-dev:&lt;tag&gt;</code> image from source, streaming <code>docker build</code> output. The build pipeline (git clone/update → <code>docker build</code> → image labels) is shared; the tags applied are <code>&lt;prefix&gt;:&lt;custom_tag or branch-YYYYMMDD&gt;</code> and <code>&lt;prefix&gt;:&lt;branch&gt;</code> (a stable alias to the latest build).</p>
     <ul>
@@ -555,7 +599,7 @@ uv run llmux image build-dev --backend llamacpp --branch master --cuda-arch 89</
     <p>See <a href="../guide/dev-build.html">Dev Builds</a> for the full workflow, and <a href="architecture.html#dev-build-pipeline">Architecture</a> for how the pipeline works.</p>
 
     <h2 id="system-system-info-env-validation"><code>system</code> — system info &amp; env validation</h2>
-    <pre data-lang="text"><code>llmux system gpu|mem-estimate|env-check …</code></pre>
+    <pre data-lang="text"><code>llmux system gpu|mem-estimate|disk|env-check …</code></pre>
 
     <h3 id="system-gpu"><code>system gpu</code></h3>
     <p>Print an <code>nvidia-smi</code> summary, one row per GPU. Also available as the top-level alias <code>llmux gpu</code>.</p>
@@ -579,6 +623,14 @@ uv run llmux system gpu --json</code></pre>
     </table>
     <pre data-lang="bash"><code>uv run llmux system mem-estimate Qwen/Qwen3-8B
 # → ~17.2GB (model: 15.3GB + KV: 1.9GB)</code></pre>
+
+    <h3 id="system-disk"><code>system disk</code></h3>
+    <p>Show the llama.cpp model directory, its GGUF inventory + sizes, and <code>df -h</code> filesystem usage for the partition that hosts it. Mirrors the TUI's System → Disk / Model Dir tab. The vLLM equivalent (HF cache usage) lives in the TUI's System → Disk / HF Cache tab.</p>
+    <pre data-lang="text"><code>llmux system disk</code></pre>
+    <pre data-lang="bash"><code>uv run llmux system disk
+# Model dir : /home/me/Project/llmux/models
+# GGUF files: 2 (total 17.1 GB)
+# df ...: used 583G, avail 285G (68%)</code></pre>
 
     <h3 id="system-env-check"><code>system env-check</code></h3>
     <p>Validate <code>.env.common</code> and report key paths. Checks that the file exists, that <code>HF_TOKEN</code> / <code>HF_CACHE_PATH</code> / <code>VLLM_VERSION</code> are set, and that <code>HF_CACHE_PATH</code> is absolute. Also available as the top-level alias <code>llmux env-check</code>.</p>
