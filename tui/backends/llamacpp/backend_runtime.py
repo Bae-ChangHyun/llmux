@@ -680,7 +680,15 @@ async def stream_container_up(
 
     yield ("log", f"▸ '{profile_name}' 프로필로 기동")
     env = _compose_env(profile)
-    cmd = [*_compose_base_args(profile), "up", "-d"]
+    # `--pull never` because the image is either:
+    #   * a locally-built `llamacpp-dev:<tag>` (no remote to pull from), or
+    #   * an explicitly-versioned ghcr/registry image the user already pulled
+    #     via `llmux image pull` or a previous run.
+    # Letting docker compose's default `missing` policy fire would surface as
+    # a surprise "Pulling …" line that confuses users picking a known-local
+    # image; if the image really is gone, the clear "image not found" error
+    # is better than a silent re-download.
+    cmd = [*_compose_base_args(profile), "up", "-d", "--pull", "never"]
 
     async for event in _stream(cmd, env=env):
         if event[0] != "rc":

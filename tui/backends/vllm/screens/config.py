@@ -73,7 +73,17 @@ _PARAM_SUGGESTER = SuggestFromList(sorted(KNOWN_VLLM_PARAMS), case_sensitive=Fal
 class ConfigFormScreen(ModalScreen[str | None]):
     """Modal form for creating or editing a config."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+        # Scroll the modal's content from anywhere — Input widgets capture
+        # the arrow keys, so PgUp/PgDn (which they don't capture) are the
+        # only reliable way to reach a row that's hidden below the fold on
+        # a short terminal. Home/End jump to the form's top/bottom.
+        Binding("pageup", "scroll_form('up')", "Scroll up", show=False),
+        Binding("pagedown", "scroll_form('down')", "Scroll down", show=False),
+        Binding("home", "scroll_form('home')", "Scroll to top", show=False),
+        Binding("end", "scroll_form('end')", "Scroll to bottom", show=False),
+    ]
 
     DEFAULT_CSS = """
     ConfigFormScreen {
@@ -86,8 +96,11 @@ class ConfigFormScreen(ModalScreen[str | None]):
         width: 90%;
         max-width: 80;
         min-width: 50;
+        /* No `max-height` — modal fills the terminal up to 95% so the
+           inner VerticalScroll always has room to actually scroll on
+           short terminals. The previous cap left the outer modal smaller
+           than the content while the inner scroller had no slack. */
         height: 95%;
-        max-height: 40;
         min-height: 12;
     }
     ConfigFormScreen #form-title {
@@ -350,6 +363,23 @@ class ConfigFormScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(self._saved_name)
+
+    def action_scroll_form(self, direction: str) -> None:
+        """Scroll the inner VerticalScroll. PgUp/PgDn/Home/End route here
+        because the bindings on the screen don't reach the scroller when
+        an Input child has focus and swallows arrow keys."""
+        try:
+            scroll = self.query_one(VerticalScroll)
+        except Exception:
+            return
+        if direction == "up":
+            scroll.scroll_page_up()
+        elif direction == "down":
+            scroll.scroll_page_down()
+        elif direction == "home":
+            scroll.scroll_home()
+        elif direction == "end":
+            scroll.scroll_end()
 
 
 # ---------------------------------------------------------------------------
