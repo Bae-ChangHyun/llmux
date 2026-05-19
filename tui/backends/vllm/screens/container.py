@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import (
     Button,
@@ -90,6 +90,15 @@ class ContainerUpScreen(Screen):
         margin-bottom: 0;
     }
 
+    ContainerUpScreen #version-scroll {
+        /* Fill the available space and scroll when the version options +
+           dev-build inputs exceed the viewport. Without an explicit
+           `height: 1fr`, VerticalScroll defaults to auto and never
+           scrolls on short terminals. */
+        height: 1fr;
+        min-height: 8;
+    }
+
     ContainerUpScreen RadioSet {
         height: auto;
     }
@@ -166,7 +175,7 @@ class ContainerUpScreen(Screen):
                 yield Static(
                     "[yellow]No config linked. A default config will be generated on start.[/yellow]"
                 )
-            with Vertical(id="version-scroll"):
+            with VerticalScroll(id="version-scroll"):
                 yield Label("Version", id="version-label")
                 yield Static(
                     "[dim]Click or use ↑↓ + Enter/Space to select[/dim]",

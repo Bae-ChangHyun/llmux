@@ -5,6 +5,7 @@ from __future__ import annotations
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import (
     Button,
@@ -54,6 +55,12 @@ class SystemScreen(Screen):
         color: $primary;
         margin: 1 0 0 1;
     }
+    #images-scroll {
+        height: 1fr;
+    }
+    #images-scroll DataTable {
+        max-height: 12;
+    }
     """
 
     def __init__(self) -> None:
@@ -66,13 +73,14 @@ class SystemScreen(Screen):
             with TabPane("GPU", id="gpu-tab"):
                 yield DataTable(id="gpu-table")
             with TabPane("Docker Images", id="images-tab"):
-                yield Static(
-                    "Official Images (ghcr.io/ggml-org/llama.cpp)",
-                    classes="section-title",
-                )
-                yield DataTable(id="llama-images")
-                yield Static("Dev Images (llamacpp-dev)", classes="section-title")
-                yield DataTable(id="dev-images")
+                with VerticalScroll(id="images-scroll"):
+                    yield Static(
+                        "Official Images (ghcr.io/ggml-org/llama.cpp)",
+                        classes="section-title",
+                    )
+                    yield DataTable(id="llama-images")
+                    yield Static("Dev Images (llamacpp-dev)", classes="section-title")
+                    yield DataTable(id="dev-images")
                 yield Button("Refresh Images", id="btn-refresh-images", variant="primary")
             with TabPane("Containers", id="containers-tab"):
                 yield RichLog(id="container-info", highlight=True)

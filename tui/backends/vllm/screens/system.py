@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import (
     DataTable,
@@ -58,6 +58,14 @@ class SystemScreen(Screen):
         color: $primary;
         margin: 1 0 0 1;
     }
+    #images-scroll {
+        height: 1fr;
+    }
+    #images-scroll DataTable {
+        /* Cap each table at a sane row count so the bottom one is
+           visible by default; the outer VerticalScroll handles overflow. */
+        max-height: 12;
+    }
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -70,10 +78,15 @@ class SystemScreen(Screen):
             with TabPane("GPU Status", id="gpu-tab"):
                 yield DataTable(id="gpu-table")
             with TabPane("Docker Images", id="images-tab"):
-                yield Static("Official Images (vllm/vllm-openai)", classes="section-title")
-                yield DataTable(id="official-images")
-                yield Static("Dev Images (vllm-dev)", classes="section-title")
-                yield DataTable(id="dev-images")
+                # Wrap in VerticalScroll so the two stacked DataTables
+                # remain reachable on short terminals — without this,
+                # both tables shrink to ~1–2 rows each and the bottom
+                # one can disappear entirely.
+                with VerticalScroll(id="images-scroll"):
+                    yield Static("Official Images (vllm/vllm-openai)", classes="section-title")
+                    yield DataTable(id="official-images")
+                    yield Static("Dev Images (vllm-dev)", classes="section-title")
+                    yield DataTable(id="dev-images")
                 yield Horizontal(
                     Button("Refresh Images", id="btn-refresh-images", variant="primary"),
                     id="refresh-bar",
