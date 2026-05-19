@@ -18,7 +18,7 @@ from __future__ import annotations
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import (
     Button,
@@ -86,6 +86,14 @@ class ContainerUpScreen(Screen):
         color: $text-muted;
         margin-top: 0;
         margin-bottom: 0;
+    }
+
+    ContainerUpScreen #version-scroll {
+        /* See vLLM container.py — VerticalScroll needs an explicit
+           height so the version options + dev-build inputs become
+           scrollable on short terminals. */
+        height: 1fr;
+        min-height: 8;
     }
 
     ContainerUpScreen RadioSet {
@@ -171,7 +179,7 @@ class ContainerUpScreen(Screen):
                     "[dim](selecting Default Image or Custom Tag will override for this start only)[/dim]",
                 )
 
-            with Vertical(id="version-scroll"):
+            with VerticalScroll(id="version-scroll"):
                 yield Label("Version", id="version-label")
                 yield Static(
                     "[dim]Click or use ↑↓ + Enter/Space to select[/dim]",
