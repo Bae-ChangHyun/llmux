@@ -84,17 +84,30 @@ class DashboardScreen(Screen):
         table = self.query_one("#profile-table", DataTable)
         table.add_columns("Backend", "Profile", "Status", "Port", "Model", "Detail")
         self._reload()
-        self._refresh_timer = self.set_interval(5.0, lambda: self._reload())
         self._poll_gpu()
+        # Profile rows refresh every 5s — `docker ps` is cheap, and a stopped
+        # container should drop off the running list quickly.
+        self._refresh_timer = self.set_interval(5.0, lambda: self._reload())
+        # GPU bar refreshes on a tighter 2s cadence so the memory bar
+        # actually catches up after a container stops. The previous code
+        # called _poll_gpu() exactly once on mount and never again, so the
+        # bar stayed stuck at the pre-stop value until the user re-entered
+        # the dashboard.
+        self._gpu_timer = self.set_interval(2.0, lambda: self._poll_gpu())
 
     def on_screen_suspend(self) -> None:
         if self._refresh_timer is not None:
             self._refresh_timer.pause()
+        if getattr(self, "_gpu_timer", None) is not None:
+            self._gpu_timer.pause()
 
     def on_screen_resume(self) -> None:
         self._reload()
+        self._poll_gpu()
         if self._refresh_timer is not None:
             self._refresh_timer.resume()
+        if getattr(self, "_gpu_timer", None) is not None:
+            self._gpu_timer.resume()
 
     # ------------------------------------------------------------------
     # Data refresh
@@ -419,6 +432,10 @@ class DashboardScreen(Screen):
         else:
             self.notify(f"Error stopping {name}: {output}", severity="error")
         self._reload()
+        # Trigger an immediate GPU poll so the memory bar reflects the
+        # released VRAM right away — without this the bar waits for the
+        # next 2s tick, which feels stuck on a fast workflow.
+        self._poll_gpu()
 
     # ----- llama.cpp dispatch -----
 
@@ -481,6 +498,9 @@ class DashboardScreen(Screen):
             msg = " / ".join(tail) if tail else f"code={code}"
             self.notify(f"✗ stop 실패: {msg}", severity="error")
         self._reload()
+        # See _run_vllm_stop — refresh the GPU bar immediately so the
+        # VRAM bar mirrors the just-released allocation.
+        self._poll_gpu()
 
     @work(exclusive=True)
     async def _run_llamacpp_bench(self, profile) -> None:

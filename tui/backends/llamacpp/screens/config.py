@@ -108,7 +108,13 @@ _FLAG_SUGGESTER = SuggestFromList(sorted(_KNOWN_FLAGS), case_sensitive=False)
 class ConfigFormScreen(ModalScreen[str | None]):
     """config 생성/편집 modal."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("pageup", "scroll_form('up')", "Scroll up", show=False),
+        Binding("pagedown", "scroll_form('down')", "Scroll down", show=False),
+        Binding("home", "scroll_form('home')", "Scroll to top", show=False),
+        Binding("end", "scroll_form('end')", "Scroll to bottom", show=False),
+    ]
 
     DEFAULT_CSS = """
     ConfigFormScreen { align: center middle; }
@@ -119,9 +125,9 @@ class ConfigFormScreen(ModalScreen[str | None]):
         width: 90%;
         max-width: 90;
         min-width: 60;
+        /* No max-height — see vLLM ConfigFormScreen for rationale. */
         height: 95%;
-        max-height: 45;
-        min-height: 20;
+        min-height: 12;
     }
     ConfigFormScreen #form-title {
         text-style: bold;
@@ -385,6 +391,20 @@ class ConfigFormScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(self._saved_name)
+
+    def action_scroll_form(self, direction: str) -> None:
+        try:
+            scroll = self.query_one(VerticalScroll)
+        except Exception:
+            return
+        if direction == "up":
+            scroll.scroll_page_up()
+        elif direction == "down":
+            scroll.scroll_page_down()
+        elif direction == "home":
+            scroll.scroll_home()
+        elif direction == "end":
+            scroll.scroll_end()
 
 
 # ---------------------------------------------------------------------------
