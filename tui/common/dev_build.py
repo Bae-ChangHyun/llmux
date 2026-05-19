@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,6 +45,21 @@ class DevBuildSpec:
 
 def _label(spec: DevBuildSpec) -> str:
     return spec.label_prefix or spec.backend
+
+
+_TAG_INVALID_CHARS = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _sanitize_docker_tag(name: str) -> str:
+    """Replace docker-tag-invalid characters with `-`.
+
+    Docker image tags accept `[A-Za-z0-9_.-]` and must not start with `.` or `-`.
+    Branch names like `releases/v0.21.0` or `feat/foo` are common, so map every
+    invalid character to `-` and trim leading punctuation. The branch's original
+    spelling is still preserved in the `<prefix>.repo.branch` label.
+    """
+    sanitized = _TAG_INVALID_CHARS.sub("-", name).lstrip(".-")
+    return sanitized or "branch"
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +220,11 @@ async def stream_build(
     """
     resolved_repo = repo_url or spec.default_repo_url
     resolved_branch = branch or spec.default_branch
-    main_tag = custom_tag or f"{resolved_branch}-{datetime.now().strftime('%Y%m%d')}"
+    # docker tags reject `/` and a few other characters; branch names like
+    # `releases/v0.21.0` are common so sanitize for the tag while keeping
+    # the original string in the `.repo.branch` label.
+    safe_branch = _sanitize_docker_tag(resolved_branch)
+    main_tag = custom_tag or f"{safe_branch}-{datetime.now().strftime('%Y%m%d')}"
 
     yield ("log", f"Building {spec.backend} from source")
     yield ("log", f"Repository: {resolved_repo}")
@@ -257,7 +277,7 @@ async def stream_build(
         cmd.extend(["--label", f"{lk}={lv}"])
     cmd.extend([
         "-t", f"{spec.image_prefix}:{main_tag}",
-        "-t", f"{spec.image_prefix}:{resolved_branch}",
+        "-t", f"{spec.image_prefix}:{safe_branch}",
     ])
     cmd.append(str(spec.src_dir))
 

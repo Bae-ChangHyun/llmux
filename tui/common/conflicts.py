@@ -5,7 +5,66 @@ from __future__ import annotations
 import re
 
 from tui.common.adapter import DashboardRow
-from tui.common.docker import GPU_WILDCARD, gpu_sets_overlap, parse_gpu_ids
+from tui.common.docker import (
+    GPU_WILDCARD,
+    gpu_sets_overlap,
+    parse_gpu_ids,
+    run_command,
+)
+
+
+def _format_gpu_label(gpu_id: str) -> str:
+    return "all GPUs" if gpu_id == GPU_WILDCARD else f"GPU {gpu_id}"
+
+
+async def gpu_conflict_messages(
+    *,
+    profile_name: str,
+    container_name: str,
+    profile_gpu_id: str,
+    backend: str,
+) -> list[str]:
+    """Cross-backend warnings when the target profile's GPUs overlap any
+    currently-running container.
+
+    Single source of truth for what used to be two near-identical helpers in
+    `tui.backends.vllm.backend_runtime` and `tui.backends.llamacpp.backend_runtime`.
+    Both backends now call this with their own (name, container_name, gpu_id)
+    and read off the same list of warnings.
+
+    The function intentionally never raises — any `docker ps` failure becomes
+    a single inspection warning that the caller can log alongside the genuine
+    overlap warnings; it should not abort a startup.
+    """
+    # Lazy import — profile_store pulls in yaml at import time, which is
+    # heavier than the alternative of one extra import inside the rare
+    # conflict-check path.
+    from tui.common import profile_store
+
+    rc, out = await run_command("docker", "ps", "--format", "{{.Names}}", timeout=10)
+    if rc != 0:
+        return [
+            "Warning: could not inspect running containers for GPU overlap "
+            f"({out.strip() or 'docker ps failed'})."
+        ]
+    running_names = {line.strip() for line in out.splitlines() if line.strip()}
+    profile_gpu_ids = parse_gpu_ids(profile_gpu_id)
+    messages: list[str] = []
+    for backend_name in ("vllm", "llamacpp"):
+        for other in profile_store.list_profiles(backend_name):
+            if backend_name == backend and other.name == profile_name:
+                continue
+            other_container = other.container_name or other.name
+            if other_container not in running_names:
+                continue
+            other_gpu_ids = parse_gpu_ids(other.gpu_id)
+            for gpu_id in sorted(gpu_sets_overlap(profile_gpu_ids, other_gpu_ids)):
+                friendly = "vLLM" if backend_name == "vllm" else "llama.cpp"
+                messages.append(
+                    f"Warning: {_format_gpu_label(gpu_id)} is also used by running "
+                    f"{friendly} container '{other_container}'"
+                )
+    return messages
 
 
 def _row_gpu_ids(row: DashboardRow) -> set[str]:
