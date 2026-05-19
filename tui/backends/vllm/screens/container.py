@@ -365,9 +365,15 @@ class ContainerUpScreen(Screen):
                     return
                 self._release_version = refreshed
             tag = self._release_version
-            pull = True
+            # Do NOT force pull: "Official Release" means "use the DockerHub
+            # latest-stable tag". If that exact version is already local
+            # there is no reason to re-pull. backend_runtime's `--pull
+            # missing` policy reuses the local image and only fetches when
+            # it's genuinely absent.
+            pull = False
         elif selected_id == VER_NIGHTLY:
             tag = "nightly"
+            # Nightly is intentionally rolling — always re-check upstream.
             pull = True
         elif selected_id == VER_DEV:
             use_dev = True
