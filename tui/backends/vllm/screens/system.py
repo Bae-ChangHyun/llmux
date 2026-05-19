@@ -19,6 +19,7 @@ from textual.widgets import (
 from textual import work
 
 from tui.backends.vllm.backend import (
+    COMMON_ENV,
     get_gpu_info,
     GpuInfo,
     get_docker_images,
@@ -28,13 +29,16 @@ from tui.backends.vllm.backend import (
     list_profile_names,
     load_profile,
 )
+from tui.common import profile_store
+from tui.common.docker import get_disk_usage
+from tui.common.env import parse_env_file
 
 
 class SystemScreen(Screen):
     """Full screen with tabbed content showing GPU, Docker images, and containers."""
 
     BINDINGS = [
-        Binding("escape", "go_back", "Back", show=True),
+        Binding("escape,backspace,s", "go_back", "Back", show=True),
         Binding("q", "go_back", "Back", show=False),
         Binding("r", "refresh_all", "Refresh All", show=True),
     ]
@@ -48,6 +52,11 @@ class SystemScreen(Screen):
         dock: bottom;
         padding: 0 2;
         align: right middle;
+    }
+    .section-title {
+        text-style: bold;
+        color: $primary;
+        margin: 1 0 0 1;
     }
     """
 
@@ -71,6 +80,8 @@ class SystemScreen(Screen):
                 )
             with TabPane("Containers", id="containers-tab"):
                 yield RichLog(id="container-info", highlight=True)
+            with TabPane("Disk / HF Cache", id="disk-tab"):
+                yield RichLog(id="disk-info", highlight=True)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -90,6 +101,7 @@ class SystemScreen(Screen):
         self._refresh_gpu()
         self._refresh_images()
         self._refresh_containers()
+        self._refresh_disk()
 
         # Auto-refresh GPU every 3 seconds
         self._gpu_timer = self.set_interval(3, self._refresh_gpu)
@@ -174,11 +186,20 @@ class SystemScreen(Screen):
 
     @work(exclusive=True, group="containers")
     async def _refresh_containers(self) -> None:
-        """Fetch known profile containers and display them."""
+        """Show every llmux-managed container, across BOTH backends.
+
+        The unified Dashboard already lists profiles from both backends; this
+        view used to filter to just the vLLM side, which made the System
+        screen claim 'no profile containers found' when only llama.cpp
+        containers were running. The CLI `container ps` returns both — this
+        now matches.
+        """
         known_names = {
             load_profile(name).container_name
             for name in list_profile_names()
         }
+        for stored in profile_store.list_profiles("llamacpp"):
+            known_names.add(stored.container_name or stored.name)
         rc, output = await run_command(
             "docker", "ps", "-a",
             "--format", "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}",
@@ -190,7 +211,7 @@ class SystemScreen(Screen):
             log.write("[red]Failed to get container info[/]")
             log.write(output)
         elif not output.strip():
-            log.write("[dim]No vLLM containers running.[/]")
+            log.write("[dim]No containers running.[/]")
         else:
             lines = output.strip().splitlines()
             filtered = [lines[0]]
@@ -204,15 +225,45 @@ class SystemScreen(Screen):
             for line in filtered:
                 log.write(line)
 
+    # ----- Disk Tab -----
+
+    @work(exclusive=True, group="disk")
+    async def _refresh_disk(self) -> None:
+        """Show the host HF cache directory + its filesystem usage.
+
+        vLLM streams every model through the host HF cache (mounted via
+        compose as `${HF_CACHE_PATH}:/root/.cache/huggingface`), so the
+        equivalent of llama.cpp's GGUF model directory is that path.
+        """
+        log = self.query_one("#disk-info", RichLog)
+        log.clear()
+        env = parse_env_file(COMMON_ENV)
+        hf_cache = env.get("HF_CACHE_PATH", "")
+        if not hf_cache:
+            log.write("[yellow]HF_CACHE_PATH is not set in .env.common[/]")
+            return
+        log.write(f"[b]HF cache path:[/b] {hf_cache}")
+        log.write("")
+        used, avail, pct = await get_disk_usage(hf_cache)
+        if used:
+            log.write("[b]Filesystem usage[/b]")
+            log.write(f"  Used: {used}  Available: {avail}  ({pct})")
+        else:
+            log.write(f"[yellow]Could not stat {hf_cache} (does it exist?)[/]")
+
     # ----- Actions -----
 
     def action_go_back(self) -> None:
-        self.app.switch_screen("dashboard")
+        # pop_screen matches the llama.cpp side and the rest of the modal
+        # navigation in this app; switch_screen would reset the screen stack
+        # and lose any in-flight context the caller had pushed.
+        self.app.pop_screen()
 
     def action_refresh_all(self) -> None:
         self._refresh_gpu()
         self._refresh_images()
         self._refresh_containers()
+        self._refresh_disk()
         self.notify("Refreshing all system info...")
 
     # ----- Button handlers -----

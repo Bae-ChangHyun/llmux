@@ -30,8 +30,9 @@ from .backend_storage import (
     save_config,
     save_profile,
 )
-from tui.common import dev_build, profile_store
-from tui.common.docker import GPU_WILDCARD, gpu_sets_overlap, parse_gpu_ids
+from tui.common import dev_build
+from tui.common.conflicts import gpu_conflict_messages as _shared_gpu_conflict_messages
+from tui.common.env import validate_common_env
 
 
 _BUILD_LOCK = asyncio.Lock()
@@ -62,31 +63,10 @@ def _build_lora_options(profile: Profile) -> str:
 
 
 def _ensure_common_env(profile: Profile) -> tuple[bool, list[str]]:
-    if not COMMON_ENV.exists():
-        return False, [
-            "Error: .env.common not found.",
-            "Create it from .env.common.example before starting containers.",
-        ]
-
-    common = _common_env()
-    hf_cache_path = common.get("HF_CACHE_PATH", "")
-    if not hf_cache_path:
-        return False, ["Error: HF_CACHE_PATH is not set in .env.common"]
-    if not os.path.isabs(hf_cache_path):
-        return False, [
-            f"Error: HF_CACHE_PATH must be an absolute path. Current value: {hf_cache_path}"
-        ]
-
-    if profile.enable_lora == "true":
-        lora_base_path = common.get("LORA_BASE_PATH", "")
-        if not lora_base_path:
-            return False, ["Error: ENABLE_LORA=true but LORA_BASE_PATH is not set in .env.common"]
-        if not os.path.isabs(lora_base_path):
-            return False, [
-                f"Error: LORA_BASE_PATH must be an absolute path. Current value: {lora_base_path}"
-            ]
-
-    return True, []
+    return validate_common_env(
+        COMMON_ENV,
+        require_lora_base_path=(profile.enable_lora == "true"),
+    )
 
 
 def _ensure_profile_config(profile: Profile) -> tuple[bool, list[str]]:
@@ -102,6 +82,20 @@ def _ensure_profile_config(profile: Profile) -> tuple[bool, list[str]]:
     if config.path.exists():
         model = config.model.strip()
         if model and model != "your-org/your-model":
+            return True, messages
+        # Existing config still carries the placeholder. If the profile has a
+        # concrete model_id, auto-promote it into the config (preserving any
+        # other tuning the user set on the same file). Without this rewrite,
+        # the placeholder kept winning despite the per-profile MODEL_ID being
+        # set — and the error told the user to "set MODEL_ID" they had
+        # already set.
+        if profile.model_id:
+            config.model = profile.model_id
+            save_config(config)
+            messages.append(
+                f"Updated config/{profile.config_name}.yaml: model placeholder replaced "
+                f"with profile MODEL_ID '{profile.model_id}'."
+            )
             return True, messages
         messages.extend(
             [
@@ -204,39 +198,15 @@ async def _container_exists(container_name: str) -> bool:
 
 
 async def _gpu_conflict_messages(profile: Profile) -> list[str]:
-    rc, out = await run_command("docker", "ps", "--format", "{{.Names}}", timeout=10)
-    messages: list[str] = []
-    if rc != 0:
-        return [
-            "Warning: could not inspect running containers for GPU overlap "
-            f"({out.strip() or 'docker ps failed'})."
-        ]
-    running_names = set(out.strip().splitlines())
-    profile_gpu_ids = parse_gpu_ids(profile.gpu_id)
-    for name in list_profile_names():
-        if name == profile.name:
-            continue
-        other = load_profile(name)
-        if other.container_name not in running_names:
-            continue
-        other_gpu_ids = parse_gpu_ids(other.gpu_id)
-        for gpu_id in sorted(gpu_sets_overlap(profile_gpu_ids, other_gpu_ids)):
-            messages.append(
-                f"Warning: {_format_gpu_label(gpu_id)} is also used by running vLLM container '{other.container_name}'"
-            )
-    for other in profile_store.list_profiles("llamacpp"):
-        if other.container_name not in running_names:
-            continue
-        other_gpu_ids = parse_gpu_ids(other.gpu_id)
-        for gpu_id in sorted(gpu_sets_overlap(profile_gpu_ids, other_gpu_ids)):
-            messages.append(
-                f"Warning: {_format_gpu_label(gpu_id)} is also used by running llama.cpp container '{other.container_name}'"
-            )
-    return messages
-
-
-def _format_gpu_label(gpu_id: str) -> str:
-    return "all GPUs" if gpu_id == GPU_WILDCARD else f"GPU {gpu_id}"
+    """Backend-local thin wrapper over the shared cross-backend helper. Both
+    backends call the same `tui.common.conflicts.gpu_conflict_messages` so
+    new GPU overlap rules propagate without per-backend drift."""
+    return await _shared_gpu_conflict_messages(
+        profile_name=profile.name,
+        container_name=profile.container_name or profile.name,
+        profile_gpu_id=profile.gpu_id,
+        backend="vllm",
+    )
 
 
 async def _detect_gpu_arch() -> str:
@@ -571,9 +541,15 @@ async def _post_start_validation(
             return True, []
 
         if loop.time() >= deadline:
-            return True, [
-                "Warning: container started but /v1/models is not ready yet.",
-                "Watch logs and retry benchmark once the model finishes loading.",
+            # Timeout: the container is running but /v1/models still has no
+            # served entry, so we cannot truthfully claim readiness. Returning
+            # False prevents the caller (CLI/TUI) from chaining a benchmark or
+            # marking the start as a green success when the model is in fact
+            # still loading; users can re-run `up` (a no-op for a running
+            # container) once the model finishes initializing.
+            return False, [
+                "Error: container started but /v1/models is not ready within timeout.",
+                "  Model is likely still loading — watch logs and retry once ready.",
             ]
 
         await asyncio.sleep(poll_interval)
@@ -613,7 +589,7 @@ async def stream_container_up(
     for message in await _gpu_conflict_messages(profile):
         yield ("log", message)
 
-    extra_packages = profile.env_vars.get("EXTRA_PIP_PACKAGES", "").strip()
+    extra_packages = (profile.extra_pip_packages or "").strip()
     if extra_packages:
         yield ("log", f"Extra pip packages: {extra_packages}")
 
@@ -857,6 +833,12 @@ async def container_down(profile_name: str) -> tuple[int, str]:
     rm_rc, rm_out = await run_command("docker", "rm", profile.container_name, timeout=30)
     if rm_rc != 0:
         return rm_rc, rm_out
+    # Best-effort: tear down the compose network too. Without this, repeated
+    # `compose down` failures leave `<profile>_default` networks accumulating
+    # under `docker network ls`. Errors are ignored — the network may not
+    # exist (compose never created it) or may still be in use by an external
+    # container, and neither case is fatal for the stop operation.
+    await run_command("docker", "network", "rm", f"{profile.name}_default", timeout=10)
     return 0, f"{profile_name} stopped successfully!"
 
 

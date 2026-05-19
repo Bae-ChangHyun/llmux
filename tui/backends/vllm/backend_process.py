@@ -11,19 +11,23 @@ from .backend_common import SCRIPT_DIR
 
 async def run_command(*args: str, timeout: float = 30) -> tuple[int, str]:
     """Run a command and return (returncode, combined stdout+stderr)."""
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        cwd=str(SCRIPT_DIR),
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(SCRIPT_DIR),
+        )
+    except FileNotFoundError:
+        return -1, f"Executable not found: {args[0] if args else '<empty>'}"
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
         return -1, "Command timed out"
-    return proc.returncode or 0, (stdout or b"").decode(errors="replace")
+    rc = proc.returncode if proc.returncode is not None else -1
+    return rc, (stdout or b"").decode(errors="replace")
 
 
 async def run_command_with_options(
@@ -33,20 +37,24 @@ async def run_command_with_options(
     env: dict[str, str] | None = None,
 ) -> tuple[int, str]:
     """Run a command with explicit cwd/env and return combined output."""
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        cwd=str(cwd or SCRIPT_DIR),
-        env=env,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(cwd or SCRIPT_DIR),
+            env=env,
+        )
+    except FileNotFoundError:
+        return -1, f"Executable not found: {args[0] if args else '<empty>'}"
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
         return -1, "Command timed out"
-    return proc.returncode or 0, (stdout or b"").decode(errors="replace")
+    rc = proc.returncode if proc.returncode is not None else -1
+    return rc, (stdout or b"").decode(errors="replace")
 
 
 async def stream_command(
@@ -56,13 +64,18 @@ async def stream_command(
     env: dict[str, str] | None = None,
 ):
     """Yield stdout/stderr lines followed by the final return code."""
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        cwd=str(cwd or SCRIPT_DIR),
-        env=env,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(cwd or SCRIPT_DIR),
+            env=env,
+        )
+    except FileNotFoundError:
+        yield ("log", f"✗ Executable not found: {args[0] if args else '<empty>'}")
+        yield ("rc", -1)
+        return
     try:
         while True:
             line = await proc.stdout.readline()
@@ -70,7 +83,8 @@ async def stream_command(
                 break
             yield ("log", line.decode(errors="replace").rstrip("\n"))
         await proc.wait()
-        yield ("rc", proc.returncode or 0)
+        rc = proc.returncode if proc.returncode is not None else -1
+        yield ("rc", rc)
     except asyncio.CancelledError:
         # Async generator cleanup (interpreter shutdown, athrow during
         # asyncio.run finalization, or explicit caller cancel) lands here.

@@ -80,12 +80,11 @@ def show_profile(
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# Profile name rules per backend. llama.cpp is stricter (lowercase only) because
-# both the live name check (tui/backends/llamacpp/backend.py validate_name) and
-# the render-override.py _SAFE_NAME regex reject uppercase — a profile created
-# via CLI with an uppercase name simply can't start.
-_PROFILE_NAME_RE_VLLM = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
-_PROFILE_NAME_RE_LLAMACPP = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+# Profile name rule (unified across backends). docker compose project names are
+# lowercase-only, and a cross-backend profile created with mixed-case here used
+# to round-trip cleanly via vLLM but fail validation on the llama.cpp side, so
+# both backends now share the lowercase rule.
+_PROFILE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 def _validate_profile_name(name: str, backend: str, *, param_hint: str = "NAME") -> None:
@@ -95,30 +94,27 @@ def _validate_profile_name(name: str, backend: str, *, param_hint: str = "NAME")
     a direct profiles.yaml edit and then get round-tripped through `edit`
     unchecked.
     """
-    if backend == "llamacpp":
-        if not _PROFILE_NAME_RE_LLAMACPP.match(name):
-            raise typer.BadParameter(
-                f"llama.cpp profile names must be lowercase: must match "
-                f"{_PROFILE_NAME_RE_LLAMACPP.pattern} "
-                "(same rule as the live backend / render-override.py).",
-                param_hint=param_hint,
-            )
-        return
-    if not _PROFILE_NAME_RE_VLLM.match(name):
+    if not _PROFILE_NAME_RE.match(name):
         raise typer.BadParameter(
-            f"vLLM profile names must match {_PROFILE_NAME_RE_VLLM.pattern} "
-            "(start with alphanumeric, then [A-Za-z0-9_-] only).",
+            f"Profile names must match {_PROFILE_NAME_RE.pattern} "
+            "(lowercase: start with [a-z0-9], then [a-z0-9_-] only). "
+            "docker compose project names are lowercase-only, so this rule "
+            "is shared by both backends.",
             param_hint=param_hint,
         )
 
 
-def _parse_set_kv(items: list[str]) -> dict[str, str]:
+def _parse_set_kv(items: list[str], *, backend: str = "") -> dict[str, str]:
     """Parse repeated --set KEY=VALUE pairs into a dict.
 
     Validates KEY against the same regex profile_store uses for env-line
     rendering, so a bad name fails up-front with a clean usage error instead
-    of a deep traceback at save_profile time.
+    of a deep traceback at save_profile time. When `backend` is supplied, also
+    rejects keys that profile_store treats as reserved (GPU_ID, VLLM_PORT,
+    CONTAINER_NAME, …) — otherwise the conflict checker and the rendered .env
+    would silently disagree about which value is in effect.
     """
+    reserved = profile_store.reserved_env_keys(backend) if backend else frozenset()
     out: dict[str, str] = {}
     for raw in items:
         if "=" not in raw:
@@ -133,6 +129,12 @@ def _parse_set_kv(items: list[str]) -> dict[str, str]:
             raise typer.BadParameter(
                 f"--set KEY {key!r} must match {_ENV_KEY_RE.pattern} "
                 "(env-var rules: leading letter or underscore, then alphanumerics/underscores)",
+                param_hint="--set",
+            )
+        if key in reserved:
+            raise typer.BadParameter(
+                f"--set KEY {key!r} is reserved by the {backend} backend; "
+                f"use the dedicated profile field (e.g. --port, --gpu-id) instead.",
                 param_hint="--set",
             )
         out[key] = value
@@ -187,7 +189,7 @@ def new_profile(
         model_id=model,
         enable_lora=enable_lora,
         extra_pip_packages=extra_pip,
-        env_vars=_parse_set_kv(set_env),
+        env_vars=_parse_set_kv(set_env, backend=backend),
         model_file=model_file,
         hf_repo=hf_repo,
         hf_file=hf_file,
@@ -249,7 +251,7 @@ def edit_profile(
         sp.hf_file = hf_file
     if image_tag is not None:
         sp.image_tag = image_tag
-    for k, v in _parse_set_kv(set_env).items():
+    for k, v in _parse_set_kv(set_env, backend=bk).items():
         sp.env_vars[k] = v
     for k in unset_env:
         sp.env_vars.pop(k, None)
@@ -444,14 +446,14 @@ def _quick_setup_vllm(
 
     if not name:
         tail = model.rsplit("/", 1)[-1]
-        derived = re.sub(r"[^a-zA-Z0-9-]", "-", tail).lower().strip("-")
+        derived = re.sub(r"[^a-z0-9-]", "-", tail.lower()).strip("-")
         if not derived:
             raise typer.BadParameter(
                 "could not derive name from model; pass --name explicitly", param_hint="--name"
             )
         name = derived
 
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$", name):
+    if not _PROFILE_NAME_RE.match(name):
         raise typer.BadParameter("derived name has invalid characters; pass --name explicitly")
 
     from tui.backends.vllm.backend_storage import (

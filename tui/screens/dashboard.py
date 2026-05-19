@@ -537,9 +537,11 @@ class DashboardScreen(Screen):
         row = self._selected_row()
         if row is None:
             return
-        if not row.running:
-            self.notify("Logs are available only for running containers.", severity="warning")
-            return
+        # `docker logs` works for stopped/exited containers too — the previous
+        # gate matched neither the CLI (`llmux logs <profile>` already shows
+        # last-run logs) nor users' mental model. Allow the modal to open and
+        # let it surface a friendly message if there is genuinely no
+        # container record yet.
         if row.backend == "vllm":
             self._dispatch_vllm("logs", row)
         else:

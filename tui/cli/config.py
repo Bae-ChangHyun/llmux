@@ -261,6 +261,35 @@ def edit_config(
     print(saved)
 
 
+@app.command("clone")
+def clone_config(
+    src: str = typer.Argument(..., help="Source config name to copy from."),
+    dst: str = typer.Argument(..., help="New config name to create."),
+    backend: Optional[str] = typer.Option(
+        None, "--backend", "-b",
+        help="Backend of the source config; required if SRC exists in both backends.",
+    ),
+    overwrite: bool = typer.Option(
+        False, "--overwrite", help="Overwrite DST if it already exists."
+    ),
+) -> None:
+    """Clone SRC config to DST (same backend). Useful when quick-setup
+    `--copy-from` isn't enough — e.g. cloning a tuned config to a new name
+    without creating a profile in the same step.
+    """
+    bk = _resolve_backend_for_existing(backend, src)
+    _validate_name(dst)
+    dst_path = _config_dir(bk) / f"{dst}.yaml"
+    if dst_path.exists() and not overwrite:
+        raise typer.BadParameter(
+            f"destination config already exists: {dst_path} (use --overwrite)",
+            param_hint="DST",
+        )
+    data = _backend_load_config(bk, src)
+    saved = _backend_save_config(bk, dst, data)
+    print(saved)
+
+
 @app.command("delete")
 def delete_config(
     name: str = typer.Argument(...),

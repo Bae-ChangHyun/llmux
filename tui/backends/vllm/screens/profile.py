@@ -183,9 +183,8 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
                 with Horizontal(classes="form-row"):
                     yield Label("Extra Pip Packages")
-                    extra_pkgs = (p.env_vars.get("EXTRA_PIP_PACKAGES", "") if p else "")
                     yield Input(
-                        value=extra_pkgs,
+                        value=(p.extra_pip_packages if p else ""),
                         placeholder="e.g. flash-attn bitsandbytes",
                         id="extra-pip-input",
                     )
@@ -272,6 +271,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             profile.config_name = config_name
             profile.model_id = model_id
             profile.enable_lora = "true" if lora else "false"
+            profile.extra_pip_packages = extra_pip
             profile.image_tag = image_tag
         else:
             profile = Profile(
@@ -283,14 +283,9 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 config_name=config_name,
                 model_id=model_id,
                 enable_lora="true" if lora else "false",
+                extra_pip_packages=extra_pip,
                 image_tag=image_tag,
             )
-
-        # Handle EXTRA_PIP_PACKAGES
-        if extra_pip:
-            profile.env_vars["EXTRA_PIP_PACKAGES"] = extra_pip
-        else:
-            profile.env_vars.pop("EXTRA_PIP_PACKAGES", None)
 
         save_profile(profile)
         self.notify(f"Saved: {name}", severity="information")

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from typing import Optional
 
 import typer
@@ -34,19 +33,37 @@ def up(
     tag: str = typer.Option(
         "", "--tag", "-t",
         help="Image tag override. vLLM: vllm/vllm-openai:<tag> or vllm-dev:<tag> with --dev. "
-        "Empty = use highest local versioned tag.",
+        "llama.cpp: full image ref (e.g. ghcr.io/foo/bar:v1) or llamacpp-dev:<tag> with --dev. "
+        "Empty = profile's pinned image_tag or backend default.",
     ),
     dev: bool = typer.Option(
-        False, "--dev", help="vLLM only: use the locally-built vllm-dev:<tag> image."
+        False, "--dev",
+        help=(
+            "Use the locally-built dev image (vllm-dev:<tag> for vLLM, "
+            "llamacpp-dev:<tag> for llama.cpp). Triggers a one-off build if the "
+            "tag is missing locally or was built from a different repo/branch."
+        ),
+    ),
+    default_image: bool = typer.Option(
+        False, "--default-image",
+        help=(
+            "Mirror the TUI's 'Default Image' selection — explicitly drop the "
+            "profile's pinned image_tag for this run only and fall back to the "
+            "compose default image. Useful when a profile has a stale dev tag "
+            "pinned and you want to sanity-check against the upstream image "
+            "without editing profiles.yaml."
+        ),
     ),
     pull: bool = typer.Option(
         False, "--pull", help="vLLM only: force --pull always when bringing the container up."
     ),
     repo_url: str = typer.Option(
-        "", "--repo-url", help="vLLM dev image: override default vLLM source repo URL."
+        "", "--repo-url",
+        help="--dev only: override the source repo URL (default from .env.common per backend).",
     ),
     branch: str = typer.Option(
-        "", "--branch", help="vLLM dev image: override default vLLM source branch."
+        "", "--branch",
+        help="--dev only: override the source branch (default from .env.common per backend).",
     ),
     force: bool = typer.Option(
         False, "--force",
@@ -57,6 +74,14 @@ def up(
 ) -> None:
     """Start a profile's container. Streams compose output to stdout."""
     bk = detect_backend(profile, override=backend)
+
+    if dev and default_image:
+        typer.echo(
+            "Error: --dev and --default-image are mutually exclusive (one forces a "
+            "dev tag, the other clears any pinned image).",
+            err=True,
+        )
+        raise typer.Exit(code=2)
 
     # Conflict pre-flight: mirror the TUI dashboard. The headless CLI defaults
     # to ABORT-on-conflict so scripts/agents don't silently start a container
@@ -79,6 +104,17 @@ def up(
     if bk == "vllm":
         from tui.backends.vllm.backend_runtime import stream_container_up
 
+        if default_image:
+            # vLLM's stream_container_up uses an empty `tag` + no pinned
+            # image_tag as "default image" already. Override the profile's
+            # pinned image_tag transiently via a stored-profile rewrite so the
+            # priority order (UI override > profile.image_tag > compose default)
+            # picks the compose default. The TUI side does the same.
+            from tui.common import profile_store as _ps
+            sp = _ps.load_profile(profile, "vllm")
+            if sp is not None and sp.image_tag:
+                sp.image_tag = ""
+                _ps.render_env(sp)  # rewrites .env without mutating profiles.yaml
         rc = stream_async(
             stream_container_up(
                 profile,
@@ -101,6 +137,7 @@ def up(
             lc_up(
                 profile,
                 use_dev=dev,
+                use_default_image=default_image,
                 tag=tag,
                 repo_url=repo_url,
                 branch=branch,
@@ -289,71 +326,34 @@ def ps(
     rows = []
 
     async def _collect():
+        # Both backends now expose the identical `get_container_statuses()`
+        # contract (field-for-field mirror — see llamacpp.backend_runtime
+        # ContainerStatus docstring), so dispatch once and reuse the same
+        # row-builder for both. Previously llama.cpp had its own inline parse
+        # that disagreed with the runtime's status detection on `Dead`/
+        # `created` and emitted the GGUF filename instead of the served alias.
         for bk in backends:
             if bk == "vllm":
                 from tui.backends.vllm.backend_runtime import get_container_statuses
-
-                statuses = await get_container_statuses()
-                for s in statuses:
-                    rows.append(
-                        {
-                            "backend": "vllm",
-                            "profile": s.profile_name,
-                            "container": s.container_name,
-                            "status": s.status_text,
-                            "running": s.running,
-                            "port": s.port,
-                            "gpu": s.gpu_id,
-                            "model": s.model,
-                        }
-                    )
             else:
-                # llama.cpp: derive status by querying docker for each profile.
-                from tui.backends.llamacpp.backend import (
-                    list_profile_names as lc_list,
-                    load_profile as lc_load,
-                    run_command,
+                from tui.backends.llamacpp.backend_runtime import (
+                    get_container_statuses,
                 )
 
-                names = lc_list()
-                rc, out = await run_command(
-                    "docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}", timeout=10
+            statuses = await get_container_statuses()
+            for s in statuses:
+                rows.append(
+                    {
+                        "backend": bk,
+                        "profile": s.profile_name,
+                        "container": s.container_name,
+                        "status": s.status_text,
+                        "running": s.running,
+                        "port": s.port,
+                        "gpu": s.gpu_id,
+                        "model": s.model,
+                    }
                 )
-                statusmap: dict[str, str] = {}
-                if rc == 0:
-                    for line in out.strip().splitlines():
-                        parts = line.split("\t", 1)
-                        if len(parts) == 2:
-                            statusmap[parts[0]] = parts[1]
-                for n in names:
-                    p = lc_load(n)
-                    cn = p.container_name or p.name
-                    raw = statusmap.get(cn, "")
-                    status = "stopped"
-                    running = False
-                    if raw:
-                        if "(healthy)" in raw:
-                            status, running = "healthy", True
-                        elif "(unhealthy)" in raw:
-                            status, running = "unhealthy", True
-                        elif "(health: starting)" in raw:
-                            status, running = "starting", True
-                        elif raw.startswith("Up "):
-                            status, running = "running", True
-                        elif raw.startswith("Exited "):
-                            status = "exited"
-                    rows.append(
-                        {
-                            "backend": "llamacpp",
-                            "profile": n,
-                            "container": cn,
-                            "status": status,
-                            "running": running,
-                            "port": p.port,
-                            "gpu": p.gpu_id,
-                            "model": p.model_file or "",
-                        }
-                    )
 
     run_async(_collect())
 
