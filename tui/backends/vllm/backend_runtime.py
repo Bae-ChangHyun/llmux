@@ -719,20 +719,26 @@ async def stream_container_up(
             "up",
             "-d",
         ]
-        # Pull policy is explicit on every path so docker compose's default
-        # ("missing") cannot silently re-pull a manifest the user thought
-        # was already local:
-        #   * pull=True  (UI: Official Release) or `:nightly`
-        #       → `--pull always`: force a fresh pull. The Official Release
-        #         tag is a resolved semver from Docker Hub; `:nightly` is
-        #         intentionally-rolling.
-        #   * Local Latest, pinned tag, or a custom version tag
-        #       → `--pull never`: the user already chose an image they
-        #         expect to be local. Refusing to pull surfaces a missing
-        #         image as a clear error instead of a surprise download.
+        # Pull policy — three distinct cases:
+        #   * pull=True or `:nightly`
+        #       → `--pull always`. Nightly is intentionally rolling; pull=True
+        #         is reserved for any future "force re-pull" UI action.
+        #   * Caller passed an explicit tag (Official Release resolves to a
+        #     DockerHub semver here, or the user typed a Custom Tag)
+        #       → `--pull missing`. If that tag is already local we reuse it
+        #         silently; if it's not local, compose fetches it once. This
+        #         matches the user's mental model of "pick the version" — not
+        #         "force re-download". Critically, Official Release no longer
+        #         re-pulls a manifest the user already has.
+        #   * No explicit tag (Local Latest, resolved from local images)
+        #       → `--pull never`. The user picked from images they already
+        #         have, so a missing image is a real error, not an excuse to
+        #         silently re-download.
         # `:latest` is rejected above and never reaches this point.
         if pull or version_tag == "nightly":
             compose_cmd.extend(["--pull", "always"])
+        elif tag:
+            compose_cmd.extend(["--pull", "missing"])
         else:
             compose_cmd.extend(["--pull", "never"])
 
