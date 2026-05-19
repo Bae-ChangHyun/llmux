@@ -16,7 +16,13 @@ from textual.widgets import Button, Input, Label, Static, Switch, Select
 class QuickSetupScreen(ModalScreen[str]):
     """Quick setup: create a profile + config from a model name."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("pageup", "scroll_form('up')", "Scroll up", show=False),
+        Binding("pagedown", "scroll_form('down')", "Scroll down", show=False),
+        Binding("home", "scroll_form('home')", "Scroll to top", show=False),
+        Binding("end", "scroll_form('end')", "Scroll to bottom", show=False),
+    ]
 
     DEFAULT_CSS = """
     QuickSetupScreen {
@@ -29,8 +35,8 @@ class QuickSetupScreen(ModalScreen[str]):
         width: 90%;
         max-width: 70;
         min-width: 45;
+        /* No max-height — see ProfileFormScreen for rationale. */
         height: 95%;
-        max-height: 32;
         min-height: 12;
     }
     QuickSetupScreen VerticalScroll {
@@ -138,6 +144,20 @@ class QuickSetupScreen(ModalScreen[str]):
 
     def action_cancel(self) -> None:
         self.dismiss("")
+
+    def action_scroll_form(self, direction: str) -> None:
+        try:
+            scroll = self.query_one(VerticalScroll)
+        except Exception:
+            return
+        if direction == "up":
+            scroll.scroll_page_up()
+        elif direction == "down":
+            scroll.scroll_page_down()
+        elif direction == "home":
+            scroll.scroll_home()
+        elif direction == "end":
+            scroll.scroll_end()
 
     @on(Button.Pressed, "#create-btn")
     def on_create(self) -> None:

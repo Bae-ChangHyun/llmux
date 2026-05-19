@@ -30,7 +30,13 @@ from tui.backends.llamacpp.backend import (
 class ProfileFormScreen(ModalScreen[str | None]):
     """Profile 생성/편집 modal."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("pageup", "scroll_form('up')", "Scroll up", show=False),
+        Binding("pagedown", "scroll_form('down')", "Scroll down", show=False),
+        Binding("home", "scroll_form('home')", "Scroll to top", show=False),
+        Binding("end", "scroll_form('end')", "Scroll to bottom", show=False),
+    ]
 
     DEFAULT_CSS = """
     ProfileFormScreen { align: center middle; }
@@ -41,9 +47,9 @@ class ProfileFormScreen(ModalScreen[str | None]):
         width: 90%;
         max-width: 78;
         min-width: 55;
+        /* No max-height — see vLLM ProfileFormScreen for rationale. */
         height: 95%;
-        max-height: 38;
-        min-height: 18;
+        min-height: 12;
     }
     ProfileFormScreen VerticalScroll { height: 1fr; min-height: 5; }
     ProfileFormScreen #form-title {
@@ -270,6 +276,20 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(self._saved_name)
+
+    def action_scroll_form(self, direction: str) -> None:
+        try:
+            scroll = self.query_one(VerticalScroll)
+        except Exception:
+            return
+        if direction == "up":
+            scroll.scroll_page_up()
+        elif direction == "down":
+            scroll.scroll_page_down()
+        elif direction == "home":
+            scroll.scroll_home()
+        elif direction == "end":
+            scroll.scroll_end()
 
 
 # ---------------------------------------------------------------------------
