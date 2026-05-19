@@ -640,6 +640,11 @@ async def stream_container_up(
             profile.name,
             "up",
             "-d",
+            # Dev images are locally built — there is no remote to pull
+            # them from, so disable compose's default missing-policy
+            # fallback.
+            "--pull",
+            "never",
         ]
     elif not tag and profile.image_tag:
         # Per-profile pinned image. UI overrides (Dev Build / explicit Custom
@@ -658,6 +663,12 @@ async def stream_container_up(
             profile.name,
             "up",
             "-d",
+            # Pinned image_tag implies the user already has the image
+            # locally — `--pull never` blocks a surprise re-pull from
+            # docker compose's default `missing` policy if the local
+            # image somehow drops out of `docker images`.
+            "--pull",
+            "never",
         ]
     else:
         version_tag = tag or await get_local_latest_tag()
@@ -708,15 +719,22 @@ async def stream_container_up(
             "up",
             "-d",
         ]
-        # Force-pull when:
-        #   (a) the UI explicitly requested it (Official Release → pulls the
-        #       resolved semver tag from DockerHub; the tag itself is a version,
-        #       never the bare `:latest` alias), or
-        #   (b) the tag is `:nightly` — it's an intentionally-rolling target
-        #       with no versioned alternative, so we always want the freshest.
+        # Pull policy is explicit on every path so docker compose's default
+        # ("missing") cannot silently re-pull a manifest the user thought
+        # was already local:
+        #   * pull=True  (UI: Official Release) or `:nightly`
+        #       → `--pull always`: force a fresh pull. The Official Release
+        #         tag is a resolved semver from Docker Hub; `:nightly` is
+        #         intentionally-rolling.
+        #   * Local Latest, pinned tag, or a custom version tag
+        #       → `--pull never`: the user already chose an image they
+        #         expect to be local. Refusing to pull surfaces a missing
+        #         image as a clear error instead of a surprise download.
         # `:latest` is rejected above and never reaches this point.
         if pull or version_tag == "nightly":
             compose_cmd.extend(["--pull", "always"])
+        else:
+            compose_cmd.extend(["--pull", "never"])
 
     async for event in stream_command(compose_cmd, cwd=SCRIPT_DIR, env=env):
         if event[0] != "rc":

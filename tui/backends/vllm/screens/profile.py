@@ -35,6 +35,10 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=False),
+        Binding("pageup", "scroll_form('up')", "Scroll up", show=False),
+        Binding("pagedown", "scroll_form('down')", "Scroll down", show=False),
+        Binding("home", "scroll_form('home')", "Scroll to top", show=False),
+        Binding("end", "scroll_form('end')", "Scroll to bottom", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -48,8 +52,9 @@ class ProfileFormScreen(ModalScreen[str | None]):
         width: 90%;
         max-width: 70;
         min-width: 45;
+        /* No max-height — short terminals need the modal to grow so the
+           inner VerticalScroll can actually scroll the form. */
         height: 95%;
-        max-height: 36;
         min-height: 12;
     }
     ProfileFormScreen VerticalScroll {
@@ -304,6 +309,20 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(self._saved_name)
+
+    def action_scroll_form(self, direction: str) -> None:
+        try:
+            scroll = self.query_one(VerticalScroll)
+        except Exception:
+            return
+        if direction == "up":
+            scroll.scroll_page_up()
+        elif direction == "down":
+            scroll.scroll_page_down()
+        elif direction == "home":
+            scroll.scroll_home()
+        elif direction == "end":
+            scroll.scroll_end()
 
 
 # ---------------------------------------------------------------------------

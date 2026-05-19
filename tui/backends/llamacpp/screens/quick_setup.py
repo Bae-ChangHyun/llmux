@@ -57,7 +57,13 @@ def _normalize_repo(raw: str) -> str:
 class QuickSetupScreen(ModalScreen[str]):
     """HF repo + GGUF 파일로 profile/config 자동 생성 modal."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("pageup", "scroll_form('up')", "Scroll up", show=False),
+        Binding("pagedown", "scroll_form('down')", "Scroll down", show=False),
+        Binding("home", "scroll_form('home')", "Scroll to top", show=False),
+        Binding("end", "scroll_form('end')", "Scroll to bottom", show=False),
+    ]
 
     DEFAULT_CSS = """
     QuickSetupScreen { align: center middle; }
@@ -68,9 +74,9 @@ class QuickSetupScreen(ModalScreen[str]):
         width: 90%;
         max-width: 82;
         min-width: 60;
+        /* No max-height — see vLLM QuickSetupScreen for rationale. */
         height: 95%;
-        max-height: 42;
-        min-height: 22;
+        min-height: 12;
     }
     QuickSetupScreen .title {
         text-style: bold;
@@ -319,6 +325,20 @@ class QuickSetupScreen(ModalScreen[str]):
 
     def action_cancel(self) -> None:
         self.dismiss("")
+
+    def action_scroll_form(self, direction: str) -> None:
+        try:
+            scroll = self.query_one(VerticalScroll)
+        except Exception:
+            return
+        if direction == "up":
+            scroll.scroll_page_up()
+        elif direction == "down":
+            scroll.scroll_page_down()
+        elif direction == "home":
+            scroll.scroll_home()
+        elif direction == "end":
+            scroll.scroll_end()
 
     def _get(self, wid: str) -> str:
         return self.query_one(f"#{wid}", Input).value.strip()
