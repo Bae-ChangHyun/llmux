@@ -125,11 +125,16 @@ def run_onboarding() -> bool:
         return False
 
     # Pre-create the bind-mount targets so docker does not create them as root.
+    # A failure is non-fatal (the path may need sudo, or be created later) but
+    # must be surfaced — silently continuing would hide a real misconfiguration.
     for path in (hf_cache_path, model_dir_path):
         try:
             Path(path).mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass  # non-fatal — surfaced later by validation if it matters
+        except OSError as exc:
+            console.print(
+                f"[yellow]⚠ Could not create {path}: {exc}[/yellow]\n"
+                "[yellow]  Create it yourself before starting a container.[/yellow]"
+            )
 
     # Offer to seed profiles.yaml so the first launch has something to show.
     if not PROFILES_YAML.exists() and PROFILES_EXAMPLE.exists():
@@ -146,6 +151,13 @@ def run_onboarding() -> bool:
     ok, messages = validate_common_env(COMMON_ENV)
     if not ok:
         console.print("[red]" + "\n".join(messages) + "[/red]")
+        # Remove the invalid file so the next launch re-runs onboarding —
+        # needs_onboarding() only checks existence, so leaving it would
+        # permanently strand the user with a broken config.
+        try:
+            COMMON_ENV.unlink()
+        except OSError:
+            pass
         return False
 
     console.print(
