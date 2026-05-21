@@ -1409,5 +1409,61 @@ class QuickSetupSuffixLogicTests(unittest.TestCase):
         self.assertEqual(self._resolve("llama", {"llama"}, {"llama-1"}), "llama-2")
 
 
+class OnboardingTests(unittest.TestCase):
+    def test_render_env_overrides_prompted_keys(self) -> None:
+        from tui.common import onboarding
+
+        rendered = onboarding._render_env(
+            {
+                "HF_CACHE_PATH": "/abs/cache",
+                "MODEL_DIR": "/abs/models",
+                "HF_TOKEN": "hf_secret",
+            }
+        )
+        lines = rendered.splitlines()
+        self.assertIn("HF_CACHE_PATH=/abs/cache", lines)
+        self.assertIn("MODEL_DIR=/abs/models", lines)
+        self.assertIn("HF_TOKEN=hf_secret", lines)
+        # Unprompted keys are preserved (key kept, value not asserted to avoid
+        # coupling to the template); comments survive.
+        self.assertTrue(any(line.startswith("LLAMACPP_IMAGE=") for line in lines))
+        self.assertTrue(any(line.startswith("#") for line in lines))
+
+    def test_needs_onboarding_reflects_env_file(self) -> None:
+        from tui.common import onboarding
+
+        with tempfile.TemporaryDirectory() as d:
+            env_path = Path(d) / ".env.common"
+            with patch.object(onboarding, "COMMON_ENV", env_path):
+                self.assertTrue(onboarding.needs_onboarding())
+                env_path.write_text("HF_CACHE_PATH=/x\n")
+                self.assertFalse(onboarding.needs_onboarding())
+
+    def test_run_onboarding_writes_valid_env(self) -> None:
+        from tui.common import onboarding
+
+        with tempfile.TemporaryDirectory() as d:
+            dpath = Path(d)
+            with (
+                patch.object(onboarding, "COMMON_ENV", dpath / ".env.common"),
+                patch.object(onboarding, "PROFILES_YAML", dpath / "profiles.yaml"),
+                patch(
+                    "rich.prompt.Prompt.ask",
+                    side_effect=[str(dpath / "cache"), str(dpath / "models"), ""],
+                ),
+                patch("rich.prompt.Confirm.ask", return_value=False),
+            ):
+                ok = onboarding.run_onboarding()
+
+            self.assertTrue(ok)
+            written = (dpath / ".env.common").read_text()
+            self.assertIn(f"HF_CACHE_PATH={dpath / 'cache'}", written)
+            self.assertIn(f"MODEL_DIR={dpath / 'models'}", written)
+            self.assertIn("HF_TOKEN=", written)
+            # The bind-mount targets are pre-created so docker doesn't own them.
+            self.assertTrue((dpath / "cache").is_dir())
+            self.assertTrue((dpath / "models").is_dir())
+
+
 if __name__ == "__main__":
     unittest.main()
