@@ -1288,5 +1288,95 @@ class OnboardingTests(unittest.TestCase):
             self.assertTrue((dpath / "models").is_dir())
 
 
+class VersionCheckTests(unittest.TestCase):
+    def test_repo_slug_parses_remote_url_forms(self) -> None:
+        from tui.common import version_check as vc
+
+        for url in (
+            "https://github.com/Bae-ChangHyun/llmux.git",
+            "https://github.com/Bae-ChangHyun/llmux",
+            "git@github.com:Bae-ChangHyun/llmux.git",
+            "ssh://git@github.com/Bae-ChangHyun/llmux.git",
+        ):
+            with patch.object(vc, "_git", return_value=(0, url + "\n")):
+                self.assertEqual(vc._repo_slug(), "Bae-ChangHyun/llmux", msg=url)
+
+    def test_repo_slug_none_on_non_github_or_failure(self) -> None:
+        from tui.common import version_check as vc
+
+        with patch.object(vc, "_git", return_value=(0, "https://gitlab.com/x/y.git\n")):
+            self.assertIsNone(vc._repo_slug())
+        with patch.object(vc, "_git", return_value=(1, "")):
+            self.assertIsNone(vc._repo_slug())
+
+    def test_is_behind_uses_commit_ancestry(self) -> None:
+        from tui.common import version_check as vc
+
+        # Release commit not present locally → behind.
+        with patch.object(vc, "_git", return_value=(1, "")):
+            self.assertIs(vc._is_behind("deadbeef"), True)
+
+        # Present and an ancestor of HEAD → up to date.
+        def have_and_ancestor(*args, **kwargs):
+            if args[0] == "merge-base":
+                return 0, ""
+            return 0, ""  # cat-file -e succeeds
+
+        with patch.object(vc, "_git", side_effect=have_and_ancestor):
+            self.assertIs(vc._is_behind("deadbeef"), False)
+
+        # Present but NOT an ancestor → behind.
+        def have_not_ancestor(*args, **kwargs):
+            if args[0] == "merge-base":
+                return 1, ""
+            return 0, ""
+
+        with patch.object(vc, "_git", side_effect=have_not_ancestor):
+            self.assertIs(vc._is_behind("deadbeef"), True)
+
+    def test_cache_freshness(self) -> None:
+        from tui.common import version_check as vc
+
+        with tempfile.TemporaryDirectory() as d:
+            cache = Path(d) / "version-check.json"
+            with patch.object(vc, "_CACHE_FILE", cache):
+                self.assertFalse(vc._cache_is_fresh())  # missing
+                vc._write_cache()
+                self.assertTrue(vc._cache_is_fresh())  # just written
+                cache.write_text('{"checked_at": 0}')
+                self.assertFalse(vc._cache_is_fresh())  # epoch 0 → stale
+
+    def test_local_clean_main_gates_auto_update(self) -> None:
+        from tui.common import version_check as vc
+
+        def clean_main(*args, **kwargs):
+            if args[0] == "rev-parse":
+                return 0, "main\n"
+            if args[0] == "status":
+                return 0, ""
+            return 0, ""
+
+        with patch.object(vc, "_git", side_effect=clean_main):
+            self.assertTrue(vc._local_clean_main())
+
+        def feature_branch(*args, **kwargs):
+            if args[0] == "rev-parse":
+                return 0, "feat/x\n"
+            return 0, ""
+
+        with patch.object(vc, "_git", side_effect=feature_branch):
+            self.assertFalse(vc._local_clean_main())
+
+        def dirty_main(*args, **kwargs):
+            if args[0] == "rev-parse":
+                return 0, "main\n"
+            if args[0] == "status":
+                return 0, " M tui/app.py\n"
+            return 0, ""
+
+        with patch.object(vc, "_git", side_effect=dirty_main):
+            self.assertFalse(vc._local_clean_main())
+
+
 if __name__ == "__main__":
     unittest.main()

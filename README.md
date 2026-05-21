@@ -87,7 +87,9 @@ llmux
 ```
 
 The checkout stays a live git repo, so `git pull` in `~/.llmux` applies updates
-with no reinstall. Install elsewhere with `LLMUX_DIR=/path curl ... | sh`.
+with no reinstall — and llmux checks GitHub for a newer release on startup
+(once a day) and offers to pull it for you. Install elsewhere with
+`LLMUX_DIR=/path curl ... | sh`.
 
 <details>
 <summary>Manual install</summary>

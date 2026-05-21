@@ -42,10 +42,33 @@ def _maybe_run_onboarding() -> None:
         pass
 
 
+def _maybe_check_for_update() -> None:
+    """Check for a newer llmux release once per day, in interactive sessions.
+
+    Headless invocations skip it so scripts and CI never see a prompt or
+    extra output. SystemExit (raised after a successful self-update so the
+    user restarts on fresh code) is allowed to propagate; everything else is
+    swallowed — a version check must never break startup.
+    """
+    import sys
+
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return
+    try:
+        from tui.common.version_check import check_for_update
+
+        check_for_update()
+    except SystemExit:
+        raise
+    except Exception:  # noqa: BLE001 — best-effort, never fatal
+        pass
+
+
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context) -> None:
     """Default behavior: launch the TUI when no subcommand is given."""
     _maybe_run_onboarding()
+    _maybe_check_for_update()
     if ctx.invoked_subcommand is not None:
         return
     from tui.cli._launch_tui import launch_tui
