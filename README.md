@@ -71,8 +71,17 @@ llmux unifies both under a single Textual dashboard backed by Docker Compose.
 
 ## Quick Start
 
+Install with one command — it clones llmux, installs dependencies (and `uv`
+itself if missing), and puts the `llmux` command on your PATH:
+
 ```bash
-git clone https://github.com/Bae-ChangHyun/llmux.git && cd llmux
+curl -fsSL https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/install.sh | sh
+```
+
+Then configure and launch:
+
+```bash
+cd ~/.llmux
 
 # 1. Shared HF token + model/cache dirs
 cp .env.common.example .env.common
@@ -82,13 +91,23 @@ $EDITOR .env.common       # set HF_TOKEN, HF_CACHE_PATH, MODEL_DIR
 cp profiles.example.yaml profiles.yaml
 $EDITOR profiles.yaml
 
-# 3. Install llmux globally (editable — code edits are picked up live)
-uv tool install --editable .
-uv tool update-shell        # one-time: adds ~/.local/bin to PATH
-
-# 4. Launch the TUI from anywhere
+# 3. Launch the TUI from anywhere
 llmux
 ```
+
+The checkout stays a live git repo, so `git pull` in `~/.llmux` applies updates
+with no reinstall. Install elsewhere with `LLMUX_DIR=/path curl ... | sh`.
+
+<details>
+<summary>Manual install</summary>
+
+```bash
+git clone https://github.com/Bae-ChangHyun/llmux.git && cd llmux
+uv tool install --editable .   # editable — code edits are picked up live
+uv tool update-shell           # one-time: adds ~/.local/bin to PATH
+```
+
+</details>
 
 > Prefer not to install globally? `uv run llmux` works from inside the repo. From
 > elsewhere, set `LLMUX_ROOT=/path/to/llmux`.
