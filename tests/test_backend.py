@@ -1335,6 +1335,21 @@ class VersionCheckTests(unittest.TestCase):
         with patch.object(vc, "_git", side_effect=have_not_ancestor):
             self.assertIs(vc._is_behind("deadbeef"), True)
 
+    def test_is_behind_undecided_on_shallow_clone(self) -> None:
+        from tui.common import version_check as vc
+
+        # The release commit is absent, but the repo is shallow — old commits
+        # are simply not fetched, so behind/ahead is genuinely undecidable.
+        def shallow(*args, **kwargs):
+            if args[0] == "cat-file":
+                return 1, ""
+            if args[0] == "rev-parse":  # --is-shallow-repository
+                return 0, "true\n"
+            return 0, ""
+
+        with patch.object(vc, "_git", side_effect=shallow):
+            self.assertIsNone(vc._is_behind("deadbeef"))
+
     def test_cache_freshness(self) -> None:
         from tui.common import version_check as vc
 

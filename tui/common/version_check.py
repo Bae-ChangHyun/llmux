@@ -260,24 +260,33 @@ def _prompt_and_update(tag: str, url: str) -> None:
         )
         return
 
-    # Dependencies may have changed — re-sync, best-effort.
+    # Refresh the installed tool environment, best-effort. `llmux` is installed
+    # with `uv tool install --editable` (see install.sh); a bare `uv sync`
+    # would only update the project's .venv, not the `uv tool` environment
+    # that actually runs the command — leaving stale deps after a pull.
+    refresh_cmd = "uv tool install --editable . --force"
     if shutil.which("uv"):
+        refreshed = False
         try:
-            sync = subprocess.run(
-                ["uv", "sync"],
+            proc = subprocess.run(
+                ["uv", "tool", "install", "--editable", ".", "--force"],
                 cwd=str(PROJECT_ROOT),
                 capture_output=True,
                 text=True,
                 timeout=300,
             )
-            if sync.returncode != 0:
-                console.print(
-                    "[yellow]  ⚠ `uv sync` failed — run it manually.[/yellow]"
-                )
+            refreshed = proc.returncode == 0
         except (OSError, subprocess.SubprocessError):
-            console.print("[yellow]  ⚠ `uv sync` failed — run it manually.[/yellow]")
+            refreshed = False
+        if not refreshed:
+            console.print(
+                f"[yellow]  ⚠ Could not refresh the install — run "
+                f"`{refresh_cmd}` in {PROJECT_ROOT} manually.[/yellow]"
+            )
     else:
-        console.print("[yellow]  ⚠ `uv` not found — run `uv sync` manually.[/yellow]")
+        console.print(
+            f"[yellow]  ⚠ `uv` not found — run `{refresh_cmd}` manually.[/yellow]"
+        )
 
     console.print(
         f"[bold green]  ✓ Updated to {tag}.[/bold green] "
