@@ -45,6 +45,11 @@ fi
 
 # ── 2. clone (or fast-forward an existing checkout) ──────────────────────────
 if [ -d "$INSTALL_DIR/.git" ]; then
+    if ! grep -q '^name = "llmux"' "$INSTALL_DIR/pyproject.toml" 2>/dev/null; then
+        err "$INSTALL_DIR is a git repository but not llmux."
+        err "Remove it, or set LLMUX_DIR to another path, then re-run."
+        exit 1
+    fi
     info "Existing llmux checkout at $INSTALL_DIR — updating ..."
     if ! git -C "$INSTALL_DIR" pull --ff-only; then
         err "Could not fast-forward $INSTALL_DIR — the checkout has diverged."

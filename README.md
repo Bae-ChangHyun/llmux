@@ -96,7 +96,8 @@ llmux
 ```
 
 The checkout stays a live git repo, so `git pull` in `~/.llmux` applies updates
-with no reinstall. Install elsewhere with `LLMUX_DIR=/path curl ... | sh`.
+with no reinstall. Install elsewhere by passing `LLMUX_DIR` to the script:
+`curl -fsSL ... | LLMUX_DIR=/path sh`.
 
 <details>
 <summary>Manual install</summary>
