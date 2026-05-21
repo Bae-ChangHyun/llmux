@@ -1,0 +1,273 @@
+"""Startup check for a newer llmux release.
+
+Compares the local git checkout against the latest GitHub Release. On a clean
+`main` checkout it offers an interactive `git pull` update; otherwise it leaves
+the checkout alone. Every step is best-effort: a non-git install, a missing
+network, or any error leaves startup completely untouched.
+
+"Behind" is decided by commit ancestry, not version strings — the checkout is
+behind only when HEAD does not yet contain the latest release's commit. That
+stays correct even when local tags are stale (a `git pull`'d checkout often
+has the release commit without ever fetching the tag).
+
+A 24h cache keeps this off the hot path: at most one network round-trip per
+day. The caller owns the TTY gate — this only runs for interactive sessions.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import ssl
+import subprocess
+import time
+import urllib.request
+
+from tui.common.profile_store import PROJECT_ROOT
+
+_CACHE_FILE = PROJECT_ROOT / ".runtime" / "version-check.json"
+_CACHE_TTL = 24 * 60 * 60  # seconds — one check per day
+_HTTP_TIMEOUT = 4  # seconds per GitHub API call
+_USER_AGENT = "llmux-version-check"
+
+# CA bundle locations to try, in order. Some Python builds (uv-managed CPython
+# on RHEL/CentOS) default to a `/etc/ssl/cert.pem` that does not exist, which
+# breaks HTTPS to api.github.com with CERTIFICATE_VERIFY_FAILED.
+_CA_CANDIDATES = (
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/ssl/cert.pem",
+)
+
+
+# ── git helpers ──────────────────────────────────────────────────────────────
+def _git(*args: str, timeout: int = 15) -> tuple[int, str]:
+    """Run `git -C PROJECT_ROOT <args>`; return (returncode, stdout+stderr).
+
+    A missing git binary or a timeout is reported as returncode -1.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(PROJECT_ROOT), *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return -1, ""
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+def _is_git_checkout() -> bool:
+    rc, out = _git("rev-parse", "--is-inside-work-tree")
+    return rc == 0 and out.strip() == "true"
+
+
+def _repo_slug() -> str | None:
+    """Return `owner/repo` parsed from the `origin` remote, or None."""
+    rc, url = _git("remote", "get-url", "origin")
+    if rc != 0:
+        return None
+    url = url.strip()
+    for prefix in (
+        "git@github.com:",
+        "https://github.com/",
+        "ssh://git@github.com/",
+    ):
+        if url.startswith(prefix):
+            slug = url[len(prefix):]
+            if slug.endswith(".git"):
+                slug = slug[:-4]
+            return slug or None
+    return None
+
+
+# ── 24h cache ────────────────────────────────────────────────────────────────
+def _cache_is_fresh() -> bool:
+    try:
+        data = json.loads(_CACHE_FILE.read_text())
+        return (time.time() - float(data.get("checked_at", 0))) < _CACHE_TTL
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _write_cache() -> None:
+    try:
+        _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _CACHE_FILE.write_text(json.dumps({"checked_at": time.time()}))
+    except OSError:
+        pass
+
+
+# ── GitHub API ───────────────────────────────────────────────────────────────
+def _ssl_context() -> ssl.SSLContext:
+    candidates: list[str] = []
+    try:
+        import certifi  # type: ignore[import-not-found]
+
+        candidates.append(certifi.where())
+    except Exception:  # noqa: BLE001 — certifi is optional
+        pass
+    candidates.extend(_CA_CANDIDATES)
+    for cafile in candidates:
+        if cafile and os.path.exists(cafile):
+            try:
+                return ssl.create_default_context(cafile=cafile)
+            except Exception:  # noqa: BLE001 — try the next candidate
+                continue
+    return ssl.create_default_context()
+
+
+def _api_get(url: str) -> dict | None:
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+        with urllib.request.urlopen(
+            req, timeout=_HTTP_TIMEOUT, context=_ssl_context()
+        ) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        return payload if isinstance(payload, dict) else None
+    except Exception:  # noqa: BLE001 — offline / rate-limited / parse error
+        return None
+
+
+def _latest_release(slug: str) -> tuple[str, str] | None:
+    """Return (tag_name, html_url) of the latest GitHub Release, or None."""
+    data = _api_get(f"https://api.github.com/repos/{slug}/releases/latest")
+    if data is None:
+        return None
+    tag = data.get("tag_name")
+    if not tag:
+        return None
+    return str(tag), str(data.get("html_url", ""))
+
+
+def _release_commit(slug: str, tag: str) -> str | None:
+    """Resolve a release tag to its underlying commit SHA via the commits API."""
+    data = _api_get(f"https://api.github.com/repos/{slug}/commits/{tag}")
+    if data is None:
+        return None
+    sha = data.get("sha")
+    return str(sha) if sha else None
+
+
+# ── local comparison ─────────────────────────────────────────────────────────
+def _is_behind(release_sha: str) -> bool | None:
+    """True when HEAD does not yet contain `release_sha`; None if undecidable.
+
+    A checkout is up to date when the release commit is an ancestor of HEAD
+    (at it, or ahead of it on a later branch). If the release commit is not in
+    local history at all, the checkout is genuinely behind.
+    """
+    rc, _ = _git("cat-file", "-e", f"{release_sha}^{{commit}}")
+    if rc != 0:
+        return True  # release commit not present locally → behind
+    rc, _ = _git("merge-base", "--is-ancestor", release_sha, "HEAD")
+    if rc == 0:
+        return False
+    if rc == 1:
+        return True
+    return None  # git error → undecidable, don't nag
+
+
+def _local_clean_main() -> bool:
+    """True only on a `main` checkout with no modified tracked files — the one
+    state where `git pull --ff-only` is safe to run unattended."""
+    rc, branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    if rc != 0 or branch.strip() != "main":
+        return False
+    rc, status = _git("status", "--porcelain", "--untracked-files=no")
+    return rc == 0 and status.strip() == ""
+
+
+# ── public entry point ───────────────────────────────────────────────────────
+def check_for_update() -> None:
+    """Best-effort: notify (and on a clean `main`, optionally apply) a newer
+    llmux release. Honors the 24h cache, silent offline, never raises — except
+    SystemExit, raised deliberately after a successful update so the user
+    restarts on fresh code. The caller must only invoke this interactively.
+    """
+    try:
+        _check_impl()
+    except SystemExit:
+        raise
+    except Exception:  # noqa: BLE001 — a version check must never break startup
+        pass
+
+
+def _check_impl() -> None:
+    if not _is_git_checkout() or _cache_is_fresh():
+        return
+    slug = _repo_slug()
+    if slug is None:
+        return
+
+    latest = _latest_release(slug)
+    _write_cache()  # one attempt per 24h, whether or not it found anything
+    if latest is None:
+        return
+    tag, url = latest
+
+    release_sha = _release_commit(slug, tag)
+    if release_sha is None:
+        return
+    if _is_behind(release_sha) is not True:  # False or None → don't nag
+        return
+
+    _prompt_and_update(tag, url)
+
+
+def _prompt_and_update(tag: str, url: str) -> None:
+    from rich.console import Console
+    from rich.prompt import Confirm
+
+    console = Console()
+    console.print(
+        f"\n[bold cyan]⬆ llmux {tag} is available.[/bold cyan]  [dim]{url}[/dim]"
+    )
+
+    if not _local_clean_main():
+        console.print(
+            "[dim]  Checkout has local changes or is not on `main` — "
+            "skipping auto-update; `git pull` it yourself when ready.[/dim]"
+        )
+        return
+
+    try:
+        if not Confirm.ask("  Update now?", default=True, console=console):
+            return
+    except (KeyboardInterrupt, EOFError):
+        return
+
+    rc, out = _git("pull", "--ff-only")
+    if rc != 0:
+        console.print(
+            "[red]  git pull failed — update manually.[/red]\n"
+            f"[dim]  {out.strip()}[/dim]"
+        )
+        return
+
+    # Dependencies may have changed — re-sync, best-effort.
+    if shutil.which("uv"):
+        try:
+            sync = subprocess.run(
+                ["uv", "sync"],
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if sync.returncode != 0:
+                console.print(
+                    "[yellow]  ⚠ `uv sync` failed — run it manually.[/yellow]"
+                )
+        except (OSError, subprocess.SubprocessError):
+            console.print("[yellow]  ⚠ `uv sync` failed — run it manually.[/yellow]")
+    else:
+        console.print("[yellow]  ⚠ `uv` not found — run `uv sync` manually.[/yellow]")
+
+    console.print(
+        f"[bold green]  ✓ Updated to {tag}.[/bold green] "
+        "Restart llmux to use the new version."
+    )
+    raise SystemExit(0)
