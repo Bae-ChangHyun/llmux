@@ -64,9 +64,7 @@ def _maybe_check_for_update() -> None:
     user restarts on fresh code) is allowed to propagate; everything else is
     swallowed — a version check must never break startup.
     """
-    import sys
-
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+    if not _interactive_session():
         return
     try:
         from tui.common.version_check import check_for_update
