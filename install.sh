@@ -46,7 +46,11 @@ fi
 # ── 2. clone (or fast-forward an existing checkout) ──────────────────────────
 if [ -d "$INSTALL_DIR/.git" ]; then
     info "Existing llmux checkout at $INSTALL_DIR — updating ..."
-    git -C "$INSTALL_DIR" pull --ff-only
+    if ! git -C "$INSTALL_DIR" pull --ff-only; then
+        err "Could not fast-forward $INSTALL_DIR — the checkout has diverged."
+        err "Resolve it manually (check 'git -C $INSTALL_DIR status'), then re-run."
+        exit 1
+    fi
 elif [ -e "$INSTALL_DIR" ]; then
     err "$INSTALL_DIR exists but is not a llmux checkout."
     err "Remove it, or set LLMUX_DIR to another path, then re-run."
