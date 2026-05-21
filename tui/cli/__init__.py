@@ -19,9 +19,33 @@ app = typer.Typer(
 )
 
 
+def _maybe_run_onboarding() -> None:
+    """Run the first-run wizard once, when `.env.common` is missing and the
+    session is interactive.
+
+    Headless invocations (scripts, pipes, CI) are left untouched so they fall
+    back to the normal validation error instead of blocking on a prompt.
+    Onboarding is best-effort — any failure is swallowed so it never breaks
+    startup.
+    """
+    import sys
+
+    try:
+        from tui.common.onboarding import needs_onboarding, run_onboarding
+
+        if not needs_onboarding():
+            return
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            return
+        run_onboarding()
+    except Exception:  # noqa: BLE001 — onboarding is best-effort, never fatal
+        pass
+
+
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context) -> None:
     """Default behavior: launch the TUI when no subcommand is given."""
+    _maybe_run_onboarding()
     if ctx.invoked_subcommand is not None:
         return
     from tui.cli._launch_tui import launch_tui

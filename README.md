@@ -78,20 +78,11 @@ itself if missing), and puts the `llmux` command on your PATH:
 curl -fsSL https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/install.sh | sh
 ```
 
-Then configure and launch:
+Then just launch it — the first run walks you through a short setup wizard
+(HF cache directory, model directory, optional token) and writes `.env.common`
+for you:
 
 ```bash
-cd ~/.llmux
-
-# 1. Shared HF token + model/cache dirs
-cp .env.common.example .env.common
-$EDITOR .env.common       # set HF_TOKEN, HF_CACHE_PATH, MODEL_DIR
-
-# 2. Profiles (start from the template, edit in place)
-cp profiles.example.yaml profiles.yaml
-$EDITOR profiles.yaml
-
-# 3. Launch the TUI from anywhere
 llmux
 ```
 
