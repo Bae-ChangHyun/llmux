@@ -104,6 +104,11 @@ def run_onboarding() -> bool:
             f"[red]HF_CACHE_PATH must be an absolute path:[/red] {hf_cache_path}"
         )
         return False
+    if not os.path.isabs(model_dir_path):
+        console.print(
+            f"[red]MODEL_DIR must be an absolute path:[/red] {model_dir_path}"
+        )
+        return False
 
     try:
         COMMON_ENV.write_text(

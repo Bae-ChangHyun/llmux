@@ -19,6 +19,22 @@ app = typer.Typer(
 )
 
 
+def _interactive_session() -> bool:
+    """True only for a genuine interactive terminal session.
+
+    Returns False under CI, or when `LLMUX_NONINTERACTIVE` is set, even if a
+    pseudo-TTY is allocated — so first-run onboarding and the update prompt
+    never block an automated job that happens to run with a TTY attached
+    (`docker run -t`, `ssh -t`, some CI runners).
+    """
+    import os
+    import sys
+
+    if os.environ.get("CI") or os.environ.get("LLMUX_NONINTERACTIVE"):
+        return False
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 def _maybe_run_onboarding() -> None:
     """Run the first-run wizard once, when `.env.common` is missing and the
     session is interactive.
@@ -28,14 +44,12 @@ def _maybe_run_onboarding() -> None:
     Onboarding is best-effort — any failure is swallowed so it never breaks
     startup.
     """
-    import sys
-
     try:
         from tui.common.onboarding import needs_onboarding, run_onboarding
 
         if not needs_onboarding():
             return
-        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        if not _interactive_session():
             return
         run_onboarding()
     except Exception:  # noqa: BLE001 — onboarding is best-effort, never fatal
