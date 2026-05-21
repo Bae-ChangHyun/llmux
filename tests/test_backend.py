@@ -1377,6 +1377,46 @@ class VersionCheckTests(unittest.TestCase):
         with patch.object(vc, "_git", side_effect=dirty_main):
             self.assertFalse(vc._local_clean_main())
 
+    def test_check_for_update_up_to_date_is_silent(self) -> None:
+        from tui.common import version_check as vc
+
+        with (
+            patch.object(vc, "_is_git_checkout", return_value=True),
+            patch.object(vc, "_cache_is_fresh", return_value=False),
+            patch.object(vc, "_write_cache"),
+            patch.object(vc, "_repo_slug", return_value="o/r"),
+            patch.object(vc, "_latest_release", return_value=("v9.9.9", "url")),
+            patch.object(vc, "_release_commit", return_value="sha"),
+            patch.object(vc, "_is_behind", return_value=False),
+            patch.object(vc, "_prompt_and_update") as prompt,
+        ):
+            vc.check_for_update()  # up to date → returns, never prompts
+        prompt.assert_not_called()
+
+    def test_check_for_update_propagates_systemexit_after_update(self) -> None:
+        from tui.common import version_check as vc
+
+        with (
+            patch.object(vc, "_is_git_checkout", return_value=True),
+            patch.object(vc, "_cache_is_fresh", return_value=False),
+            patch.object(vc, "_write_cache"),
+            patch.object(vc, "_repo_slug", return_value="o/r"),
+            patch.object(vc, "_latest_release", return_value=("v9.9.9", "url")),
+            patch.object(vc, "_release_commit", return_value="sha"),
+            patch.object(vc, "_is_behind", return_value=True),
+            patch.object(vc, "_prompt_and_update", side_effect=SystemExit(0)),
+        ):
+            # SystemExit from a successful self-update must reach the caller
+            # so the process exits and the user restarts on fresh code.
+            with self.assertRaises(SystemExit):
+                vc.check_for_update()
+
+    def test_check_for_update_swallows_errors(self) -> None:
+        from tui.common import version_check as vc
+
+        with patch.object(vc, "_is_git_checkout", side_effect=RuntimeError("boom")):
+            vc.check_for_update()  # any non-SystemExit error must not escape
+
 
 if __name__ == "__main__":
     unittest.main()

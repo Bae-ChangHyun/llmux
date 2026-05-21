@@ -161,7 +161,14 @@ def _is_behind(release_sha: str) -> bool | None:
     """
     rc, _ = _git("cat-file", "-e", f"{release_sha}^{{commit}}")
     if rc != 0:
-        return True  # release commit not present locally → behind
+        # The release commit is absent from local history. On a shallow clone
+        # that is expected for any older commit and proves nothing — stay
+        # undecided rather than nag. On a full clone it means the checkout
+        # genuinely predates the release.
+        rc_shallow, out_shallow = _git("rev-parse", "--is-shallow-repository")
+        if rc_shallow == 0 and out_shallow.strip() == "true":
+            return None
+        return True
     rc, _ = _git("merge-base", "--is-ancestor", release_sha, "HEAD")
     if rc == 0:
         return False
@@ -203,14 +210,20 @@ def _check_impl() -> None:
         return
 
     latest = _latest_release(slug)
-    _write_cache()  # one attempt per 24h, whether or not it found anything
     if latest is None:
+        # First API call failed — almost certainly offline or rate-limited.
+        # Cache it so we don't retry the network on every command for a day.
+        _write_cache()
         return
     tag, url = latest
 
     release_sha = _release_commit(slug, tag)
     if release_sha is None:
+        # The releases API worked but resolving the tag's commit did not — a
+        # transient second-call failure. Skip the cache so the next run
+        # retries instead of staying silent for 24h.
         return
+    _write_cache()
     if _is_behind(release_sha) is not True:  # False or None → don't nag
         return
 
