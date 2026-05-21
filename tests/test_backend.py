@@ -918,6 +918,30 @@ class StreamContainerUpPortConflictTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, [("log", "common env missing"), ("rc", 1)])
 
 
+async def _drain_validation(gen):
+    """Run the _post_start_validation async generator to completion.
+
+    Returns (ok, result_messages, log_lines) — the final ("result", ...)
+    payload plus any ("log", ...) heartbeat lines emitted along the way.
+    Raises AssertionError if the generator finishes without ever yielding a
+    final ("result", ...) event, so every caller implicitly verifies that
+    contract on both the success and failure paths.
+    """
+    ok: bool | None = None
+    messages: list[str] = []
+    logs: list[str] = []
+    async for ev in gen:
+        if ev[0] == "result":
+            ok, messages = ev[1], ev[2]
+        else:
+            logs.append(ev[1])
+    if ok is None:
+        raise AssertionError(
+            "_post_start_validation finished without yielding a ('result', ...) event"
+        )
+    return ok, messages, logs
+
+
 class PostStartValidationTests(unittest.IsolatedAsyncioTestCase):
     async def test_fails_when_container_cannot_be_inspected(self) -> None:
         profile = backend.Profile(name="p", container_name="p", port="8000")
@@ -929,7 +953,9 @@ class PostStartValidationTests(unittest.IsolatedAsyncioTestCase):
             _post_start_validation.__globals__,
             {"run_command": fake_run_command},
         ):
-            ok, messages = await _post_start_validation(profile, timeout=0.1, poll_interval=0.05)
+            ok, messages, _ = await _drain_validation(
+                _post_start_validation(profile, timeout=0.1, poll_interval=0.05)
+            )
 
         self.assertFalse(ok)
         self.assertTrue(any("could not inspect container" in m for m in messages))
@@ -951,7 +977,9 @@ class PostStartValidationTests(unittest.IsolatedAsyncioTestCase):
                 "_models_endpoint_ready": AsyncMock(return_value=False),
             },
         ):
-            ok, messages = await _post_start_validation(profile, timeout=0.1, poll_interval=0.05)
+            ok, messages, _ = await _drain_validation(
+                _post_start_validation(profile, timeout=0.1, poll_interval=0.05)
+            )
 
         self.assertFalse(ok)
         self.assertTrue(any("exited during startup" in m for m in messages))
@@ -976,7 +1004,155 @@ class PostStartValidationTests(unittest.IsolatedAsyncioTestCase):
                 "_models_endpoint_ready": AsyncMock(return_value=False),
             },
         ):
-            ok, messages = await _post_start_validation(profile, timeout=0.1, poll_interval=0.05)
+            ok, messages, _ = await _drain_validation(
+                _post_start_validation(profile, timeout=0.1, poll_interval=0.05)
+            )
+
+        self.assertFalse(ok)
+        self.assertTrue(any("/v1/models is not ready within timeout" in m for m in messages))
+
+    async def test_download_keeps_waiting_past_flat_timeout(self) -> None:
+        # A first-run multi-GB download grows the HF cache for longer than the
+        # flat readiness budget. The stall deadline must reset on cache growth
+        # so the container is not falsely reported "not ready" while the model
+        # is still downloading inside the container.
+        profile = backend.Profile(name="p", container_name="p", port="8000")
+
+        state = {"du_calls": 0}
+
+        async def fake_run_command(*args, **kwargs):
+            if args[0] == "du":
+                state["du_calls"] += 1
+                # Cache grows for the first 10 probes, then plateaus.
+                gb = min(state["du_calls"], 10)
+                return 0, f"{gb * 1_000_000_000}\t/fake/cache\n"
+            if args[:2] == ("docker", "inspect"):
+                return 0, "running\tstarting"
+            if args[:2] == ("docker", "logs"):
+                # Log stays frozen — llama.cpp's downloader is silent in
+                # `docker logs`, so cache growth is the only progress signal.
+                return 0, "frozen-download-log\n"
+            return 0, ""
+
+        async def fake_ready(_port):
+            # Endpoint comes up only once the cache has stopped growing.
+            return state["du_calls"] > 10
+
+        with patch.dict(
+            _post_start_validation.__globals__,
+            {"run_command": fake_run_command, "_models_endpoint_ready": fake_ready},
+        ):
+            ok, messages, _ = await _drain_validation(
+                _post_start_validation(
+                    profile,
+                    timeout=0.1,
+                    poll_interval=0.02,
+                    hf_cache_path="/fake/cache",
+                )
+            )
+
+        # Download wall-time (~9 polls x 0.02s ~= 0.18s) far exceeds the 0.1s
+        # budget; a fixed deadline would have failed long before the endpoint
+        # came up. The stall deadline resets on each cache-growth poll instead.
+        self.assertTrue(ok, msg=messages)
+        self.assertEqual(messages, [])
+
+    async def test_capped_when_log_churns_without_readiness(self) -> None:
+        # A container that stays "running" and keeps emitting fresh log lines
+        # (e.g. an error-retry loop) would reset the stall deadline forever.
+        # The absolute max_wait backstop must still end the wait.
+        profile = backend.Profile(name="p", container_name="p", port="8000")
+
+        state = {"n": 0}
+
+        async def fake_run_command(*args, **kwargs):
+            if args[:2] == ("docker", "inspect"):
+                return 0, "running\tstarting"
+            if args[:2] == ("docker", "logs"):
+                state["n"] += 1
+                return 0, f"ever-changing-log-line-{state['n']}\n"
+            return 0, ""
+
+        with patch.dict(
+            _post_start_validation.__globals__,
+            {
+                "run_command": fake_run_command,
+                "_models_endpoint_ready": AsyncMock(return_value=False),
+            },
+        ):
+            ok, messages, _ = await _drain_validation(
+                _post_start_validation(
+                    profile, timeout=10.0, poll_interval=0.02, max_wait=0.1
+                )
+            )
+
+        # The stall deadline (10s) never fires — the log churns every poll —
+        # so only the max_wait backstop can end this.
+        self.assertFalse(ok)
+        self.assertTrue(any("still not ready after" in m for m in messages))
+
+
+class LlamacppPostStartValidationTests(unittest.IsolatedAsyncioTestCase):
+    """Parity guard: the llama.cpp _post_start_validation must behave like the
+    vLLM mirror. It wraps docker calls in `_docker_run` (not `run_command`),
+    so a copy-paste divergence would slip past the vLLM-only tests above.
+    """
+
+    async def test_download_keeps_waiting_past_flat_timeout(self) -> None:
+        profile = lbackend.Profile(name="p", container_name="p", port=8000)
+
+        state = {"du_calls": 0}
+
+        async def fake_docker_run(*args, **kwargs):
+            if args[0] == "du":
+                state["du_calls"] += 1
+                gb = min(state["du_calls"], 10)
+                return 0, f"{gb * 1_000_000_000}\t/fake/cache\n"
+            if args[:2] == ("docker", "inspect"):
+                return 0, "running\tstarting"
+            if args[:2] == ("docker", "logs"):
+                return 0, "frozen-download-log\n"
+            return 0, ""
+
+        async def fake_ready(_port):
+            return state["du_calls"] > 10
+
+        with patch.dict(
+            lbackend_rt._post_start_validation.__globals__,
+            {"_docker_run": fake_docker_run, "_models_endpoint_ready": fake_ready},
+        ):
+            ok, messages, _ = await _drain_validation(
+                lbackend_rt._post_start_validation(
+                    profile,
+                    timeout=0.1,
+                    poll_interval=0.02,
+                    hf_cache_path="/fake/cache",
+                )
+            )
+
+        self.assertTrue(ok, msg=messages)
+        self.assertEqual(messages, [])
+
+    async def test_fails_when_models_endpoint_not_ready_before_timeout(self) -> None:
+        profile = lbackend.Profile(name="p", container_name="p", port=8000)
+
+        async def fake_docker_run(*args, **kwargs):
+            if args[:2] == ("docker", "inspect"):
+                return 0, "running\tstarting"
+            return 0, ""
+
+        with patch.dict(
+            lbackend_rt._post_start_validation.__globals__,
+            {
+                "_docker_run": fake_docker_run,
+                "_models_endpoint_ready": AsyncMock(return_value=False),
+            },
+        ):
+            ok, messages, _ = await _drain_validation(
+                lbackend_rt._post_start_validation(
+                    profile, timeout=0.1, poll_interval=0.05
+                )
+            )
 
         self.assertFalse(ok)
         self.assertTrue(any("/v1/models is not ready within timeout" in m for m in messages))

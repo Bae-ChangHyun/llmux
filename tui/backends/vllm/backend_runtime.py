@@ -476,19 +476,63 @@ async def _models_endpoint_ready(port: str, timeout: int = 3) -> bool:
     return await loop.run_in_executor(None, _probe)
 
 
+async def _dir_size_bytes(path: str | None) -> int | None:
+    """Disk usage of `path` in bytes via `du`, or None when unavailable.
+
+    Backend-agnostic download-progress signal: both vLLM and llama.cpp stream
+    model weights into the bind-mounted HF cache, so a growing cache directory
+    means a download is still in flight. `-B1` reports actual disk blocks (not
+    apparent size) so detection holds even if a downloader pre-allocates the
+    target file. Mirrors llamacpp._dir_size_bytes — keep the two in sync.
+    """
+    if not path:
+        return None
+    rc, out = await run_command("du", "-s", "-B1", path, timeout=15)
+    if rc != 0:
+        return None
+    head = out.strip().split(maxsplit=1)
+    if not head or not head[0].isdigit():
+        return None
+    return int(head[0])
+
+
 async def _post_start_validation(
     profile: Profile,
     *,
     timeout: float = 45.0,
-    poll_interval: float = 2.0,
-) -> tuple[bool, list[str]]:
+    poll_interval: float = 3.0,
+    max_wait: float = 1800.0,
+    hf_cache_path: str | None = None,
+):
     """Validate container state right after `compose up -d`.
 
-    Prevents false-positive success when compose starts a container that exits
+    Async generator: yields ("log", str) progress lines while waiting, then a
+    final ("result", ok: bool, messages: list[str]) tuple. Prevents
+    false-positive success when compose starts a container that exits
     immediately (for example, GPU OOM during engine init).
+
+    Readiness uses a *stall* deadline rather than a fixed wall-clock budget:
+    the deadline is pushed back on every observed sign of progress — the HF
+    cache growing (model still downloading) or the container log advancing
+    (model still loading). A first-run download of a multi-GB model would
+    otherwise blow a flat 45s budget and surface as a false "not ready" error
+    even though the container comes up fine minutes later.
+
+    `max_wait` is an absolute backstop: a container that only churns its log
+    (e.g. an error-retry loop) would otherwise reset the stall deadline
+    forever. The backstop is *not* applied while a download is actively in
+    flight (cache still growing) — that is genuine progress and must never be
+    capped. Mirrors llamacpp._post_start_validation — keep the two in sync.
     """
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + max(timeout, poll_interval)
+    stall_timeout = max(timeout, poll_interval)
+    deadline = loop.time() + stall_timeout
+    start = loop.time()
+
+    last_cache_size: int | None = None
+    last_log_tail: str | None = None
+    last_heartbeat = start
+    downloaded_bytes = 0
 
     while True:
         rc, state = await run_command(
@@ -501,10 +545,15 @@ async def _post_start_validation(
         )
         if rc != 0:
             message = state.strip() or "docker inspect failed"
-            return False, [
-                f"Error: could not inspect container '{profile.container_name}' after startup.",
-                f"  {message}",
-            ]
+            yield (
+                "result",
+                False,
+                [
+                    f"Error: could not inspect container '{profile.container_name}' after startup.",
+                    f"  {message}",
+                ],
+            )
+            return
         status = "unknown"
         health = "unknown"
         if state.strip():
@@ -530,27 +579,97 @@ async def _post_start_validation(
             if tail.strip():
                 messages.append("Recent logs:")
                 messages.extend([f"  {line}" for line in tail.strip().splitlines()[-12:]])
-            return False, messages
+            yield ("result", False, messages)
+            return
 
         if status not in {"running"}:
-            return False, [
-                f"Error: container '{profile.container_name}' is not running after startup ({status})."
-            ]
+            yield (
+                "result",
+                False,
+                [
+                    f"Error: container '{profile.container_name}' is not running after startup ({status})."
+                ],
+            )
+            return
 
         if await _models_endpoint_ready(profile.port):
-            return True, []
+            yield ("result", True, [])
+            return
 
-        if loop.time() >= deadline:
-            # Timeout: the container is running but /v1/models still has no
-            # served entry, so we cannot truthfully claim readiness. Returning
-            # False prevents the caller (CLI/TUI) from chaining a benchmark or
-            # marking the start as a green success when the model is in fact
-            # still loading; users can re-run `up` (a no-op for a running
-            # container) once the model finishes initializing.
-            return False, [
-                "Error: container started but /v1/models is not ready within timeout.",
-                "  Model is likely still loading — watch logs and retry once ready.",
-            ]
+        # Progress detection: push the stall deadline back on any sign of life —
+        # the HF cache growing (still downloading) or the log advancing (still
+        # loading). Genuine stalls leave both flat and time out as before.
+        progressed = False
+        downloading = False
+
+        cache_size = await _dir_size_bytes(hf_cache_path)
+        if (
+            last_cache_size is not None
+            and cache_size is not None
+            and cache_size > last_cache_size
+        ):
+            downloading = True
+            progressed = True
+            downloaded_bytes += cache_size - last_cache_size
+        if cache_size is not None:
+            last_cache_size = cache_size
+
+        _, log_tail = await run_command(
+            "docker", "logs", "--tail", "15", profile.container_name, timeout=10
+        )
+        if last_log_tail is not None and log_tail != last_log_tail:
+            progressed = True
+        last_log_tail = log_tail
+
+        # Read the clock *after* the awaited probes above so the stall window
+        # is measured from now, not from before up to ~25s of subprocess I/O.
+        now = loop.time()
+        if progressed:
+            deadline = now + stall_timeout
+
+        if progressed and now - last_heartbeat >= 12.0:
+            if downloading:
+                yield (
+                    "log",
+                    f"  ⏳ 모델 다운로드 중... "
+                    f"({int(now - start)}s 경과, HF 캐시 +{downloaded_bytes / 1024**3:.1f} GB)",
+                )
+            else:
+                yield ("log", f"  ⏳ 모델 로딩 중... ({int(now - start)}s 경과)")
+            last_heartbeat = now
+
+        if not downloading and now - start >= max_wait:
+            # Absolute backstop: a download still in flight is never capped
+            # (cache growth above keeps `downloading` True), but a container
+            # that only churns its log without ever serving a model must not
+            # hold the probe open forever.
+            yield (
+                "result",
+                False,
+                [
+                    f"Error: container '{profile.container_name}' still not ready "
+                    f"after {int(max_wait)}s.",
+                    "  Model may be stuck — check `docker logs` and retry once ready.",
+                ],
+            )
+            return
+
+        if now >= deadline:
+            # No progress for the full stall window: the container is running
+            # but /v1/models still has no served entry, so we cannot truthfully
+            # claim readiness. Returning False prevents the caller (CLI/TUI)
+            # from chaining a benchmark or marking the start as a green success
+            # when the model is in fact still loading; users can re-run `up`
+            # (a no-op for a running container) once it finishes initializing.
+            yield (
+                "result",
+                False,
+                [
+                    "Error: container started but /v1/models is not ready within timeout.",
+                    "  Model is likely still loading — watch logs and retry once ready.",
+                ],
+            )
+            return
 
         await asyncio.sleep(poll_interval)
 
@@ -754,8 +873,16 @@ async def stream_container_up(
 
         yield ("log", f"{profile.name} started successfully!")
 
-        ok, messages = await _post_start_validation(profile)
-        for message in messages:
+        ok = False
+        val_messages: list[str] = []
+        async for ev in _post_start_validation(
+            profile, hf_cache_path=env.get("HF_CACHE_PATH") or None
+        ):
+            if ev[0] == "result":
+                ok, val_messages = ev[1], ev[2]
+            else:
+                yield ev
+        for message in val_messages:
             yield ("log", message)
         if not ok:
             yield ("rc", 1)
