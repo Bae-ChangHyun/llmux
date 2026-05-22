@@ -15,7 +15,6 @@ blocking on a prompt.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
 from tui.common.env import validate_common_env
@@ -23,8 +22,6 @@ from tui.common.profile_store import PROJECT_ROOT
 
 COMMON_ENV = PROJECT_ROOT / ".env.common"
 COMMON_ENV_EXAMPLE = PROJECT_ROOT / ".env.common.example"
-PROFILES_YAML = PROJECT_ROOT / "profiles.yaml"
-PROFILES_EXAMPLE = PROJECT_ROOT / "profiles.example.yaml"
 
 
 def needs_onboarding() -> bool:
@@ -59,7 +56,7 @@ def run_onboarding() -> bool:
     """
     from rich.console import Console
     from rich.panel import Panel
-    from rich.prompt import Confirm, Prompt
+    from rich.prompt import Prompt
 
     console = Console()
 
@@ -135,18 +132,6 @@ def run_onboarding() -> bool:
                 f"[yellow]⚠ Could not create {path}: {exc}[/yellow]\n"
                 "[yellow]  Create it yourself before starting a container.[/yellow]"
             )
-
-    # Offer to seed profiles.yaml so the first launch has something to show.
-    if not PROFILES_YAML.exists() and PROFILES_EXAMPLE.exists():
-        try:
-            if Confirm.ask(
-                "Create profiles.yaml from the template?",
-                default=True,
-                console=console,
-            ):
-                shutil.copyfile(PROFILES_EXAMPLE, PROFILES_YAML)
-        except (KeyboardInterrupt, EOFError):
-            pass
 
     ok, messages = validate_common_env(COMMON_ENV)
     if not ok:

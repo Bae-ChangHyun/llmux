@@ -1446,12 +1446,10 @@ class OnboardingTests(unittest.TestCase):
             dpath = Path(d)
             with (
                 patch.object(onboarding, "COMMON_ENV", dpath / ".env.common"),
-                patch.object(onboarding, "PROFILES_YAML", dpath / "profiles.yaml"),
                 patch(
                     "rich.prompt.Prompt.ask",
                     side_effect=[str(dpath / "cache"), str(dpath / "models"), ""],
                 ),
-                patch("rich.prompt.Confirm.ask", return_value=False),
             ):
                 ok = onboarding.run_onboarding()
 
