@@ -14,8 +14,10 @@ dist/
 # Local-only artifacts
 TODO.md
 todo.md
-CLAUDE.local.md
 HANDOFF.md
+# Personal agent notes — public AGENTS.md / CLAUDE.md ARE tracked;
+# *.local.md siblings (AGENTS.local.md, CLAUDE.local.md, …) are per-developer.
+*.local.md
 .current-profile
 .current-profile-*
 .current-profile.*
