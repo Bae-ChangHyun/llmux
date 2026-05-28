@@ -173,15 +173,6 @@ Full docs live at **[Bae-ChangHyun.github.io/llmux](https://Bae-ChangHyun.github
 
 <br/>
 
-## Credits
-
-llmux evolved from and unifies two earlier projects by the same author, now superseded:
-
-- `vllm-compose` &mdash; vLLM profiles (this repo's predecessor; renamed to `llmux`)
-- `llamacpp-compose` &mdash; llama.cpp profiles (merged in)
-
----
-
 <div align="center">
 
 **MIT License**
