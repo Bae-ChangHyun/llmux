@@ -100,14 +100,14 @@ wheels = [
 
 [[package]]
 name = "hf-mem"
-version = "0.5.2"
+version = "0.5.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx", extra = ["http2"] },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f5/67/45dd8c5727a2f91dc12d6ef8898c33e65b264e474d75c879b3f07fcc9e7d/hf_mem-0.5.2.tar.gz", hash = "sha256:c48588388fa740a0e2084458e43c94ad557881c2b6440c9ddbbe5f603c933bc6", size = 23683, upload_time = "2026-03-30T07:12:03.184Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/90/d0/1081aab0ee40cd2bf7afb66d6a16eef4301c8488fcd3def64780858c13f2/hf_mem-0.5.5.tar.gz", hash = "sha256:347b758718c89656eeb5252921cb1ce499cfc38e35ad816b601cf57a992eb43d", size = 25882, upload_time = "2026-05-12T10:12:56.727Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d2/fb/1d43b3d53c49021b256ff970a4a35e2d7659f3a816ba59e58c2e1bd0c98c/hf_mem-0.5.2-py3-none-any.whl", hash = "sha256:dca25ac69d92e948cc513bb0377b0239f932b4a3b6f2b3131005b45a485fe52f", size = 31210, upload_time = "2026-03-30T07:12:02.318Z" },
+    { url = "https://files.pythonhosted.org/packages/72/8e/07365db3045954f93a4add887c31285a09aca618889e3a28990c0dae9dda/hf_mem-0.5.5-py3-none-any.whl", hash = "sha256:6f075330b13880c6797fb6c3fa67260307676dc416faa88cfa0a428b1fc5f8d7", size = 33482, upload_time = "2026-05-12T10:12:57.588Z" },
 ]
 
 [[package]]
@@ -193,7 +193,7 @@ wheels = [
 
 [[package]]
 name = "llmux"
-version = "2.0.2"
+version = "2.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "hf-mem" },
