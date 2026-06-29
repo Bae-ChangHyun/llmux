@@ -66,3 +66,6 @@ models/*.bin
 *.cast
 compose/llamacpp/docker-compose.override.yaml
 site/
+
+# 개인 노트(thinking/budget 정리, 공용 참고)
+THINKING_BUDGET.md
