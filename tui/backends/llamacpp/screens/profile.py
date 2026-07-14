@@ -222,7 +222,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
         except ValueError:
             self.notify("Port 는 1024–65535 정수", severity="error")
             return
-        if gpu_id and not re.match(r"^[0-9](,[0-9])*$", gpu_id):
+        if gpu_id and not re.match(r"^[0-9]+(,[0-9]+)*$", gpu_id):
             self.notify("GPU ID 는 숫자/콤마 (예: 0 또는 0,1)", severity="error")
             return
         if hf_repo and not re.match(r"^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$", hf_repo):

@@ -394,7 +394,7 @@ class QuickSetupScreen(ModalScreen[str]):
                 severity="error",
             )
             return
-        if not re.fullmatch(r"[0-9](,[0-9])*", gpu):
+        if not re.fullmatch(r"[0-9]+(,[0-9]+)*", gpu):
             self.notify("GPU ID 는 숫자/콤마 (예: 0 또는 0,1)", severity="error")
             return
 

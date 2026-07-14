@@ -86,6 +86,30 @@ _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # both backends now share the lowercase rule.
 _PROFILE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
+# GPU id rule (unified across CLI + TUI + both backends). Multi-digit indices
+# are allowed so hosts with 10+ GPUs are addressable — the older
+# `[0-9](,[0-9])*` capped every index at a single digit.
+_GPU_ID_RE = re.compile(r"^[0-9]+(,[0-9]+)*$")
+
+PORT_MIN = 1024
+PORT_MAX = 65535
+
+
+def _validate_port(port: int, *, param_hint: str = "--port") -> None:
+    if not PORT_MIN <= int(port) <= PORT_MAX:
+        raise typer.BadParameter(
+            f"port must be in {PORT_MIN}–{PORT_MAX}", param_hint=param_hint
+        )
+
+
+def _validate_gpu_id(gpu_id: str, *, param_hint: str = "--gpu-id") -> None:
+    if not _GPU_ID_RE.match(gpu_id):
+        raise typer.BadParameter(
+            "GPU id must be digit(s) separated by single commas "
+            "(e.g. '0', '0,1', '0,10').",
+            param_hint=param_hint,
+        )
+
 
 def _validate_profile_name(name: str, backend: str, *, param_hint: str = "NAME") -> None:
     """Reject names a backend's own runtime would reject at start time.
@@ -172,6 +196,12 @@ def new_profile(
     if backend not in BACKENDS:
         raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
     _validate_profile_name(name, backend)
+    # port 0 is the documented "use the backend default" sentinel; any other
+    # out-of-range value is a mistake.
+    if port:
+        _validate_port(port)
+    if gpu_id:
+        _validate_gpu_id(gpu_id)
     if profile_store.load_profile(name, backend) is not None:
         raise typer.BadParameter(
             f"profile '{name}' already exists in backend '{backend}'", param_hint="NAME"
@@ -229,8 +259,10 @@ def edit_profile(
     sp = profile_store.load_profile(name, bk)
 
     if port is not None:
+        _validate_port(port)
         sp.port = port
     if gpu_id is not None:
+        _validate_gpu_id(gpu_id)
         sp.gpu_id = gpu_id
         sp.tensor_parallel_size = len(gpu_id.split(",")) if gpu_id else 1
     if model is not None:
@@ -444,6 +476,9 @@ def _quick_setup_vllm(
             param_hint="MODEL",
         )
 
+    _validate_port(port)
+    _validate_gpu_id(gpu_id)
+
     if not name:
         tail = model.rsplit("/", 1)[-1]
         derived = re.sub(r"[^a-z0-9-]", "-", tail.lower()).strip("-")
@@ -529,15 +564,8 @@ def _quick_setup_llamacpp(
             "llama.cpp quick-setup requires --hf-file (GGUF filename inside the repo).",
             param_hint="--hf-file",
         )
-    if not 1024 <= int(port) <= 65535:
-        raise typer.BadParameter(
-            "port must be in 1024–65535", param_hint="--port"
-        )
-    if not re.fullmatch(r"[0-9](,[0-9])*", gpu_id):
-        raise typer.BadParameter(
-            "GPU id must be digits separated by commas (e.g. '0' or '0,1').",
-            param_hint="--gpu-id",
-        )
+    _validate_port(port)
+    _validate_gpu_id(gpu_id)
 
     from tui.backends.llamacpp.backend import (
         Config as LcppConfig,

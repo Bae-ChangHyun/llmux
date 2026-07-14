@@ -139,11 +139,16 @@ def disk(
     """
     from tui.backends.llamacpp.backend import (
         ROOT,
+        _get_hf_cache_dir,
         _get_model_dir,
         get_disk_usage,
+        list_cached_gguf,
     )
 
     model_dir = _get_model_dir()
+    hf_cache_dir = _get_hf_cache_dir()
+    cached = list_cached_gguf()
+    cached_total_gb = round(sum(c["size_bytes"] for c in cached) / 1024**3, 1)
     files: list[dict] = []
     if model_dir.exists():
         for f in sorted(
@@ -170,12 +175,15 @@ def disk(
                 "project_root": str(ROOT),
                 "model_dir": str(model_dir),
                 "model_dir_exists": model_dir.exists(),
+                "hf_cache_dir": str(hf_cache_dir),
                 "df_target": target,
                 "df_used": used,
                 "df_avail": avail,
                 "df_percent": pct,
                 "gguf_files": files,
                 "gguf_total_gb": total_gb,
+                "hf_cache_gguf_files": cached,
+                "hf_cache_gguf_total_gb": cached_total_gb,
             }
         )
         return
@@ -188,6 +196,11 @@ def disk(
         print(f"GGUF files   : {len(files)}  (total {total_gb:.1f} GB)")
         for f in files:
             print(f"  {f['name']}  {f['size_gb']:.1f} GB")
+    # llama-server's `-hf` download lands here, not in MODEL_DIR.
+    print(f"HF cache dir : {hf_cache_dir}")
+    print(f"HF cache GGUF: {len(cached)}  (total {cached_total_gb:.1f} GB)")
+    for c in cached:
+        print(f"  {c['repo']}/{c['name']}  {c['size_gb']:.1f} GB")
     if used:
         print(f"df {target}: used {used}, avail {avail}  ({pct})")
 

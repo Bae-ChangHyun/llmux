@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import statistics
 import time
 import urllib.request
 
@@ -45,6 +46,48 @@ async def chat_completion_bench(
         return {"elapsed": elapsed, "usage": d.get("usage", {})}
 
     return await loop.run_in_executor(None, _do)
+
+
+async def run_bench(
+    port: int | str,
+    model: str,
+    *,
+    prompt: str = "Explain the theory of relativity in about 150 words.",
+    max_tokens: int = 200,
+    runs: int = 3,
+    warmup: int = 1,
+) -> dict:
+    """Warm up, then measure `runs` completions and summarize with the median.
+
+    A single cold call conflates model/CUDA-graph warmup with steady-state
+    decode speed, so the first number a user sees is always pessimistic and
+    not reproducible. Discard `warmup` calls, then report the median of `runs`
+    (median, not mean — one scheduler hiccup shouldn't move the headline).
+    """
+    for _ in range(max(0, warmup)):
+        await chat_completion_bench(
+            port, model, prompt=prompt, max_tokens=max_tokens
+        )
+
+    results: list[dict] = []
+    for _ in range(max(1, runs)):
+        r = await chat_completion_bench(
+            port, model, prompt=prompt, max_tokens=max_tokens
+        )
+        usage = r.get("usage", {})
+        tokens = int(usage.get("completion_tokens", 0) or 0)
+        elapsed = float(r.get("elapsed", 0.0) or 0.0)
+        tps = tokens / elapsed if elapsed > 0 else 0.0
+        results.append({"tokens": tokens, "elapsed": elapsed, "tps": tps})
+
+    all_tps = [r["tps"] for r in results]
+    return {
+        "model": model,
+        "runs": results,
+        "median_tps": statistics.median(all_tps),
+        "min_tps": min(all_tps),
+        "max_tps": max(all_tps),
+    }
 
 
 async def list_served_models(port: int | str, timeout: int = 5) -> list[str]:

@@ -106,14 +106,11 @@ class QuickSetupScreen(ModalScreen[str]):
 
     def _build_config_options(self) -> list[tuple[str, str]]:
         from tui.backends.vllm.backend import list_config_names, load_config
-        options = []
-        for name in list_config_names():
-            cfg = load_config(name)
-            n_params = len(cfg.extra_params)
-            if n_params > 0:
-                label = f"{name}  ({n_params} params)"
-                options.append((label, name))
-        return options
+
+        return [
+            (f"{name} ({len(load_config(name).extra_params)} params)", name)
+            for name in list_config_names()
+        ]
 
     @on(Input.Blurred, "#model-input")
     def _on_model_blur(self, event: Input.Blurred) -> None:
