@@ -173,6 +173,9 @@ class ConfigFormScreen(ModalScreen[str | None]):
         width: auto;
         min-width: 20;
     }
+    ConfigFormScreen #params-container {
+        height: auto;
+    }
     ConfigFormScreen .param-row {
         height: auto;
         margin-bottom: 0;

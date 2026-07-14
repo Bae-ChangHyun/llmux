@@ -264,6 +264,7 @@ def _compose_env(profile: Profile) -> dict[str, str]:
         env.update(_parse_env_file(COMMON_ENV))
     if profile.path.exists():
         env.update(_parse_env_file(profile.path))
+    env["PROFILE_PATH"] = str(profile.path)
     return env
 
 

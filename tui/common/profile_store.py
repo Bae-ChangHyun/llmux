@@ -237,8 +237,6 @@ def _profile_to_entry(
             out["lora_modules"] = profile.lora_modules
         if profile.extra_pip_packages:
             out["extra_pip_packages"] = profile.extra_pip_packages
-        if profile.env_vars:
-            out["env_vars"] = dict(profile.env_vars)
     else:
         if profile.model_file:
             out["model_file"] = profile.model_file
@@ -246,6 +244,8 @@ def _profile_to_entry(
             out["hf_repo"] = profile.hf_repo
         if profile.hf_file:
             out["hf_file"] = profile.hf_file
+    if profile.env_vars:
+        out["env_vars"] = dict(profile.env_vars)
     if profile.image_tag:
         out["image_tag"] = profile.image_tag
     return out
@@ -398,6 +398,17 @@ def _render_env_lines(profile: StoredProfile) -> list[str]:
             lines.append(_env_line("HF_REPO", profile.hf_repo))
         if profile.hf_file:
             lines.append(_env_line("HF_FILE", profile.hf_file))
+        reserved = _RESERVED_ENV_KEYS_BY_BACKEND["llamacpp"]
+        for k, v in profile.env_vars.items():
+            if k in reserved:
+                # Same rationale as the vllm branch: a reserved key set through
+                # env_vars would shadow the StoredProfile field the conflict
+                # checker/TUI/CLI all report, so refuse the write outright.
+                raise ValueError(
+                    f"env_vars cannot override reserved profile key {k!r}; "
+                    f"set it on the profile itself (gpu_id/port/etc.) instead."
+                )
+            lines.append(_env_line(k, v))
         if profile.image_tag:
             if profile.image_tag.startswith("llamacpp-dev:"):
                 # llama.cpp dev-build images are consumed in

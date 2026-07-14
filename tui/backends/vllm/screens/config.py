@@ -131,6 +131,9 @@ class ConfigFormScreen(ModalScreen[str | None]):
         color: $text-muted;
         margin-bottom: 1;
     }
+    ConfigFormScreen #params-container {
+        height: auto;
+    }
     ConfigFormScreen .param-row {
         height: auto;
         margin-bottom: 0;
@@ -291,7 +294,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
             return
         if not _validate_name(name):
             self.notify(
-                "Name must contain only letters, digits, dashes, or underscores.",
+                "Name must be lowercase: start with [a-z0-9], then lowercase letters, digits, dashes, or underscores only.",
                 severity="error",
             )
             return

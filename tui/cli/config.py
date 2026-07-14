@@ -16,6 +16,7 @@ import typer
 import yaml
 
 from tui.cli._runtime import BACKENDS, emit_json, emit_table
+from tui.common import profile_store
 
 app = typer.Typer(help="Config (YAML) CRUD.", no_args_is_help=True)
 
@@ -301,8 +302,23 @@ def delete_config(
     path = _config_dir(bk) / f"{name}.yaml"
     if not path.exists():
         raise typer.BadParameter(f"config not found: {path}", param_hint="NAME")
+    # Profiles pointing at this config would keep a dangling config_name in
+    # profiles.yaml once the YAML is gone; clear them like the TUI's
+    # ConfirmDeleteConfigScreen does.
+    referencing = [p for p in profile_store.list_profiles(bk) if p.config_name == name]
     if not yes:
-        if not typer.confirm(f"Delete {path}?"):
+        prompt = f"Delete {path}?"
+        if referencing:
+            listed = ", ".join(sorted(p.name for p in referencing))
+            prompt = (
+                f"Delete {path}? "
+                f"(referenced by profiles: {listed} — their config_name will be cleared)"
+            )
+        if not typer.confirm(prompt):
             raise typer.Exit(code=0)
     path.unlink()
     print(f"Deleted {path}")
+    for p in referencing:
+        p.config_name = ""
+        profile_store.save_profile(p)
+        print(f"Cleared config_name on profile: {p.name}")

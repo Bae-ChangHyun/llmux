@@ -65,10 +65,13 @@ class ActionModal(ModalScreen[str]):
         options: list[Option] = []
         if running:
             options.append(Option("■ Stop Container", id="stop"))
-            options.append(Option("◉ View Logs", id="logs"))
-            options.append(Option("⚡ Benchmark", id="benchmark"))
         else:
             options.append(Option("▶ Start Container", id="start"))
+        # `docker logs` also works on exited containers, so the log viewer is
+        # offered in both states — matching the `l` binding on the dashboard.
+        options.append(Option("◉ View Logs", id="logs"))
+        if running:
+            options.append(Option("⚡ Benchmark", id="benchmark"))
         options.append(Option("✎ Edit Profile", id="edit-profile"))
         options.append(Option("⚙ Edit Config", id="edit-config"))
         if not running:
