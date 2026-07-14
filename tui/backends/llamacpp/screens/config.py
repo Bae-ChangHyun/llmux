@@ -25,6 +25,7 @@ from tui.backends.llamacpp.backend import (
     save_config,
     validate_name,
 )
+from tui.common.widgets import TextPromptModal
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +500,7 @@ class ConfigListScreen(Screen):
     BINDINGS = [
         Binding("n", "new_config", "New"),
         Binding("e,enter", "edit_config", "Edit"),
+        Binding("c", "clone_config", "Clone"),
         Binding("delete,x", "delete_config", "Delete"),
         Binding("escape,backspace", "go_back", "Back"),
         Binding("r", "refresh", "Refresh"),
@@ -550,6 +552,38 @@ class ConfigListScreen(Screen):
             self.notify("선택된 config 없음", severity="warning")
             return
         self.app.push_screen(ConfigFormScreen(name), self._on_form_closed)
+
+    def action_clone_config(self) -> None:
+        name = self._get_selected()
+        if not name:
+            self.notify("선택된 config 없음", severity="warning")
+            return
+
+        existing = set(list_config_names())
+        default = f"{name}-copy"
+        suffix = 2
+        while default in existing:
+            default = f"{name}-copy-{suffix}"
+            suffix += 1
+
+        def after(new_name: str | None) -> None:
+            if not new_name:
+                return
+            if not validate_name(new_name):
+                self.notify("이름은 소문자/숫자/대시/언더스코어", severity="error")
+                return
+            if new_name in set(list_config_names()):
+                self.notify(f"Config '{new_name}' 이미 존재", severity="error")
+                return
+            cfg = load_config(name)
+            cfg.name = new_name
+            save_config(cfg)
+            self._refresh_table()
+            self.notify(f"복제: '{name}' → '{new_name}'")
+
+        self.app.push_screen(
+            TextPromptModal(f"Clone config '{name}' as:", default=default), after
+        )
 
     def action_delete_config(self) -> None:
         name = self._get_selected()

@@ -180,6 +180,50 @@ class CliSmokeTests(unittest.TestCase):
 
     # --- profile/config write paths (round-trip) ---------------------------
 
+    # --- port / gpu-id validation (unified CLI ⇄ TUI rule) ------------------
+
+    def test_profile_new_rejects_privileged_port(self):
+        r = _run_cli(
+            self.tmp, "profile", "new", "p80", "--backend", "llamacpp",
+            "--hf-repo", "org/x", "--port", "80",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("1024", r.stderr + r.stdout)
+
+    def test_profile_new_accepts_multi_digit_gpu_id(self):
+        # `0,10` must be valid — the old `[0-9](,[0-9])*` rule capped indices
+        # at one digit, making hosts with 10+ GPUs unaddressable.
+        r = _run_cli(
+            self.tmp, "profile", "new", "gpu10", "--backend", "llamacpp",
+            "--hf-repo", "org/x", "--port", "8099", "--gpu-id", "0,10",
+        )
+        self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+
+        show = _run_cli(self.tmp, "profile", "show", "gpu10", "--json")
+        self.assertEqual(json.loads(show.stdout)["gpu_id"], "0,10")
+
+        _run_cli(self.tmp, "profile", "delete", "gpu10", "-y")
+
+    def test_profile_new_rejects_malformed_gpu_id(self):
+        r = _run_cli(
+            self.tmp, "profile", "new", "gpubad", "--backend", "llamacpp",
+            "--hf-repo", "org/x", "--port", "8098", "--gpu-id", "0,,",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("GPU id", r.stderr + r.stdout)
+
+    def test_profile_edit_rejects_bad_port(self):
+        created = _run_cli(
+            self.tmp, "profile", "new", "editport", "--backend", "llamacpp",
+            "--hf-repo", "org/x", "--port", "8097",
+        )
+        self.assertEqual(created.returncode, 0, created.stderr or created.stdout)
+
+        r = _run_cli(self.tmp, "profile", "edit", "editport", "--port", "80")
+        self.assertNotEqual(r.returncode, 0)
+
+        _run_cli(self.tmp, "profile", "delete", "editport", "-y")
+
     def test_profile_new_then_edit_then_delete(self):
         r = _run_cli(
             self.tmp, "profile", "new", "tmp1", "--backend", "vllm",

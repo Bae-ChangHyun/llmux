@@ -80,7 +80,7 @@ class LlmuxApp(App):
             "[b]Dashboard[/b]\n"
             "  Enter action menu · u/d/l start/stop/logs\n"
             "  e/c/x edit profile/config, delete\n"
-            "  n new · s system · r refresh · q quit",
+            "  C config list · n new · s system · r refresh · q quit",
             title="llmux",
             timeout=10,
         )

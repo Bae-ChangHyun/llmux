@@ -68,7 +68,11 @@ def render_command(
     Model source resolution mirrors the vllm flow — `-hf <repo> -hff <file>`
     so llama-server downloads into the HF cache mounted from the host.
     """
-    args: list[str] = ["--host", "0.0.0.0", "--port", "8080", "--no-webui"]
+    # `--metrics` is forced on so the dashboard's live tok/s poll has a
+    # /metrics endpoint to read (llama-server does not expose it by default).
+    args: list[str] = [
+        "--host", "0.0.0.0", "--port", "8080", "--no-webui", "--metrics",
+    ]
 
     # 모델 식별: profile 의 hf_repo/hf_file 이 1순위. config 의 model-file 은
     # display 용 fallback (예: HF cache 에 이미 받아둔 파일명을 의도).
@@ -88,6 +92,8 @@ def render_command(
     # WebUI 는 강제 off. 사용자가 webui 활성화하려 해도 무시.
     cfg.pop("no-webui", None)
     cfg.pop("webui", None)
+    # --metrics 는 위에서 이미 강제 주입 — config 에 남아 있으면 중복 플래그가 된다.
+    cfg.pop("metrics", None)
 
     override_tensors = cfg.pop("override-tensors", None) or []
     extra_args = cfg.pop("extra-args", None) or []

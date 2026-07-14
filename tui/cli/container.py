@@ -244,6 +244,12 @@ def benchmark(
     max_tokens: int = typer.Option(
         200, "--max-tokens", help="max_tokens for the bench request."
     ),
+    runs: int = typer.Option(
+        3, "--runs", help="Measured runs; the reported figure is their median."
+    ),
+    warmup: int = typer.Option(
+        1, "--warmup", help="Warmup runs discarded before measuring."
+    ),
     json_out: bool = typer.Option(
         False, "--json", help="Emit a JSON record instead of a human line."
     ),
@@ -259,7 +265,7 @@ def benchmark(
         # Match the dashboard's per-backend dispatch: vLLM discovers the
         # served model via /v1/models, llama.cpp uses the config `alias` (or
         # the config name) since llama-server may not expose multiple models.
-        from tui.common.http import chat_completion_bench, list_served_models
+        from tui.common.http import list_served_models, run_bench
 
         if bk == "vllm":
             served = await list_served_models(sp.port)
@@ -275,21 +281,20 @@ def benchmark(
             cfg = l_load_config(sp.config_name or sp.name)
             model = str(cfg.get("alias", cfg.name))
 
-        r = await chat_completion_bench(
-            sp.port, model, prompt=prompt, max_tokens=max_tokens
+        r = await run_bench(
+            sp.port,
+            model,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            runs=runs,
+            warmup=warmup,
         )
-        usage = r.get("usage", {})
-        ct = int(usage.get("completion_tokens", 0) or 0)
-        elapsed = float(r.get("elapsed", 0.0) or 0.0)
-        tps = ct / elapsed if elapsed > 0 else 0.0
         return {
             "profile": profile,
             "backend": bk,
-            "model": model,
             "port": sp.port,
-            "tokens": ct,
-            "elapsed": elapsed,
-            "tok_per_s": tps,
+            "warmup": warmup,
+            **r,
         }
 
     try:
@@ -301,11 +306,134 @@ def benchmark(
     if json_out:
         emit_json(result)
         return
+    head = f"{result['profile']} ({result['backend']}, port {result['port']})"
+    print(f"{head}  [{result['model']}]  warmup={result['warmup']}")
+    for i, r in enumerate(result["runs"], start=1):
+        print(
+            f"  run {i}: {r['tokens']} tok / {r['elapsed']:.2f}s "
+            f"= {r['tps']:.1f} tok/s"
+        )
     print(
-        f"{result['profile']} ({result['backend']}, port {result['port']}): "
-        f"{result['tokens']} tok / {result['elapsed']:.2f}s "
-        f"= {result['tok_per_s']:.1f} tok/s  [{result['model']}]"
+        f"  median: {result['median_tps']:.1f} tok/s "
+        f"({result['min_tps']:.1f}–{result['max_tps']:.1f})"
     )
+
+
+# ---- stats ------------------------------------------------------------------
+
+@app.command("stats")
+def stats(
+    backend: Optional[str] = typer.Option(
+        None, "--backend", "-b",
+        help=f"Limit to one backend ({', '.join(BACKENDS)}); show all if omitted.",
+    ),
+    interval: float = typer.Option(
+        2.0, "--interval", "-i", help="Seconds between /metrics samples."
+    ),
+    once: bool = typer.Option(
+        False, "--once",
+        help="Take two samples one interval apart, print one tick, then exit.",
+    ),
+    json_out: bool = typer.Option(
+        False, "--json", help="Emit one compact JSON line per tick (NDJSON)."
+    ),
+) -> None:
+    """Live token throughput (tok/s) polled from each running container's /metrics.
+
+    Rates are deltas between successive samples, so the first sample only
+    establishes a baseline — the first line appears one `--interval` later.
+    A profile whose server is down or was started without metrics exposed
+    shows `n/a` and keeps being polled rather than aborting the run.
+    """
+    import json as _json
+    import time
+
+    if backend and backend not in BACKENDS:
+        raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
+    backends = [backend] if backend else list(BACKENDS)
+
+    from tui.common.metrics import ThroughputTracker, fetch_token_counters
+
+    tracker = ThroughputTracker()
+
+    async def _running() -> list[dict]:
+        out: list[dict] = []
+        for bk in backends:
+            if bk == "vllm":
+                from tui.backends.vllm.backend_runtime import get_container_statuses
+            else:
+                from tui.backends.llamacpp.backend_runtime import (
+                    get_container_statuses,
+                )
+            for s in await get_container_statuses():
+                if s.running and s.port:
+                    out.append(
+                        {"backend": bk, "profile": s.profile_name, "port": s.port}
+                    )
+        out.sort(key=lambda r: (r["backend"], r["profile"]))
+        return out
+
+    async def _sample() -> list[dict]:
+        rows: list[dict] = []
+        now = time.monotonic()
+        for t in await _running():
+            key = f"{t['backend']}:{t['profile']}"
+            counters = await fetch_token_counters(t["port"])
+            if counters is None:
+                # Unreachable / no metrics — drop the baseline so a later
+                # restart doesn't diff against a stale pre-restart counter.
+                tracker.forget(key)
+                rate = None
+            else:
+                rate = tracker.update(key, counters, now)
+            rows.append(
+                {
+                    **t,
+                    "prompt_tok_per_s": rate[0] if rate else None,
+                    "generation_tok_per_s": rate[1] if rate else None,
+                }
+            )
+        return rows
+
+    def _emit(rows: list[dict]) -> None:
+        if json_out:
+            print(_json.dumps(rows, ensure_ascii=False, default=str), flush=True)
+            return
+        if not rows:
+            print("(no running containers)", flush=True)
+            return
+        for r in rows:
+            head = f"{r['profile']} ({r['backend']}, port {r['port']})"
+            if r["generation_tok_per_s"] is None:
+                print(f"{head}: n/a", flush=True)
+            else:
+                print(
+                    f"{head}: prompt {r['prompt_tok_per_s']:.1f} tok/s"
+                    f"  ·  gen {r['generation_tok_per_s']:.1f} tok/s",
+                    flush=True,
+                )
+
+    async def _drive() -> None:
+        baseline = True
+        while True:
+            rows = await _sample()
+            if baseline:
+                # First pass only seeds the tracker; with nothing running there
+                # will never be a rate, so say so instead of hanging silently.
+                baseline = False
+                if not rows:
+                    _emit(rows)
+                    return
+            else:
+                _emit(rows)
+                if once:
+                    return
+            await asyncio.sleep(interval)
+
+    try:
+        run_async(_drive())
+    except KeyboardInterrupt:
+        raise typer.Exit(code=130)
 
 
 # ---- ps ---------------------------------------------------------------------

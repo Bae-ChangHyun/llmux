@@ -65,6 +65,74 @@ def _get_model_dir() -> Path:
     return Path(_host_expand(raw))
 
 
+def _get_hf_cache_dir() -> Path:
+    env_common = ROOT / ".env.common"
+    default = Path.home() / ".cache" / "huggingface"
+    if not env_common.exists():
+        return default
+    env = _parse_env_file(env_common)
+    raw = env.get("HF_CACHE_PATH")
+    if not raw:
+        return default
+    return Path(_host_expand(raw))
+
+
+def find_cached_gguf(hf_repo: str, filename: str) -> Path | None:
+    """Locate a GGUF that llama-server already pulled via `-hf`.
+
+    `-hf <repo> -hff <file>` downloads into the HF hub cache layout
+    (`hub/models--{org}--{name}/snapshots/{rev}/{file}`), not MODEL_DIR — so
+    the legacy MODEL_DIR probe reports "not downloaded" for every profile that
+    uses the (now default) in-container download path.
+    """
+    if not hf_repo or not filename:
+        return None
+    org, _, name = hf_repo.partition("/")
+    if not org or not name:
+        return None
+    snapshots = (
+        _get_hf_cache_dir() / "hub" / f"models--{org}--{name}" / "snapshots"
+    )
+    if not snapshots.is_dir():
+        return None
+    for match in sorted(snapshots.glob(f"*/{filename}")):
+        if match.exists():
+            return match
+    return None
+
+
+def list_cached_gguf() -> list[dict[str, Any]]:
+    """Every GGUF present in the HF hub cache, largest first.
+
+    Shared by the TUI System/Disk tab and `llmux system disk` so both report
+    the same inventory.
+    """
+    hub = _get_hf_cache_dir() / "hub"
+    if not hub.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for repo_dir in sorted(hub.glob("models--*")):
+        # Inverse of huggingface_hub's repo_folder_name(): "/" is encoded "--".
+        repo = repo_dir.name[len("models--"):].replace("--", "/")
+        for path in (repo_dir / "snapshots").glob("*/*.gguf"):
+            if not path.exists():
+                # Snapshot entries are symlinks into blobs/; a dangling link
+                # means a half-evicted cache entry, not a usable model.
+                continue
+            size = path.stat().st_size
+            out.append(
+                {
+                    "repo": repo,
+                    "name": path.name,
+                    "path": str(path),
+                    "size_bytes": size,
+                    "size_gb": round(size / 1024**3, 1),
+                }
+            )
+    out.sort(key=lambda d: d["size_bytes"], reverse=True)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
@@ -198,6 +266,13 @@ def list_profiles(running: set[str] | None = None) -> list[Profile]:
             if model_path.exists():
                 p.downloaded = True
                 p.model_size_gb = round(model_path.stat().st_size / 1024**3, 1)
+        if not p.downloaded:
+            # MODEL_DIR is the legacy host-side layout; the live `-hf` path
+            # lands in the HF hub cache instead.
+            cached = find_cached_gguf(p.hf_repo, p.hf_file or p.model_file)
+            if cached is not None:
+                p.downloaded = True
+                p.model_size_gb = round(cached.stat().st_size / 1024**3, 1)
         p.running = p.container_name in running_containers
         p.is_current = name == current
         result.append(p)

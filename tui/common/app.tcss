@@ -8,7 +8,7 @@ Screen {
 /* ── Unified dashboard ───────────────────────────────────────── */
 DashboardScreen {
     layout: vertical;
-    padding: 1 0 0 0;
+    padding: 0;
 }
 
 #status-bar {
@@ -36,13 +36,16 @@ DashboardScreen {
 /* ── GPU Bar ──────────────────────────────────────────────────── */
 #gpu-bar {
     height: 1;
-    margin: 1 2 0 2;
+    margin: 0 2;
     padding: 0;
     color: $text-muted;
 }
 
 /* ── Memory Estimator (unified dashboard) ────────────────────── */
+/* Hidden by default — `m` toggles it in. Keeping it always-mounted cost
+   6 rows of vertical space on every dashboard for a rarely-used lookup. */
 #mem-search-area {
+    display: none;
     height: 3;
     margin: 0 2;
     padding: 0;
@@ -68,6 +71,7 @@ DashboardScreen {
 }
 
 #mem-result-bar {
+    display: none;
     height: auto;
     max-height: 3;
     margin: 0 2 1 2;

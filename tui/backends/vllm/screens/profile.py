@@ -250,7 +250,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 self.notify("Port must be a number between 1024 and 65535.", severity="error")
                 return
 
-        if gpu_id and not re.match(r"^[\d,]+$", gpu_id):
+        if gpu_id and not re.match(r"^[0-9]+(,[0-9]+)*$", gpu_id):
             self.notify("GPU ID must contain only digits and commas.", severity="error")
             return
 

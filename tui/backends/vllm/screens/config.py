@@ -27,6 +27,7 @@ from tui.backends.vllm.backend import (
     format_config_param_value,
     parse_config_param_value,
 )
+from tui.common.widgets import TextPromptModal
 
 
 # Fallback params used when dynamic extraction fails
@@ -483,7 +484,9 @@ class ConfigListScreen(Screen):
     BINDINGS = [
         Binding("n", "new_config", "New", show=True),
         Binding("e", "edit_config", "Edit", show=True),
+        Binding("c", "clone_config", "Clone", show=True),
         Binding("delete", "delete_config", "Delete", show=True),
+        Binding("r", "refresh", "Refresh", show=True),
         Binding("escape", "go_back", "Back", show=True),
     ]
 
@@ -529,6 +532,43 @@ class ConfigListScreen(Screen):
             return
         self.app.push_screen(ConfigFormScreen(config_name=name), callback=self._on_form_closed)
 
+    def action_clone_config(self) -> None:
+        name = self._get_selected_config()
+        if name is None:
+            self.notify("No config selected.", severity="warning")
+            return
+
+        existing = set(list_config_names())
+        default = f"{name}-copy"
+        suffix = 2
+        while default in existing:
+            default = f"{name}-copy-{suffix}"
+            suffix += 1
+
+        def after(new_name: str | None) -> None:
+            if not new_name:
+                return
+            if not _validate_name(new_name):
+                self.notify(
+                    "Name must be lowercase: start with [a-z0-9], then lowercase "
+                    "letters, digits, dashes, or underscores only.",
+                    severity="error",
+                )
+                return
+            if new_name in set(list_config_names()):
+                self.notify(f"Config '{new_name}' already exists.", severity="error")
+                return
+            cfg = load_config(name)
+            cfg.name = new_name
+            save_config(cfg)
+            self._refresh_table()
+            self.notify(f"Cloned '{name}' → '{new_name}'")
+
+        self.app.push_screen(
+            TextPromptModal(f"Clone config '{name}' as:", default=default),
+            callback=after,
+        )
+
     def action_delete_config(self) -> None:
         name = self._get_selected_config()
         if name is None:
@@ -548,8 +588,13 @@ class ConfigListScreen(Screen):
         if result:
             self._refresh_table()
 
+    def action_refresh(self) -> None:
+        self._refresh_table()
+
     def action_go_back(self) -> None:
-        self.app.switch_screen("dashboard")
+        # pop, not switch_screen("dashboard") — this screen is pushed on top of
+        # the dashboard, so switching would stack a *second* dashboard instance.
+        self.app.pop_screen()
 
     def _on_form_closed(self, result: str | None = None) -> None:
         self._refresh_table()

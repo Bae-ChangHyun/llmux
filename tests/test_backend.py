@@ -1411,10 +1411,10 @@ class LlamacppRenderOverrideTests(unittest.TestCase):
 
     def test_other_bool_keys_remain_bare_flags(self) -> None:
         """The flash-attn special-case must NOT apply to other bool keys —
-        --jinja, --cont-batching, --metrics, --mlock etc. take no value and
+        --jinja, --cont-batching, --mlock etc. take no value and
         adding one would break startup. Whitelist must stay narrow."""
         command = self.module.render_command(
-            {"jinja": True, "cont-batching": True, "metrics": False},
+            {"jinja": True, "cont-batching": True, "mlock": False},
             hf_repo="org/repo",
             hf_file="model.gguf",
         )
@@ -1426,8 +1426,26 @@ class LlamacppRenderOverrideTests(unittest.TestCase):
             idx = command.index(flag)
             next_token = command[idx + 1] if idx + 1 < len(command) else ""
             self.assertNotIn(next_token, {"on", "off", "true", "false", "True", "False"})
-        # False-valued bare bools (metrics) are simply omitted.
-        self.assertNotIn("--metrics", command)
+        # False-valued bare bools are simply omitted.
+        self.assertNotIn("--mlock", command)
+
+    def test_metrics_is_forced_on_and_never_duplicated(self) -> None:
+        """`--metrics` is force-injected so the dashboard's live tok/s poll has
+        a /metrics endpoint; a config that also sets it must not double it."""
+        forced = self.module.render_command(
+            {}, hf_repo="org/repo", hf_file="model.gguf"
+        )
+        self.assertEqual(forced.count("--metrics"), 1)
+
+        # config sets it too (either polarity) — still exactly one bare flag.
+        for value in (True, False):
+            command = self.module.render_command(
+                {"metrics": value}, hf_repo="org/repo", hf_file="model.gguf"
+            )
+            self.assertEqual(command.count("--metrics"), 1)
+            idx = command.index("--metrics")
+            next_token = command[idx + 1] if idx + 1 < len(command) else ""
+            self.assertNotIn(next_token, {"on", "off", "true", "false", "True", "False"})
 
 
 class QuickSetupSuffixLogicTests(unittest.TestCase):
@@ -1655,6 +1673,119 @@ class VersionCheckTests(unittest.TestCase):
 
         with patch.object(vc, "_is_git_checkout", side_effect=RuntimeError("boom")):
             vc.check_for_update()  # any non-SystemExit error must not escape
+
+
+class FindCachedGgufTests(unittest.TestCase):
+    """llama-server `-hf` downloads land in the HF hub cache, not MODEL_DIR."""
+
+    def _make_hub(self, tmp: Path, repo: str, rev: str, filename: str) -> Path:
+        org, _, name = repo.partition("/")
+        snap = tmp / "hub" / f"models--{org}--{name}" / "snapshots" / rev
+        snap.mkdir(parents=True)
+        gguf = snap / filename
+        gguf.write_bytes(b"\0" * 2048)
+        return gguf
+
+    def test_finds_gguf_in_hub_snapshot_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            expected = self._make_hub(
+                tmp, "unsloth/Qwen3-8B-GGUF", "abc123", "Qwen3-8B-Q4_K_M.gguf"
+            )
+
+            with patch.object(lbackend, "_get_hf_cache_dir", return_value=tmp):
+                found = lbackend.find_cached_gguf(
+                    "unsloth/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K_M.gguf"
+                )
+
+            self.assertEqual(found, expected)
+
+    def test_returns_none_when_repo_or_file_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            self._make_hub(tmp, "unsloth/Qwen3-8B-GGUF", "abc123", "a.gguf")
+
+            with patch.object(lbackend, "_get_hf_cache_dir", return_value=tmp):
+                # unknown repo
+                self.assertIsNone(lbackend.find_cached_gguf("other/Repo", "a.gguf"))
+                # known repo, unknown file
+                self.assertIsNone(
+                    lbackend.find_cached_gguf("unsloth/Qwen3-8B-GGUF", "nope.gguf")
+                )
+                # empty inputs must not glob the whole cache
+                self.assertIsNone(lbackend.find_cached_gguf("", "a.gguf"))
+                self.assertIsNone(lbackend.find_cached_gguf("unsloth/x", ""))
+
+    def test_list_cached_gguf_reports_repo_and_size(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            self._make_hub(tmp, "unsloth/Qwen3-8B-GGUF", "abc123", "q4.gguf")
+
+            with patch.object(lbackend, "_get_hf_cache_dir", return_value=tmp):
+                cached = lbackend.list_cached_gguf()
+
+            self.assertEqual(len(cached), 1)
+            self.assertEqual(cached[0]["repo"], "unsloth/Qwen3-8B-GGUF")
+            self.assertEqual(cached[0]["name"], "q4.gguf")
+            self.assertEqual(cached[0]["size_bytes"], 2048)
+
+
+class TokenMetricsTests(unittest.TestCase):
+    def test_parses_vllm_labelled_counters_and_sums_label_sets(self) -> None:
+        from tui.common.metrics import parse_token_counters
+
+        text = (
+            "# HELP vllm:prompt_tokens_total Number of prefill tokens.\n"
+            "# TYPE vllm:prompt_tokens_total counter\n"
+            'vllm:prompt_tokens_total{model_name="a"} 10.0\n'
+            'vllm:prompt_tokens_total{model_name="b"} 5.0\n'
+            'vllm:generation_tokens_total{model_name="a"} 100.0\n'
+            'vllm:generation_tokens_total{model_name="b"} 20.0\n'
+        )
+
+        self.assertEqual(parse_token_counters(text), (15.0, 120.0))
+
+    def test_parses_llamacpp_counter_names(self) -> None:
+        from tui.common.metrics import parse_token_counters
+
+        text = (
+            "# TYPE llamacpp:prompt_tokens_total counter\n"
+            "llamacpp:prompt_tokens_total 7\n"
+            "llamacpp:tokens_predicted_total 42\n"
+        )
+
+        self.assertEqual(parse_token_counters(text), (7.0, 42.0))
+
+    def test_returns_none_when_no_token_counters_present(self) -> None:
+        from tui.common.metrics import parse_token_counters
+
+        self.assertIsNone(parse_token_counters(""))
+        self.assertIsNone(parse_token_counters("# only comments\nother_metric 1.0\n"))
+
+    def test_tracker_first_sample_has_no_rate_then_deltas(self) -> None:
+        from tui.common.metrics import ThroughputTracker
+
+        t = ThroughputTracker()
+        self.assertIsNone(t.update("p", (0.0, 0.0), now=0.0))
+
+        rate = t.update("p", (10.0, 200.0), now=2.0)
+        self.assertIsNotNone(rate)
+        assert rate is not None
+        self.assertAlmostEqual(rate[0], 5.0)     # 10 prompt tokens / 2s
+        self.assertAlmostEqual(rate[1], 100.0)   # 200 gen tokens / 2s
+
+    def test_tracker_resets_on_counter_decrease(self) -> None:
+        from tui.common.metrics import ThroughputTracker
+
+        t = ThroughputTracker()
+        t.update("p", (100.0, 500.0), now=0.0)
+        # Server restarted → counters reset to 0. Diffing across that would
+        # emit a large negative rate; the tracker must re-baseline instead.
+        self.assertIsNone(t.update("p", (0.0, 0.0), now=2.0))
+        # Next sample diffs against the fresh baseline.
+        rate = t.update("p", (4.0, 20.0), now=4.0)
+        assert rate is not None
+        self.assertAlmostEqual(rate[1], 10.0)
 
 
 if __name__ == "__main__":
