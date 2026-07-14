@@ -463,7 +463,7 @@ class DashboardScreen(Screen):
             from tui.backends.llamacpp.screens.config import ConfigFormScreen
 
             self.app.push_screen(
-                ConfigFormScreen(profile.config_name), self._after_mutation
+                ConfigFormScreen(profile.config_name or name), self._after_mutation
             )
         elif action == "edit-profile":
             from tui.backends.llamacpp.screens.profile import ProfileFormScreen

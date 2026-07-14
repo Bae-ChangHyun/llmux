@@ -25,6 +25,9 @@ services:
     environment:
       - TZ=${TZ:-UTC}
       - HF_TOKEN=${HF_TOKEN}
+    env_file:
+      - path: ${PROFILE_PATH}
+        required: false
     deploy:
       resources:
         reservations:

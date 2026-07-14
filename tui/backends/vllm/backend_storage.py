@@ -152,4 +152,6 @@ def delete_config(name: str) -> None:
 def list_config_names() -> list[str]:
     if not CONFIG_DIR.exists():
         return []
-    return sorted(path.stem for path in CONFIG_DIR.glob("*.yaml"))
+    return sorted(
+        path.stem for path in CONFIG_DIR.glob("*.yaml") if path.stem != "example"
+    )

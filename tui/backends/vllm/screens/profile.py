@@ -225,7 +225,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             return
         if not _validate_name(name):
             self.notify(
-                "Name must start with a letter/digit, and contain only letters, digits, dashes, or underscores.",
+                "Name must be lowercase: start with [a-z0-9], then lowercase letters, digits, dashes, or underscores only.",
                 severity="error",
             )
             return
@@ -236,7 +236,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
         if container and not _validate_name(container):
             self.notify(
-                "Container name must contain only letters, digits, dashes, or underscores.",
+                "Container name must be lowercase: start with [a-z0-9], then lowercase letters, digits, dashes, or underscores only.",
                 severity="error",
             )
             return

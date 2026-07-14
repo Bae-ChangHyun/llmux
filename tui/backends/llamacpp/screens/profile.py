@@ -152,7 +152,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
                     yield Label("HF Repo")
                     yield Input(
                         value=p.hf_repo if p else "",
-                        placeholder="(선택) org/Model-GGUF — 컨테이너 내 -hf 다운로드 소스",
+                        placeholder="org/Model-GGUF — 필수 (컨테이너 내 -hf 다운로드 소스)",
                         id="hf-repo-input",
                     )
 
@@ -260,6 +260,11 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
         save_profile(p)
         self.notify(f"저장: {name}", severity="information")
+        if not hf_repo:
+            self.notify(
+                "HF Repo 없이는 컨테이너 시작 불가 (-hf 다운로드 소스 필요)",
+                severity="warning",
+            )
         self._saved_name = name
 
         if not self._edit_mode:

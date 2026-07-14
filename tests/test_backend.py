@@ -319,6 +319,55 @@ class ProfileStoreYamlTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     profile_store.render_env(profile)
 
+    def test_llamacpp_env_vars_round_trip_through_yaml(self) -> None:
+        # env_vars used to be persisted only on the vllm branch, so a llamacpp
+        # profile silently dropped them between save and load.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = root / "profiles.yaml"
+            profiles_yaml.write_text("version: 1\ndefaults: {}\nprofiles: []\n")
+            profile = profile_store.StoredProfile(
+                name="p",
+                backend="llamacpp",
+                hf_repo="org/Model-GGUF",
+                env_vars={"MY_VAR": "hello"},
+            )
+
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
+            ):
+                profile_store.save_profile(profile)
+                loaded = profile_store.load_profile("p", "llamacpp")
+
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            self.assertEqual(loaded.env_vars, {"MY_VAR": "hello"})
+
+    def test_llamacpp_render_env_includes_env_vars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = profile_store.StoredProfile(
+                name="p",
+                backend="llamacpp",
+                env_vars={"MY_VAR": "hello"},
+            )
+
+            with patch("tui.common.profile_store.RUNTIME_DIR", Path(tmp) / ".runtime"):
+                path = profile_store.render_env(profile)
+
+            self.assertIn("MY_VAR=hello", path.read_text())
+
+    def test_llamacpp_render_env_rejects_reserved_env_var(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = profile_store.StoredProfile(
+                name="p",
+                backend="llamacpp",
+                env_vars={"GPU_ID": "9"},
+            )
+
+            with patch("tui.common.profile_store.RUNTIME_DIR", Path(tmp) / ".runtime"):
+                with self.assertRaises(ValueError):
+                    profile_store.render_env(profile)
+
     def test_save_profile_does_not_write_yaml_when_env_render_validation_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
