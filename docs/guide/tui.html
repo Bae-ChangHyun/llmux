@@ -58,6 +58,11 @@
 llmux tui      # explicit</code></pre>
     <p>Running <code>llmux</code> with no subcommand drops you straight into the unified dashboard.</p>
 
+    <div class="admonition note">
+      <p class="admonition-title">Language (English / Korean)</p>
+      <p>The TUI is bilingual. It follows your system locale by default (a <code>ko_*</code> <code>LANG</code>/<code>LC_ALL</code> gives Korean, anything else English). Force one with <code>LLMUX_LANG=en llmux</code> or <code>LLMUX_LANG=ko llmux</code>. Table column headers and engine-flag names stay in English in both modes.</p>
+    </div>
+
     <h2 id="the-dashboard">The dashboard</h2>
     <p>The dashboard is one <code>DataTable</code> showing every profile from both backends. Running containers float to the top so the active workload is always visible without scrolling; within the running / stopped groups, rows stay sorted by <code>(backend, name)</code>.</p>
     <pre data-lang="text"><code>&#9484; llmux &#9472; vLLM + llama.cpp &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9488;

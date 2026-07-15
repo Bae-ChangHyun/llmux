@@ -22,9 +22,15 @@ class TooNarrowScreen(Screen):
         background: $surface;
     }
 
+    /* width:1fr, NOT auto — an auto box whose children are width:100% is a
+       circular constraint that collapsed to a ~6-col empty box, so the message
+       never showed. A concrete fill width lets the text wrap into whatever
+       columns are left (down to a very narrow terminal). */
     TooNarrowScreen > Vertical {
-        width: auto;
+        width: 1fr;
+        max-width: 54;
         height: auto;
+        margin: 1 1;
         padding: 1 2;
         border: round $warning;
         background: $surface;
@@ -34,17 +40,19 @@ class TooNarrowScreen(Screen):
         text-style: bold;
         color: $warning;
         width: 100%;
-        content-align: center middle;
+        text-align: center;
         margin-bottom: 1;
     }
 
     TooNarrowScreen .row {
         width: 100%;
-        content-align: center middle;
+        text-align: center;
         color: $text;
     }
 
     TooNarrowScreen .hint {
+        width: 100%;
+        text-align: center;
         color: $text-muted;
         margin-top: 1;
     }

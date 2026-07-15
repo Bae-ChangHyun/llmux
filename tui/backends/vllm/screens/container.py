@@ -30,6 +30,7 @@ from tui.backends.vllm.backend import (
     get_dockerhub_release_version,
     get_dockerhub_nightly_date,
 )
+from tui.common.i18n import t
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +56,7 @@ class ContainerUpScreen(Screen):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=False),
         Binding("q", "cancel", "Quit", show=False),
-        Binding("f", "toggle_follow", "Follow on/off"),
+        Binding("f", "toggle_follow", t("Follow on/off", "자동 스크롤")),
     ]
 
     DEFAULT_CSS = """
@@ -170,11 +171,14 @@ class ContainerUpScreen(Screen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal-dialog"):
-            yield Static("Start Container", id="title-label")
-            yield Static(f"Profile: [b]{self.profile_name}[/b]", id="profile-label")
+            yield Static(t("Start Container", "컨테이너 시작"), id="title-label")
+            yield Static(t(f"Profile: [b]{self.profile_name}[/b]", f"프로필: [b]{self.profile_name}[/b]"), id="profile-label")
             if not self._profile.config_name:
                 yield Static(
-                    "[yellow]No config linked. A default config will be generated on start.[/yellow]"
+                    t(
+                        "[yellow]No config linked. A default config will be generated on start.[/yellow]",
+                        "[yellow]연결된 config 가 없습니다. 시작 시 기본 config 가 생성됩니다.[/yellow]",
+                    )
                 )
             # The pinned image_tag silently beat whatever the user selected
             # here (except an explicit tag). Surface it, and give it a real
@@ -182,44 +186,51 @@ class ContainerUpScreen(Screen):
             pinned = self._profile.image_tag
             if pinned:
                 yield Static(
-                    f"[cyan]Profile pinned to: {pinned}[/cyan]  "
-                    "[dim](pick another option to override for this run)[/dim]",
+                    t(
+                        f"[cyan]Profile pinned to: {pinned}[/cyan]  "
+                        "[dim](pick another option to override for this run)[/dim]",
+                        f"[cyan]프로필 고정 이미지: {pinned}[/cyan]  "
+                        "[dim](이번 실행만 재정의하려면 다른 옵션 선택)[/dim]",
+                    ),
                     id="pinned-label",
                 )
             with VerticalScroll(id="version-scroll"):
-                yield Label("Version", id="version-label")
+                yield Label(t("Version", "버전"), id="version-label")
                 yield Static(
-                    "[dim]Click or use ↑↓ + Enter/Space to select[/dim]",
+                    t(
+                        "[dim]Click or use ↑↓ + Enter/Space to select[/dim]",
+                        "[dim]클릭 또는 ↑↓ + Enter/Space 로 선택[/dim]",
+                    ),
                     id="version-help",
                 )
                 with RadioSet(id="version-radio"):
                     if pinned:
                         yield RadioButton(
-                            f"Pinned Image  ({pinned})", id=VER_PINNED, value=True
+                            t(f"Pinned Image  ({pinned})", f"고정 이미지  ({pinned})"), id=VER_PINNED, value=True
                         )
                     yield RadioButton(
-                        "Local Latest  (loading...)",
+                        t("Local Latest  (loading...)", "로컬 최신  (불러오는 중...)"),
                         id=VER_LOCAL,
                         value=not pinned,
                     )
-                    yield RadioButton("Official Release  (loading...)", id=VER_OFFICIAL)
-                    yield RadioButton("Nightly  (loading...)", id=VER_NIGHTLY)
-                    yield RadioButton("Dev Build  (vllm-dev)", id=VER_DEV)
-                    yield RadioButton("Custom Tag", id=VER_CUSTOM)
+                    yield RadioButton(t("Official Release  (loading...)", "공식 릴리스  (불러오는 중...)"), id=VER_OFFICIAL)
+                    yield RadioButton(t("Nightly  (loading...)", "나이틀리  (불러오는 중...)"), id=VER_NIGHTLY)
+                    yield RadioButton(t("Dev Build  (vllm-dev)", "개발 빌드  (vllm-dev)"), id=VER_DEV)
+                    yield RadioButton(t("Custom Tag", "커스텀 태그"), id=VER_CUSTOM)
                 yield Input(
-                    placeholder="Enter custom image tag...",
+                    placeholder=t("Enter custom image tag...", "커스텀 이미지 태그 입력..."),
                     id="custom-tag-input",
                 )
                 with Vertical(id="dev-build-options"):
                     with Horizontal(classes="dev-build-row"):
-                        yield Label("Repo URL")
+                        yield Label(t("Repo URL", "저장소 URL"))
                         yield Input(
                             value=self._dev_repo_url,
                             placeholder="https://github.com/owner/vllm.git",
                             id="dev-repo-input",
                         )
                     with Horizontal(classes="dev-build-row"):
-                        yield Label("Branch")
+                        yield Label(t("Branch", "브랜치"))
                         yield Input(
                             value=self._dev_branch,
                             placeholder="main",
@@ -237,8 +248,8 @@ class ContainerUpScreen(Screen):
                 )
             yield Static("", id="gpu-bar")
             with Horizontal(classes="buttons"):
-                yield Button("Start", variant="primary", id="start-btn")
-                yield Button("Cancel", variant="default", id="cancel-btn")
+                yield Button(t("Start", "시작"), variant="primary", id="start-btn")
+                yield Button(t("Cancel", "취소"), variant="default", id="cancel-btn")
 
     def on_mount(self) -> None:
         self._fetch_version_info()
@@ -265,10 +276,10 @@ class ContainerUpScreen(Screen):
         try:
             btn = radio_set.query_one(f"#{VER_LOCAL}", RadioButton)
             if local_tag == "none":
-                btn.label = "Local Latest  (no images)"
+                btn.label = t("Local Latest  (no images)", "로컬 최신  (이미지 없음)")
                 btn.disabled = True
             else:
-                btn.label = f"Local Latest  ({local_tag})"
+                btn.label = t(f"Local Latest  ({local_tag})", f"로컬 최신  ({local_tag})")
                 btn.disabled = False
         except Exception:
             pass
@@ -279,10 +290,10 @@ class ContainerUpScreen(Screen):
         try:
             btn = radio_set.query_one(f"#{VER_OFFICIAL}", RadioButton)
             if self._release_version:
-                btn.label = f"Official Release  ({self._release_version})"
+                btn.label = t(f"Official Release  ({self._release_version})", f"공식 릴리스  ({self._release_version})")
                 btn.disabled = False
             else:
-                btn.label = "Official Release  (loading...)"
+                btn.label = t("Official Release  (loading...)", "공식 릴리스  (불러오는 중...)")
                 btn.disabled = False
         except Exception:
             pass
@@ -292,11 +303,11 @@ class ContainerUpScreen(Screen):
         try:
             btn = radio_set.query_one(f"#{VER_NIGHTLY}", RadioButton)
             if nightly_date == "unknown":
-                btn.label = "Nightly  (loading...)"
+                btn.label = t("Nightly  (loading...)", "나이틀리  (불러오는 중...)")
             elif nightly_date == "available":
-                btn.label = "Nightly"
+                btn.label = t("Nightly", "나이틀리")
             else:
-                btn.label = f"Nightly  ({nightly_date})"
+                btn.label = t(f"Nightly  ({nightly_date})", f"나이틀리  ({nightly_date})")
         except Exception:
             pass
 
@@ -379,7 +390,8 @@ class ContainerUpScreen(Screen):
             pass
         elif selected_id == VER_LOCAL:
             if not self._local_tag:
-                self.app.notify("No local vLLM image is available.", severity="error")
+                self.app.notify(t("No local vLLM image is available.", "사용 가능한 로컬 vLLM 이미지가 없습니다."),
+                                severity="error")
                 return
             # Defeat any pinned image_tag via use_default_image rather than by
             # passing an explicit tag: the runtime keys its pull policy off tag
@@ -392,7 +404,10 @@ class ContainerUpScreen(Screen):
                 refreshed = await get_dockerhub_release_version()
                 if refreshed == "unknown":
                     self.app.notify(
-                        "Could not determine the latest stable release tag from Docker Hub.",
+                        t(
+                            "Could not determine the latest stable release tag from Docker Hub.",
+                            "Docker Hub 에서 최신 안정 릴리스 태그를 확인할 수 없습니다.",
+                        ),
                         severity="error",
                     )
                     return
@@ -413,22 +428,25 @@ class ContainerUpScreen(Screen):
             repo_url = self.query_one("#dev-repo-input", Input).value.strip()
             branch = self.query_one("#dev-branch-input", Input).value.strip()
             if not repo_url:
-                self.app.notify("Please enter a repository URL.", severity="error")
+                self.app.notify(t("Please enter a repository URL.", "저장소 URL 을 입력하세요."), severity="error")
                 return
             if not branch:
-                self.app.notify("Please enter a branch.", severity="error")
+                self.app.notify(t("Please enter a branch.", "브랜치를 입력하세요."), severity="error")
                 return
         elif selected_id == VER_CUSTOM:
             tag = self.query_one("#custom-tag-input", Input).value.strip()
             if not tag:
-                self.app.notify("Please enter a custom tag.", severity="error")
+                self.app.notify(t("Please enter a custom tag.", "커스텀 태그를 입력하세요."), severity="error")
                 return
 
         # Always keep the runtime bind check enabled right before compose up.
         conflict = await check_port_conflict(self._profile)
         if conflict:
             self.app.notify(
-                f"Port {self._profile.port} is already used by {conflict}.",
+                t(
+                    f"Port {self._profile.port} is already used by {conflict}.",
+                    f"Port {self._profile.port} 는 이미 {conflict} 이(가) 사용 중입니다.",
+                ),
                 severity="error",
                 timeout=5,
             )
@@ -441,7 +459,7 @@ class ContainerUpScreen(Screen):
             self.query_one("#start-btn").styles.display = "none"
             status = self.query_one("#startup-status", Static)
             log_widget = self.query_one("#startup-log", RichLog)
-            status.update("[bold]Starting container...[/bold]")
+            status.update(t("[bold]Starting container...[/bold]", "[bold]컨테이너 시작 중...[/bold]"))
         except Exception:  # Screen may already be dismissed
             return
 
@@ -466,14 +484,14 @@ class ContainerUpScreen(Screen):
 
         try:
             if rc == 0:
-                status.update("[green bold]Container started. Logs: (Esc/q to close)[/green bold]")
+                status.update(t("[green bold]Container started. Logs: (Esc/q to close)[/green bold]", "[green bold]컨테이너 시작됨. 로그: (Esc/q 로 닫기)[/green bold]"))
                 try:
                     async for line in stream_container_logs(self._profile.container_name):
                         log_widget.write(line)
                 except Exception as exc:
-                    log_widget.write(f"Log stream error: {exc}")
+                    log_widget.write(t(f"Log stream error: {exc}", f"로그 스트림 오류: {exc}"))
             else:
-                status.update(f"[red bold]Failed to start (rc={rc})[/red bold]")
+                status.update(t(f"[red bold]Failed to start (rc={rc})[/red bold]", f"[red bold]시작 실패 (rc={rc})[/red bold]"))
         except Exception:  # Screen may already be dismissed
             pass
 
@@ -486,7 +504,11 @@ class ContainerUpScreen(Screen):
         if log_widget.auto_scroll:
             log_widget.scroll_end(animate=False)
         self.notify(
-            f"auto-follow: {'ON' if log_widget.auto_scroll else 'OFF'}", timeout=2
+            t(
+                f"auto-follow: {'ON' if log_widget.auto_scroll else 'OFF'}",
+                f"자동 추적: {'켜짐' if log_widget.auto_scroll else '꺼짐'}",
+            ),
+            timeout=2,
         )
 
 
@@ -519,9 +541,9 @@ class LogScreen(Screen):
     """
 
     BINDINGS = [
-        Binding("q", "go_back", "Back"),
-        Binding("escape", "go_back", "Back"),
-        Binding("f", "toggle_follow", "Follow on/off"),
+        Binding("q", "go_back", t("Back", "뒤로")),
+        Binding("escape", "go_back", t("Back", "뒤로")),
+        Binding("f", "toggle_follow", t("Follow on/off", "자동 스크롤")),
     ]
 
     def __init__(self, container_name: str) -> None:
@@ -531,8 +553,12 @@ class LogScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         yield Static(
-            f"Logs: [b]{self.container_name}[/b]  "
-            "[dim](q/Esc:back  f:auto-follow  ↑↓/PgUp/PgDn:scroll)[/dim]",
+            t(
+                f"Logs: [b]{self.container_name}[/b]  "
+                "[dim](q/Esc:back  f:auto-follow  ↑↓/PgUp/PgDn:scroll)[/dim]",
+                f"로그: [b]{self.container_name}[/b]  "
+                "[dim](q/Esc:뒤로  f:자동 추적  ↑↓/PgUp/PgDn:스크롤)[/dim]",
+            ),
             id="log-header",
         )
         yield RichLog(
@@ -555,7 +581,7 @@ class LogScreen(Screen):
             async for line in stream_container_logs(self.container_name):
                 log_widget.write(line)
         except Exception as exc:
-            log_widget.write(f"\nLog stream error: {exc}")
+            log_widget.write(t(f"\nLog stream error: {exc}", f"\n로그 스트림 오류: {exc}"))
 
     def action_toggle_follow(self) -> None:
         log_widget = self.query_one(RichLog)
@@ -563,7 +589,11 @@ class LogScreen(Screen):
         if log_widget.auto_scroll:
             log_widget.scroll_end(animate=False)
         self.notify(
-            f"auto-follow: {'ON' if log_widget.auto_scroll else 'OFF'}", timeout=2
+            t(
+                f"auto-follow: {'ON' if log_widget.auto_scroll else 'OFF'}",
+                f"자동 추적: {'켜짐' if log_widget.auto_scroll else '꺼짐'}",
+            ),
+            timeout=2,
         )
 
     def action_go_back(self) -> None:

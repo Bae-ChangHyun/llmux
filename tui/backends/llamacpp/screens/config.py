@@ -26,6 +26,7 @@ from tui.backends.llamacpp.backend import (
     save_config,
     validate_name,
 )
+from tui.common.i18n import t
 from tui.common.widgets import TextPromptModal
 
 
@@ -232,33 +233,36 @@ class ConfigFormScreen(ModalScreen[str | None]):
         if self._edit_mode:
             self._initial_config = load_config(self._config_name)
         title = (
-            f"Edit Config: {self._config_name}"
+            t(f"Edit Config: {self._config_name}", f"Config 편집: {self._config_name}")
             if self._edit_mode
-            else "New Config"
+            else t("New Config", "새 Config")
         )
         with Vertical():
             yield Static(f"[b]{title}[/b]", id="form-title")
             with VerticalScroll():
                 with Horizontal(classes="form-row"):
-                    yield Label("Config Name")
+                    yield Label(t("Config Name", "Config 이름"))
                     yield Input(
                         value=self._config_name,
                         placeholder="my-model",
                         id="name-input",
                         disabled=self._edit_mode,
                     )
-                yield Static("llama-server Parameters", id="params-title")
+                yield Static(t("llama-server Parameters", "llama-server 파라미터"), id="params-title")
                 yield Static(
-                    "[dim]Tab/→: 자동완성  ·  boolean 플래그는 값 비우면 true[/dim]",
+                    t(
+                        "[dim]Tab/→: autocomplete  ·  boolean flags default to true when left blank[/dim]",
+                        "[dim]Tab/→: 자동완성  ·  boolean 플래그는 값 비우면 true[/dim]",
+                    ),
                     id="params-hint",
                 )
                 yield Static("", id="flag-help")
                 with Horizontal(id="add-param-row"):
-                    yield Button("+ Add Parameter", id="add-param-btn")
+                    yield Button(t("+ Add Parameter", "+ 파라미터 추가"), id="add-param-btn")
                 yield Vertical(id="params-container")
             with Horizontal(classes="form-buttons"):
-                yield Button("Save", id="save-btn", variant="primary")
-                yield Button("Close", id="cancel-btn", variant="default")
+                yield Button(t("Save", "저장"), id="save-btn", variant="primary")
+                yield Button(t("Close", "닫기"), id="cancel-btn", variant="default")
 
     def on_mount(self) -> None:
         if self._edit_mode and self._initial_config:
@@ -293,7 +297,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
         self._param_counter += 1
         key_input = Input(
             value=key,
-            placeholder="flag-name (Tab: 자동완성)",
+            placeholder=t("flag-name (Tab: autocomplete)", "flag-name (Tab: 자동완성)"),
             suggester=_FLAG_SUGGESTER,
             classes="param-key",
         )
@@ -301,7 +305,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
         row = Horizontal(
             Switch(value=enabled, classes="param-switch"),
             key_input,
-            Input(value=value, placeholder="value (비우면 true)", classes="param-value"),
+            Input(value=value, placeholder=t("value (blank = true)", "value (비우면 true)"), classes="param-value"),
             Button("x", classes="param-remove"),
             id=row_id,
             classes="param-row" if enabled else "param-row -disabled",
@@ -343,7 +347,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
     def _on_add_param(self, event: Button.Pressed) -> None:
         event.stop()
         self._add_param_row(focus=True)
-        self.notify("파라미터 추가됨 — flag 이름 입력 (Tab 자동완성)", timeout=3)
+        self.notify(t("Parameter added — enter a flag name (Tab to autocomplete)", "파라미터 추가됨 — flag 이름 입력 (Tab 자동완성)"), timeout=3)
 
     @on(Button.Pressed, ".param-remove")
     def _on_remove_param(self, event: Button.Pressed) -> None:
@@ -359,18 +363,22 @@ class ConfigFormScreen(ModalScreen[str | None]):
         name = self.query_one("#name-input", Input).value.strip()
 
         if not name:
-            self.notify("Config 이름 필수", severity="error")
+            self.notify(t("Config name is required", "Config 이름 필수"), severity="error")
             return
         if not validate_name(name):
             self.notify(
-                "이름은 영숫자/대시/언더스코어만 가능 ('-' 시작 금지)", severity="error"
+                t(
+                    "Name may contain only letters, digits, dashes, and underscores (must not start with '-')",
+                    "이름은 영숫자/대시/언더스코어만 가능 ('-' 시작 금지)",
+                ),
+                severity="error",
             )
             return
         # File existence, not `in list_config_names()` — that helper filters
         # out `example`, so a config named "example" passed the check and
         # silently overwrote the tracked example.yaml.
         if not self._edit_mode and (CONFIG_DIR / f"{name}.yaml").exists():
-            self.notify(f"Config '{name}' 이미 존재", severity="error")
+            self.notify(t(f"Config '{name}' already exists", f"Config '{name}' 이미 존재"), severity="error")
             return
 
         params: dict[str, Any] = {}
@@ -384,27 +392,30 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 continue
             # Duplicate check spans active + disabled.
             if key in seen:
-                self.notify(f"중복 플래그: {key}", severity="error")
+                self.notify(t(f"Duplicate flag: {key}", f"중복 플래그: {key}"), severity="error")
                 return
             seen.add(key)
             try:
                 parsed = parse_config_param_value(val)
             except Exception as exc:
-                self.notify(f"'{key}' 값 파싱 실패: {exc}", severity="error")
+                self.notify(t(f"Failed to parse value for '{key}': {exc}", f"'{key}' 값 파싱 실패: {exc}"), severity="error")
                 return
             (params if switch.value else disabled_params)[key] = parsed
 
         unknown = [k for k in params if k not in _KNOWN_FLAGS]
         if unknown:
             self.notify(
-                f"알 수 없는 플래그 (llama-server 버전에 따라 유효할 수 있음): {', '.join(unknown)}",
+                t(
+                    f"Unknown flags (may be valid for your llama-server version): {', '.join(unknown)}",
+                    f"알 수 없는 플래그 (llama-server 버전에 따라 유효할 수 있음): {', '.join(unknown)}",
+                ),
                 severity="warning",
                 timeout=6,
             )
 
         cfg = Config(name=name, params=params, disabled_params=disabled_params)
         save_config(cfg)
-        self.notify(f"저장: {name}", severity="information")
+        self.notify(t(f"Saved: {name}", f"저장: {name}"), severity="information")
         self._saved_name = name
 
         if not self._edit_mode:
@@ -412,7 +423,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
             self._config_name = name
             self.query_one("#name-input", Input).disabled = True
             self.query_one("#form-title", Static).update(
-                f"[b]Edit Config: {name}[/b]"
+                t(f"[b]Edit Config: {name}[/b]", f"[b]Config 편집: {name}[/b]")
             )
 
     @on(Button.Pressed, "#cancel-btn")
@@ -481,19 +492,25 @@ class ConfirmDeleteConfigScreen(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("Delete Config", id="confirm-title")
+            yield Static(t("Delete Config", "Config 삭제"), id="confirm-title")
             yield Static(
-                f"[b]{self._config_name}[/b] 를 삭제할까요?",
+                t(
+                    f"Delete [b]{self._config_name}[/b]?",
+                    f"[b]{self._config_name}[/b] 를 삭제할까요?",
+                ),
                 id="confirm-msg",
             )
             if self._referencing:
                 yield Static(
-                    f"[b]경고:[/b] 사용 중인 프로필: {', '.join(self._referencing)}",
+                    t(
+                        f"[b]Warning:[/b] Used by profiles: {', '.join(self._referencing)}",
+                        f"[b]경고:[/b] 사용 중인 프로필: {', '.join(self._referencing)}",
+                    ),
                     id="confirm-warn",
                 )
             with Horizontal(classes="confirm-buttons"):
-                yield Button("Delete", id="confirm-yes", variant="error")
-                yield Button("Cancel", id="confirm-no", variant="default")
+                yield Button(t("Delete", "삭제"), id="confirm-yes", variant="error")
+                yield Button(t("Cancel", "취소"), id="confirm-no", variant="default")
 
     @on(Button.Pressed, "#confirm-yes")
     def _on_yes(self, event: Button.Pressed) -> None:
@@ -504,7 +521,7 @@ class ConfirmDeleteConfigScreen(ModalScreen[bool]):
             p = load_profile(profile_name)
             p.config_name = ""
             save_profile(p)
-        self.app.notify(f"삭제됨: {self._config_name}")
+        self.app.notify(t(f"Deleted: {self._config_name}", f"삭제됨: {self._config_name}"))
         self.dismiss(True)
 
     @on(Button.Pressed, "#confirm-no")
@@ -524,17 +541,17 @@ class ConfigListScreen(Screen):
     """config/*.yaml 전체 목록."""
 
     BINDINGS = [
-        Binding("n", "new_config", "New"),
-        Binding("e,enter", "edit_config", "Edit"),
-        Binding("c", "clone_config", "Clone"),
-        Binding("delete,x", "delete_config", "Delete"),
-        Binding("escape,backspace", "go_back", "Back"),
-        Binding("r", "refresh", "Refresh"),
+        Binding("n", "new_config", t("New", "새로")),
+        Binding("e,enter", "edit_config", t("Edit", "편집")),
+        Binding("c", "clone_config", t("Clone", "복제")),
+        Binding("delete,x", "delete_config", t("Delete", "삭제")),
+        Binding("escape,backspace", "go_back", t("Back", "뒤로")),
+        Binding("r", "refresh", t("Refresh", "새로고침")),
     ]
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Static("[b]Configs (llama-server YAML)[/b]", id="config-title")
+        yield Static(t("[b]Configs (llama-server YAML)[/b]", "[b]Config 목록 (llama-server YAML)[/b]"), id="config-title")
         yield DataTable(id="config-table", cursor_type="row")
         yield Footer()
 
@@ -580,14 +597,14 @@ class ConfigListScreen(Screen):
     def action_edit_config(self) -> None:
         name = self._get_selected()
         if not name:
-            self.notify("선택된 config 없음", severity="warning")
+            self.notify(t("No config selected", "선택된 config 없음"), severity="warning")
             return
         self.app.push_screen(ConfigFormScreen(name), self._on_form_closed)
 
     def action_clone_config(self) -> None:
         name = self._get_selected()
         if not name:
-            self.notify("선택된 config 없음", severity="warning")
+            self.notify(t("No config selected", "선택된 config 없음"), severity="warning")
             return
 
         existing = set(list_config_names())
@@ -601,25 +618,29 @@ class ConfigListScreen(Screen):
             if not new_name:
                 return
             if not validate_name(new_name):
-                self.notify("이름은 소문자/숫자/대시/언더스코어", severity="error")
+                self.notify(t("Name must be lowercase letters/digits/dashes/underscores", "이름은 소문자/숫자/대시/언더스코어"), severity="error")
                 return
             if (CONFIG_DIR / f"{new_name}.yaml").exists():
-                self.notify(f"Config '{new_name}' 이미 존재", severity="error")
+                self.notify(t(f"Config '{new_name}' already exists", f"Config '{new_name}' 이미 존재"), severity="error")
                 return
             cfg = load_config(name)
             cfg.name = new_name
             save_config(cfg)
             self._refresh_table()
-            self.notify(f"복제: '{name}' → '{new_name}'")
+            self.notify(t(f"Cloned: '{name}' → '{new_name}'", f"복제: '{name}' → '{new_name}'"))
 
         self.app.push_screen(
-            TextPromptModal(f"Clone config '{name}' as:", default=default), after
+            TextPromptModal(
+                t(f"Clone config '{name}' as:", f"Config '{name}' 을(를) 다음 이름으로 복제:"),
+                default=default,
+            ),
+            after,
         )
 
     def action_delete_config(self) -> None:
         name = self._get_selected()
         if not name:
-            self.notify("선택된 config 없음", severity="warning")
+            self.notify(t("No config selected", "선택된 config 없음"), severity="warning")
             return
         referencing = [
             p for p in list_profile_names() if load_profile(p).config_name == name

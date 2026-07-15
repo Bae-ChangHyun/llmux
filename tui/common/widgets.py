@@ -9,6 +9,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
+from tui.common.i18n import t
+
 
 class BackendPickerModal(ModalScreen[str]):
     """새 프로필 생성 시 backend 선택 모달. 반환값: 'vllm' | 'llamacpp' | ''."""
@@ -22,14 +24,17 @@ class BackendPickerModal(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("Select backend", id="picker-title")
+            yield Static(t("Select backend", "백엔드 선택"), id="picker-title")
             yield OptionList(
                 Option("vLLM", id="vllm"),
                 Option("llama.cpp", id="llamacpp"),
                 id="picker-list",
             )
             yield Static(
-                "[dim]1/2 or ↑↓ + Enter · esc to cancel[/dim]",
+                t(
+                    "[dim]1/2 or ↑↓ + Enter · esc to cancel[/dim]",
+                    "[dim]1/2 또는 ↑↓ + Enter · esc 취소[/dim]",
+                ),
                 id="picker-foot",
             )
 
@@ -59,22 +64,27 @@ class ConfirmModal(ModalScreen[bool]):
         self,
         message: str,
         *,
-        confirm_label: str = "Yes",
-        cancel_label: str = "Cancel",
+        confirm_label: str | None = None,
+        cancel_label: str | None = None,
         variant: str = "error",
     ) -> None:
         super().__init__()
         self._message = message
+        # Resolve the default labels lazily in compose(), not here — a t()
+        # default argument would be evaluated once at import time and lock the
+        # language, defeating the fresh-per-call resolution i18n relies on.
         self._confirm_label = confirm_label
         self._cancel_label = cancel_label
         self._variant = variant
 
     def compose(self) -> ComposeResult:
+        confirm = self._confirm_label if self._confirm_label is not None else t("Yes", "네")
+        cancel = self._cancel_label if self._cancel_label is not None else t("Cancel", "취소")
         yield Vertical(
             Static(self._message, id="confirm-message"),
             Horizontal(
-                Button(self._confirm_label, id="confirm-yes", variant=self._variant),  # type: ignore[arg-type]
-                Button(self._cancel_label, id="confirm-no", variant="default"),
+                Button(confirm, id="confirm-yes", variant=self._variant),  # type: ignore[arg-type]
+                Button(cancel, id="confirm-no", variant="default"),
                 classes="form-buttons",
             ),
         )
@@ -120,17 +130,21 @@ class TextPromptModal(ModalScreen[str | None]):
         *,
         default: str = "",
         placeholder: str = "",
-        confirm_label: str = "OK",
-        cancel_label: str = "Cancel",
+        confirm_label: str | None = None,
+        cancel_label: str | None = None,
     ) -> None:
         super().__init__()
         self._message = message
         self._default = default
         self._placeholder = placeholder
+        # See ConfirmModal — resolve default labels in compose(), not as t()
+        # default arguments (which would freeze the language at import time).
         self._confirm_label = confirm_label
         self._cancel_label = cancel_label
 
     def compose(self) -> ComposeResult:
+        confirm = self._confirm_label if self._confirm_label is not None else t("OK", "확인")
+        cancel = self._cancel_label if self._cancel_label is not None else t("Cancel", "취소")
         yield Vertical(
             Static(self._message, id="prompt-message"),
             Input(
@@ -139,8 +153,8 @@ class TextPromptModal(ModalScreen[str | None]):
                 id="prompt-input",
             ),
             Horizontal(
-                Button(self._confirm_label, id="prompt-ok", variant="primary"),
-                Button(self._cancel_label, id="prompt-cancel", variant="default"),
+                Button(confirm, id="prompt-ok", variant="primary"),
+                Button(cancel, id="prompt-cancel", variant="default"),
                 classes="form-buttons",
             ),
         )
