@@ -2860,6 +2860,70 @@ class DisabledParamsTests(unittest.TestCase):
                 self.assertEqual(loaded.params["ctx-size"], 2048)
                 self.assertNotIn("ctx-size", loaded.disabled_params)
 
+    def test_vllm_save_preserves_user_comments(self) -> None:
+        # Editing a config used to erase every hand-written `#` note (PyYAML
+        # can't round-trip comments). A header, an inline comment, and a
+        # trailing block must all survive an edit that changes one value.
+        from tui.backends.vllm import backend_storage as vs
+        from tui.backends.vllm import backend_common as vc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(vs, "CONFIG_DIR", Path(tmp)), \
+                 patch.object(vc, "CONFIG_DIR", Path(tmp)):
+                (Path(tmp) / "c.yaml").write_text(
+                    "# header note\n"
+                    "model: org/m  # inline note\n"
+                    "max-model-len: 8192\n"
+                    "# OFF-only trailing explanation.\n"
+                )
+                cfg = vs.load_config("c")
+                cfg.extra_params["max-model-len"] = 4096  # a TUI/CLI edit
+                vs.save_config(cfg)
+
+                text = (Path(tmp) / "c.yaml").read_text()
+                self.assertIn("# header note", text)
+                self.assertIn("# inline note", text)
+                self.assertIn("# OFF-only trailing explanation.", text)
+                self.assertIn("max-model-len: 4096", text)
+                # The server view is still valid YAML with the new value.
+                self.assertEqual(yaml.safe_load(text)["max-model-len"], 4096)
+
+    def test_llamacpp_save_preserves_user_comments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(lbackend, "CONFIG_DIR", Path(tmp)):
+                (Path(tmp) / "c.yaml").write_text(
+                    "# llama config\nctx-size: 32768  # context length\nn-gpu-layers: 99\n"
+                )
+                cfg = lbackend.load_config("c")
+                cfg.params["ctx-size"] = 16384
+                lbackend.save_config(cfg)
+
+                text = (Path(tmp) / "c.yaml").read_text()
+                self.assertIn("# llama config", text)
+                self.assertIn("# context length", text)
+                self.assertIn("ctx-size: 16384", text)
+
+    def test_comment_free_config_stays_byte_identical(self) -> None:
+        # The comment-preserving path must not touch comment-less files — their
+        # plain PyYAML output has to stay exactly as before.
+        from tui.backends.vllm import backend_storage as vs
+        from tui.backends.vllm import backend_common as vc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(vs, "CONFIG_DIR", Path(tmp)), \
+                 patch.object(vc, "CONFIG_DIR", Path(tmp)):
+                data = {
+                    "model": "org/m",
+                    "gpu-memory-utilization": "0.9",
+                    "max-model-len": 2048,
+                }
+                plain = yaml.dump(
+                    data, default_flow_style=False, allow_unicode=True, sort_keys=False
+                )
+                (Path(tmp) / "c.yaml").write_text(plain)
+                vs.save_config(vs.load_config("c"))  # no-op re-save
+                self.assertEqual((Path(tmp) / "c.yaml").read_text(), plain)
+
 
 class EnvLineQuotingTests(unittest.TestCase):
     """docker compose reads the rendered .env with a dotenv parser, not a shell.
