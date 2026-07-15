@@ -50,16 +50,66 @@ def _label(spec: DevBuildSpec) -> str:
 _TAG_INVALID_CHARS = re.compile(r"[^A-Za-z0-9._-]")
 
 
-def _sanitize_docker_tag(name: str) -> str:
+def sanitize_docker_tag(name: str) -> str:
     """Replace docker-tag-invalid characters with `-`.
 
     Docker image tags accept `[A-Za-z0-9_.-]` and must not start with `.` or `-`.
     Branch names like `releases/v0.21.0` or `feat/foo` are common, so map every
     invalid character to `-` and trim leading punctuation. The branch's original
     spelling is still preserved in the `<prefix>.repo.branch` label.
+
+    Public because the *runtime* paths must derive the exact same tag the
+    builder stamps (`<prefix>:<safe_branch>`). Sanitizing in only one of the two
+    made `--dev` on a `feat/foo` branch look for `vllm-dev:feat/foo` — an
+    invalid reference that never matches, so it rebuilt every time and then
+    failed to start.
     """
     sanitized = _TAG_INVALID_CHARS.sub("-", name).lstrip(".-")
     return sanitized or "branch"
+
+
+# Back-compat alias for existing internal callers.
+_sanitize_docker_tag = sanitize_docker_tag
+
+
+_DEV_IMAGE_PREFIXES = ("vllm-dev:", "llamacpp-dev:")
+_TAG_PART_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
+
+
+def image_tag_error(value: str) -> str:
+    """Why `value` is an unusable image reference, or "" if it's fine.
+
+    Empty is allowed (it clears the pin). For our own dev images the tag part
+    must already equal `sanitize_docker_tag(tag)` — otherwise a pin like
+    `vllm-dev:feat/foo` would name an image the builder/runtime (which sanitize
+    to `feat-foo`) never produce. For any other reference the tag part just has
+    to be a legal docker tag.
+    """
+    value = value.strip()
+    if not value:
+        return ""
+    for prefix in _DEV_IMAGE_PREFIXES:
+        if value.startswith(prefix):
+            tag = value[len(prefix):]
+            if not tag:
+                return f"{prefix.rstrip(':')} image needs a tag after ':'"
+            safe = sanitize_docker_tag(tag)
+            if tag != safe:
+                return (
+                    f"invalid dev image tag {tag!r}; docker tags can't contain "
+                    f"'/' or other specials — did you mean {prefix}{safe}?"
+                )
+            return ""
+    # Generic reference: take the tag as the segment after the last ':' *unless*
+    # that colon belongs to a registry host:port (i.e. sits before the last '/').
+    if ":" in value and value.rfind(":") > value.rfind("/"):
+        tag = value.rsplit(":", 1)[1]
+        if not _TAG_PART_RE.match(tag):
+            return (
+                f"invalid image tag {tag!r}; must match {_TAG_PART_RE.pattern} "
+                "(start with a letter/digit/underscore, then letters/digits/._-)"
+            )
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +274,15 @@ async def stream_build(
     # `releases/v0.21.0` are common so sanitize for the tag while keeping
     # the original string in the `.repo.branch` label.
     safe_branch = _sanitize_docker_tag(resolved_branch)
-    main_tag = custom_tag or f"{safe_branch}-{datetime.now().strftime('%Y%m%d')}"
+    # custom_tag goes through the same sanitizer: the start path
+    # (`up --dev --tag feat/foo`) sanitizes before looking the image up, so a
+    # raw tag here would either be an invalid docker reference or — worse —
+    # build under a name the runtime never resolves to.
+    main_tag = (
+        _sanitize_docker_tag(custom_tag)
+        if custom_tag
+        else f"{safe_branch}-{datetime.now().strftime('%Y%m%d')}"
+    )
 
     yield ("log", f"Building {spec.backend} from source")
     yield ("log", f"Repository: {resolved_repo}")
@@ -322,11 +380,16 @@ def format_arch_cmake(caps: list[str]) -> str:
 
 
 async def get_image_label(image_ref: str, label: str) -> str:
+    # The label key must be a Go *string* literal — i.e. double-quoted. `!r`
+    # produced single quotes, which Go templates parse as a rune literal, so
+    # `docker inspect` failed with rc=64 for every lookup. That made
+    # image_matches() always False and forced a full rebuild on every
+    # `--dev` start, even when a matching image was sitting right there.
     rc, out = await _run(
         "docker",
         "inspect",
         image_ref,
-        f"--format={{{{index .Config.Labels {label!r}}}}}",
+        '--format={{index .Config.Labels "' + label + '"}}',
         timeout=20,
     )
     if rc != 0:

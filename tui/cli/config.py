@@ -16,6 +16,8 @@ import typer
 import yaml
 
 from tui.cli._runtime import BACKENDS, emit_json, emit_table
+from tui.cli.profile import _validate_gpu_mem
+from tui.common import profile_store
 
 app = typer.Typer(help="Config (YAML) CRUD.", no_args_is_help=True)
 
@@ -52,14 +54,18 @@ def _config_path(backend: str, name: str) -> Path:
     return _config_dir(backend) / f"{name}.yaml"
 
 
-def _backend_save_config(backend: str, name: str, data: dict) -> Path:
+def _backend_save_config(
+    backend: str, name: str, data: dict, disabled: dict | None = None
+) -> Path:
     """Route a config write through the backend's canonical serializer.
 
     The vLLM backend hoists `model` / `gpu-memory-utilization` into typed
     fields and writes them in a fixed order; the llama.cpp backend writes a
     flat flag dict. Going through these instead of a local `yaml.safe_dump`
-    keeps TUI and CLI round-trips byte-identical (Finding #4).
+    keeps TUI and CLI round-trips byte-identical (Finding #4). `disabled`
+    carries params kept as comment markers rather than active keys.
     """
+    disabled = disabled or {}
     cdir = _config_dir(backend)
     cdir.mkdir(parents=True, exist_ok=True)
     if backend == "vllm":
@@ -74,13 +80,25 @@ def _backend_save_config(backend: str, name: str, data: dict) -> Path:
             model=model,
             gpu_memory_utilization=gpu_mem,
             extra_params=extra,
+            disabled_params=dict(disabled),
         ))
     else:
         from tui.backends.llamacpp.backend import Config as LcppConfig
         from tui.backends.llamacpp.backend import save_config as l_save
 
-        l_save(LcppConfig(name=name, params=dict(data)))
+        l_save(LcppConfig(name=name, params=dict(data), disabled_params=dict(disabled)))
     return _config_path(backend, name)
+
+
+def _backend_load_disabled(backend: str, name: str) -> dict:
+    """Disabled params of an existing config (empty when none / file absent)."""
+    if backend == "vllm":
+        from tui.backends.vllm.backend_storage import load_config as v_load
+
+        return dict(v_load(name).disabled_params)
+    from tui.backends.llamacpp.backend import load_config as l_load
+
+    return dict(l_load(name).disabled_params)
 
 
 def _backend_load_config(backend: str, name: str) -> dict:
@@ -128,6 +146,13 @@ def _parse_set_kv(items: list[str]) -> dict:
 
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 
+# Creation rule — matches the TUI's ConfigFormScreen (lowercase only). Kept
+# separate from _NAME_RE on purpose: the *reference* paths (show/edit/delete/
+# clone-source) stay on the permissive rule so a user who already has an
+# `Uppercase.yaml` on disk — from an older build or made by hand — can still
+# inspect and remove it. Only new names are held to the strict rule.
+_NEW_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
 
 def _validate_name(name: str) -> None:
     """Reject names that could escape `_config_dir(bk)` via path traversal."""
@@ -135,6 +160,83 @@ def _validate_name(name: str) -> None:
         raise typer.BadParameter(
             f"invalid config name {name!r}: must match {_NAME_RE.pattern}",
             param_hint="NAME",
+        )
+
+
+def _reject_vllm_only_config_options(
+    backend: str, *, model_given: bool, gpu_mem_given: bool
+) -> None:
+    """Refuse `--model` / `--gpu-mem` on a llama.cpp config.
+
+    Both are vLLM-shaped: `_backend_save_config` drops them for llama.cpp
+    (`new`), or writes them through verbatim (`edit`) as `model` /
+    `gpu-memory-utilization` keys — flags llama-server does not have, so the
+    profile only breaks later, at start time.
+    """
+    if backend != "llamacpp":
+        return
+    offenders = [
+        flag
+        for flag, given in (("--model", model_given), ("--gpu-mem", gpu_mem_given))
+        if given
+    ]
+    if not offenders:
+        return
+    verb = "is" if len(offenders) == 1 else "are"
+    raise typer.BadParameter(
+        f"{', '.join(offenders)} {verb} vLLM-only and not supported by backend "
+        "'llamacpp'; use --set KEY=VALUE for llama-server flags.",
+        param_hint=offenders[0],
+    )
+
+
+def _validate_gpu_mem_in_data(backend: str, data: dict) -> None:
+    """Apply the --gpu-mem range rule to a value that arrived via --set.
+
+    vLLM only: llama.cpp's `--set` is the raw llama-server flag namespace, where
+    a key of the same spelling would just be a user-defined flag — not the vLLM
+    field this rule governs.
+    """
+    if backend != "vllm":
+        return
+    raw = data.get("gpu-memory-utilization")
+    if raw is None:
+        return
+    _validate_gpu_mem(str(raw), param_hint="--set gpu-memory-utilization")
+
+
+def _reject_creating_example(name: str, *, param_hint: str) -> None:
+    """`example.yaml` is the tracked template — recreating or overwriting it has
+    no legitimate use, so `new`/`clone` refuse even with --overwrite.
+
+    `edit`/`delete` stay available as escape hatches (someone may genuinely need
+    to fix the template) but warn instead of acting silently.
+    """
+    if name == "example":
+        raise typer.BadParameter(
+            "'example' is the tracked template config and may not be created or "
+            "overwritten; pick a different name.",
+            param_hint=param_hint,
+        )
+
+
+def _warn_touching_example(backend: str, name: str, verb: str) -> None:
+    if name == "example":
+        print(
+            f"warning: {verb} the tracked template config "
+            f"config/{backend}/example.yaml"
+        )
+
+
+def _validate_new_name(name: str, *, param_hint: str = "NAME") -> None:
+    """Name rule for configs we are about to create (TUI-equivalent)."""
+    _validate_name(name)
+    if not _NEW_NAME_RE.match(name):
+        raise typer.BadParameter(
+            f"invalid config name {name!r}: must be lowercase — match "
+            f"{_NEW_NAME_RE.pattern} (start with [a-z0-9], then lowercase "
+            "letters, digits, dashes, or underscores only).",
+            param_hint=param_hint,
         )
 
 
@@ -202,10 +304,20 @@ def show_config(
     """Print a config YAML."""
     bk = _resolve_backend_for_existing(backend, name)
     data = _load_yaml(bk, name)
+    disabled = _backend_load_disabled(bk, name)
     if json_out:
-        emit_json(data)
+        # Structured (params + disabled) so a caller can tell the two apart —
+        # the flat file dump can't express a disabled param (it's a comment).
+        emit_json({"params": data, "disabled": disabled})
         return
     print(yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=False))
+    if disabled:
+        print("# disabled:")
+        print(
+            yaml.safe_dump(
+                disabled, sort_keys=False, allow_unicode=True, default_flow_style=False
+            ).rstrip()
+        )
 
 
 @app.command("new")
@@ -222,9 +334,18 @@ def new_config(
     overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite if file exists."),
 ) -> None:
     """Create a new config YAML."""
-    _validate_name(name)
+    _validate_new_name(name)
+    _reject_creating_example(name, param_hint="NAME")
     if backend not in BACKENDS:
         raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
+    # `new` has no None sentinel, so "given" = "differs from the default".
+    _reject_vllm_only_config_options(
+        backend,
+        model_given=bool(model),
+        gpu_mem_given=gpu_memory_utilization != "0.9",
+    )
+    if backend == "vllm":
+        _validate_gpu_mem(gpu_memory_utilization)
     path = _config_dir(backend) / f"{name}.yaml"
     if path.exists() and not overwrite:
         raise typer.BadParameter(f"config already exists: {path} (use --overwrite)")
@@ -234,6 +355,7 @@ def new_config(
     else:
         data = {}
     data.update(_parse_set_kv(set_kv))
+    _validate_gpu_mem_in_data(backend, data)
     saved = _backend_save_config(backend, name, data)
     print(saved)
 
@@ -243,21 +365,72 @@ def edit_config(
     name: str = typer.Argument(...),
     backend: Optional[str] = typer.Option(None, "--backend", "-b"),
     set_kv: list[str] = typer.Option([], "--set", help="Repeatable: KEY=VALUE."),
-    unset: list[str] = typer.Option([], "--unset", help="Repeatable: KEY to remove."),
+    unset: list[str] = typer.Option([], "--unset", help="Repeatable: KEY to remove (both active & disabled)."),
+    disable: list[str] = typer.Option(
+        [], "--disable", help="Repeatable: move an active KEY to disabled (kept, not served)."
+    ),
+    enable: list[str] = typer.Option(
+        [], "--enable", help="Repeatable: move a disabled KEY back to active."
+    ),
     model: Optional[str] = typer.Option(None, "--model", "-m"),
     gpu_memory_utilization: Optional[str] = typer.Option(None, "--gpu-mem"),
 ) -> None:
     """Patch fields in an existing config."""
     bk = _resolve_backend_for_existing(backend, name)
+    _warn_touching_example(bk, name, "modifying")
+    _reject_vllm_only_config_options(
+        bk,
+        model_given=model is not None,
+        gpu_mem_given=gpu_memory_utilization is not None,
+    )
     data = _backend_load_config(bk, name)
+    disabled = _backend_load_disabled(bk, name)
     if model is not None:
         data["model"] = model
     if gpu_memory_utilization is not None:
+        _validate_gpu_mem(gpu_memory_utilization)
         data["gpu-memory-utilization"] = gpu_memory_utilization
-    data.update(_parse_set_kv(set_kv))
+    # --set re-activates a key that was disabled (and updates its value).
+    for k, v in _parse_set_kv(set_kv).items():
+        disabled.pop(k, None)
+        data[k] = v
+    # vLLM's model / gpu-memory-utilization are typed fields the serializer
+    # always re-emits with a default, so a disabled marker for them would sit
+    # alongside a live default — `up` would silently use the default, not the
+    # value the user thought they'd toggled. Refuse to toggle them at all.
+    if bk == "vllm":
+        for flag, keys in (("--disable", disable), ("--enable", enable)):
+            for k in keys:
+                if k in ("model", "gpu-memory-utilization"):
+                    raise typer.BadParameter(
+                        f"{k} is a core vLLM field and cannot be toggled; use "
+                        "--model / --gpu-mem to change it.",
+                        param_hint=flag,
+                    )
+    # --disable: active -> disabled. Must currently be active.
+    for k in disable:
+        if k not in data:
+            raise typer.BadParameter(
+                f"cannot disable {k!r}: not an active param in config '{name}'.",
+                param_hint="--disable",
+            )
+        disabled[k] = data.pop(k)
+    # --enable: disabled -> active. Must currently be disabled.
+    for k in enable:
+        if k not in disabled:
+            raise typer.BadParameter(
+                f"cannot enable {k!r}: not a disabled param in config '{name}'.",
+                param_hint="--enable",
+            )
+        data[k] = disabled.pop(k)
+    # Validate AFTER enable so a bad gpu-memory-utilization brought back from
+    # the disabled set (or set above) can't slip through unchecked.
+    _validate_gpu_mem_in_data(bk, data)
+    # --unset removes from wherever it lives.
     for k in unset:
         data.pop(k, None)
-    saved = _backend_save_config(bk, name, data)
+        disabled.pop(k, None)
+    saved = _backend_save_config(bk, name, data, disabled)
     print(saved)
 
 
@@ -278,7 +451,8 @@ def clone_config(
     without creating a profile in the same step.
     """
     bk = _resolve_backend_for_existing(backend, src)
-    _validate_name(dst)
+    _validate_new_name(dst, param_hint="DST")
+    _reject_creating_example(dst, param_hint="DST")
     dst_path = _config_dir(bk) / f"{dst}.yaml"
     if dst_path.exists() and not overwrite:
         raise typer.BadParameter(
@@ -286,7 +460,8 @@ def clone_config(
             param_hint="DST",
         )
     data = _backend_load_config(bk, src)
-    saved = _backend_save_config(bk, dst, data)
+    disabled = _backend_load_disabled(bk, src)
+    saved = _backend_save_config(bk, dst, data, disabled)
     print(saved)
 
 
@@ -301,8 +476,24 @@ def delete_config(
     path = _config_dir(bk) / f"{name}.yaml"
     if not path.exists():
         raise typer.BadParameter(f"config not found: {path}", param_hint="NAME")
+    _warn_touching_example(bk, name, "deleting")
+    # Profiles pointing at this config would keep a dangling config_name in
+    # profiles.yaml once the YAML is gone; clear them like the TUI's
+    # ConfirmDeleteConfigScreen does.
+    referencing = [p for p in profile_store.list_profiles(bk) if p.config_name == name]
     if not yes:
-        if not typer.confirm(f"Delete {path}?"):
+        prompt = f"Delete {path}?"
+        if referencing:
+            listed = ", ".join(sorted(p.name for p in referencing))
+            prompt = (
+                f"Delete {path}? "
+                f"(referenced by profiles: {listed} — their config_name will be cleared)"
+            )
+        if not typer.confirm(prompt):
             raise typer.Exit(code=0)
     path.unlink()
     print(f"Deleted {path}")
+    for p in referencing:
+        p.config_name = ""
+        profile_store.save_profile(p)
+        print(f"Cleared config_name on profile: {p.name}")

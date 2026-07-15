@@ -12,6 +12,7 @@ dependencies = [
     "pyyaml>=6.0",
     "hf-mem>=0.5.0",
     "typer>=0.25.1",
+    "ruamel-yaml>=0.18",
 ]
 
 [project.scripts]

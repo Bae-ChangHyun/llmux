@@ -7,6 +7,11 @@ from typing import Any
 import yaml
 
 from tui.common import profile_store
+from tui.common.config_markers import (
+    dump_active_config,
+    parse_disabled_markers,
+    render_disabled_markers,
+)
 from tui.common.env import parse_env_file as _parse_env_file  # noqa: F401 — re-exported for callers
 
 from .backend_common import CONFIG_DIR, Config, Profile
@@ -59,7 +64,16 @@ def load_profile(name: str) -> Profile:
     stored = profile_store.load_profile(name, "vllm")
     if stored is None:
         return Profile(name=name)
-    profile_store.render_env(stored)
+    try:
+        profile_store.render_env(stored)
+    except ValueError:
+        # A value the .env renderer refuses (quote/newline/control char, e.g.
+        # from a hand-edited profiles.yaml) must not take down every read path:
+        # this same load_profile backs `ps`, the dashboard scan, and the
+        # pre-flight of *other* profiles. Skip the .env refresh and let the
+        # profile load; the start path re-renders and fails loudly for the one
+        # profile that is actually broken.
+        pass
     return _to_profile(stored)
 
 
@@ -71,6 +85,10 @@ def delete_profile(name: str, delete_config: bool = False) -> None:
     if delete_config:
         stored = profile_store.load_profile(name, "vllm")
         config_name = stored.config_name if stored else ""
+        # example.yaml is the tracked template — a cascade delete would remove
+        # it from the working tree. The profile itself still goes.
+        if config_name == "example":
+            config_name = ""
         if config_name:
             other_refs = [
                 n for n in profile_store.list_profile_names("vllm")
@@ -93,7 +111,8 @@ def load_config(name: str) -> Config:
     if not path.exists():
         return Config(name=name)
 
-    raw_data = yaml.safe_load(path.read_text())
+    text = path.read_text()
+    raw_data = yaml.safe_load(text)
     if raw_data is None:
         data: dict[str, Any] = {}
     elif isinstance(raw_data, dict):
@@ -104,7 +123,17 @@ def load_config(name: str) -> Config:
     model = str(data.pop("model", ""))
     gpu_mem = str(data.pop("gpu-memory-utilization", "0.9"))
     extra = {str(key): value for key, value in data.items()}
-    return Config(name=name, model=model, gpu_memory_utilization=gpu_mem, extra_params=extra)
+    # A disabled marker whose key is also an active key is ignored — active wins.
+    disabled = {
+        k: v for k, v in parse_disabled_markers(text).items() if k not in extra
+    }
+    return Config(
+        name=name,
+        model=model,
+        gpu_memory_utilization=gpu_mem,
+        extra_params=extra,
+        disabled_params=disabled,
+    )
 
 
 def save_config(config: Config) -> None:
@@ -115,15 +144,20 @@ def save_config(config: Config) -> None:
     }
     for key, value in config.extra_params.items():
         data[key] = True if value == "" else value
-    config.path.write_text(
-        yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
-    )
+    existing = config.path.read_text() if config.path.exists() else None
+    text = dump_active_config(existing, data)
+    config.path.write_text(text + render_disabled_markers(config.disabled_params))
 
 
 def parse_config_param_value(raw_value: str) -> Any:
     if raw_value == "":
         return True
-    return yaml.safe_load(raw_value)
+    # A value that isn't valid YAML (e.g. an unbalanced `{`) is kept as the raw
+    # string rather than raising — parity with the llama.cpp parser.
+    try:
+        return yaml.safe_load(raw_value)
+    except yaml.YAMLError:
+        return raw_value
 
 
 def format_config_param_value(value: Any) -> str:
@@ -152,4 +186,6 @@ def delete_config(name: str) -> None:
 def list_config_names() -> list[str]:
     if not CONFIG_DIR.exists():
         return []
-    return sorted(path.stem for path in CONFIG_DIR.glob("*.yaml"))
+    return sorted(
+        path.stem for path in CONFIG_DIR.glob("*.yaml") if path.stem != "example"
+    )

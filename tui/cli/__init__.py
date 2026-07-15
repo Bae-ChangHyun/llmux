@@ -134,6 +134,10 @@ app.command(
     "bench",
     help="Benchmark a running container's tok/s (alias for `container benchmark`).",
 )(_container.benchmark)
+app.command(
+    "stats",
+    help="Live tok/s from running containers' /metrics (alias for `container stats`).",
+)(_container.stats)
 
 
 def main() -> None:

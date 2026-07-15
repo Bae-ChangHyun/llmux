@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
+from time import monotonic
 
 from textual import on, work
 from textual.app import ComposeResult
@@ -23,8 +25,9 @@ from tui.common.conflicts import (
     gpu_conflicts,
     port_conflicts,
 )
-from tui.common.http import chat_completion_bench, list_served_models
+from tui.common.http import list_served_models, run_bench
 from tui.common.mem import estimate_model_memory
+from tui.common.metrics import ThroughputTracker, fetch_token_counters
 from tui.common.widgets import BackendPickerModal, ConfirmModal
 
 
@@ -41,6 +44,7 @@ class DashboardScreen(Screen):
         Binding("enter", "action_menu", "Action"),
         Binding("n", "new_profile", "New"),
         Binding("m", "mem_estimate", "Memory"),
+        Binding("C", "config_list", "Configs"),
         Binding("s", "system_info", "System"),
         Binding("r", "refresh", "Refresh"),
         Binding("q", "quit", "Quit"),
@@ -51,6 +55,7 @@ class DashboardScreen(Screen):
         Binding("e", "edit_profile", show=False),
         Binding("c", "edit_config", show=False),
         Binding("x", "delete_profile", show=False),
+        Binding("escape", "hide_mem_search", show=False),
         Binding("question_mark", "help", show=False),
     ]
 
@@ -61,6 +66,8 @@ class DashboardScreen(Screen):
         self._rows: list[DashboardRow] = []
         self._gpus = []
         self._refresh_timer = None
+        self._tps: dict[str, str] = {}
+        self._tps_tracker = ThroughputTracker()
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -82,9 +89,18 @@ class DashboardScreen(Screen):
 
     def on_mount(self) -> None:
         table = self.query_one("#profile-table", DataTable)
-        table.add_columns("Backend", "Profile", "Status", "Port", "Model", "Detail")
+        self._col_keys = table.add_columns(
+            "Backend", "Profile", "Status", "Port", "tok/s", "Model", "Detail"
+        )
+        # tok/s is column index 4 — kept as a key so live updates can address
+        # the cell without re-rendering the whole table.
+        self._tps_col_key = self._col_keys[4]
         self._reload()
         self._poll_gpu()
+        self._poll_throughput()
+        # /metrics deltas need two samples to produce a rate; 3s keeps the
+        # first number appearing quickly without hammering the servers.
+        self._tps_timer = self.set_interval(3.0, lambda: self._poll_throughput())
         # Profile rows refresh every 5s — `docker ps` is cheap, and a stopped
         # container should drop off the running list quickly.
         self._refresh_timer = self.set_interval(5.0, lambda: self._reload())
@@ -100,6 +116,8 @@ class DashboardScreen(Screen):
             self._refresh_timer.pause()
         if getattr(self, "_gpu_timer", None) is not None:
             self._gpu_timer.pause()
+        if getattr(self, "_tps_timer", None) is not None:
+            self._tps_timer.pause()
 
     def on_screen_resume(self) -> None:
         self._reload()
@@ -108,6 +126,8 @@ class DashboardScreen(Screen):
             self._refresh_timer.resume()
         if getattr(self, "_gpu_timer", None) is not None:
             self._gpu_timer.resume()
+        if getattr(self, "_tps_timer", None) is not None:
+            self._tps_timer.resume()
 
     # ------------------------------------------------------------------
     # Data refresh
@@ -189,14 +209,17 @@ class DashboardScreen(Screen):
             port_cell = str(r.port) if r.port is not None else "—"
             model_short = r.model.split("/")[-1] if "/" in r.model else (r.model or "—")
             detail = r.detail or "—"
+            key = f"{r.backend}:{r.profile_name}"
+            tps_cell = self._tps.get(key, "—") if r.running else "—"
             table.add_row(
                 backend_cell,
                 r.profile_name,
                 status_cell,
                 port_cell,
+                tps_cell,
                 model_short,
                 detail,
-                key=f"{r.backend}:{r.profile_name}",
+                key=key,
             )
 
         if prev_key is not None:
@@ -217,6 +240,60 @@ class DashboardScreen(Screen):
             )
         except Exception:
             pass
+
+    @work(exclusive=True, group="dashboard-tps")
+    async def _poll_throughput(self) -> None:
+        """Live generation tok/s per running profile, from Prometheus /metrics.
+
+        Rates are deltas between successive samples, so a freshly-started
+        container shows "—" for one tick. A server without metrics exposed
+        (or not yet up) stays "—" rather than erroring the whole poll.
+        """
+        live: list[DashboardRow] = []
+        for r in list(self._rows):
+            key = f"{r.backend}:{r.profile_name}"
+            if not r.running or not r.port:
+                self._tps.pop(key, None)
+                self._tps_tracker.forget(key)
+                continue
+            live.append(r)
+
+        # Fetch concurrently — awaiting each container in turn meant one
+        # slow/hanging /metrics endpoint delayed (and could starve) every
+        # profile behind it in the list.
+        samples = await asyncio.gather(
+            *(fetch_token_counters(r.port) for r in live),
+            return_exceptions=True,
+        )
+        now = monotonic()
+
+        for r, counters in zip(live, samples):
+            key = f"{r.backend}:{r.profile_name}"
+            if isinstance(counters, BaseException):
+                counters = None
+            if counters is None:
+                self._tps.pop(key, None)
+                self._tps_tracker.forget(key)
+                cell = "—"
+            else:
+                rate = self._tps_tracker.update(key, counters, now)
+                if rate is None:
+                    # First sample, or the counters went backwards (server
+                    # restart). Drop the cached value too — otherwise the next
+                    # _render_rows would resurrect the pre-restart tok/s.
+                    self._tps.pop(key, None)
+                    cell = "—"
+                else:
+                    cell = f"{rate[1]:.1f}"
+                    self._tps[key] = cell
+
+            try:
+                table = self.query_one("#profile-table", DataTable)
+                table.update_cell(key, self._tps_col_key, cell)
+            except Exception:
+                # Row went away between the reload and this update — the next
+                # _render_rows pass will pick the value up from self._tps.
+                pass
 
     # ------------------------------------------------------------------
     # Row selection helpers
@@ -399,7 +476,7 @@ class DashboardScreen(Screen):
 
     @work(exclusive=True)
     async def _run_vllm_bench(self, row: DashboardRow) -> None:
-        """vLLM /v1/chat/completions 한 번 쏴서 tok/s 측정."""
+        """vLLM /v1/chat/completions — warmup 후 3회 측정, median 보고."""
         if not row.port:
             self.notify("포트 정보 없음", severity="error")
             return
@@ -408,15 +485,12 @@ class DashboardScreen(Screen):
         if not model:
             self.notify("서빙 모델 식별 실패 (/v1/models 응답 없음)", severity="error")
             return
-        self.notify(f"벤치마크 실행 ({model})...")
+        self.notify(f"벤치마크 실행 (warmup+3회, {model})...")
         try:
-            r = await chat_completion_bench(row.port, model)
-            u = r["usage"]
-            ct = u.get("completion_tokens", 0)
-            elapsed = r["elapsed"]
-            tps = ct / elapsed if elapsed > 0 else 0
+            r = await run_bench(row.port, model, runs=3, warmup=1)
             self.notify(
-                f"✓ {ct} tok / {elapsed:.2f}s = [b]{tps:.1f} tok/s[/b]",
+                f"✓ median [b]{r['median_tps']:.1f} tok/s[/b] "
+                f"({r['min_tps']:.1f}–{r['max_tps']:.1f})",
                 title=row.profile_name,
                 timeout=10,
             )
@@ -463,7 +537,7 @@ class DashboardScreen(Screen):
             from tui.backends.llamacpp.screens.config import ConfigFormScreen
 
             self.app.push_screen(
-                ConfigFormScreen(profile.config_name), self._after_mutation
+                ConfigFormScreen(profile.config_name or name), self._after_mutation
             )
         elif action == "edit-profile":
             from tui.backends.llamacpp.screens.profile import ProfileFormScreen
@@ -504,22 +578,17 @@ class DashboardScreen(Screen):
 
     @work(exclusive=True)
     async def _run_llamacpp_bench(self, profile) -> None:
-        cfg = lbackend.load_config(profile.config_name)
-        alias = cfg.get("alias", profile.config_name)
-        self.notify(f"벤치마크 실행 ({alias})...")
+        # config_name defaults to the profile name when unset — same fallback
+        # the CLI's bench uses.
+        config_name = profile.config_name or profile.name
+        cfg = lbackend.load_config(config_name)
+        alias = cfg.get("alias", config_name)
+        self.notify(f"벤치마크 실행 (warmup+3회, {alias})...")
         try:
-            r = await lbackend.chat_completion(
-                profile.port,
-                alias,
-                "Explain the theory of relativity in about 150 words.",
-                200,
-            )
-            u = r["usage"]
-            ct = u.get("completion_tokens", 0)
-            elapsed = r["elapsed"]
-            tps = ct / elapsed if elapsed > 0 else 0
+            r = await run_bench(profile.port, alias, runs=3, warmup=1)
             self.notify(
-                f"✓ {ct} tok / {elapsed:.2f}s = [b]{tps:.1f} tok/s[/b]",
+                f"✓ median [b]{r['median_tps']:.1f} tok/s[/b] "
+                f"({r['min_tps']:.1f}–{r['max_tps']:.1f})",
                 title=profile.name,
                 timeout=10,
             )
@@ -644,12 +713,31 @@ class DashboardScreen(Screen):
 
         self.app.push_screen(BackendPickerModal(), after)
 
+    def action_config_list(self) -> None:
+        """커서 위치의 backend config 목록으로 이동.
+        선택된 row 가 없으면 backend picker 로 사용자 선택."""
+        row = self._selected_row()
+        if row is not None:
+            screen_id = "vllm_configs" if row.backend == "vllm" else "llamacpp_configs"
+            self.app.push_screen(screen_id)
+            return
+
+        def after(backend_name: str) -> None:
+            if backend_name == "vllm":
+                self.app.push_screen("vllm_configs")
+            elif backend_name == "llamacpp":
+                self.app.push_screen("llamacpp_configs")
+
+        self.app.push_screen(BackendPickerModal(), after)
+
     def action_help(self) -> None:
         self.notify(
             "[b]Dashboard[/b]\n"
             "  Enter   action menu\n"
             "  u/d/l   start/stop/logs\n"
             "  e/c/x   edit profile/config, delete\n"
+            "  C       config list (clone/edit/delete)\n"
+            "  m       estimate model memory\n"
             "  n s r q new/system/refresh/quit",
             title="Keys",
             timeout=10,
@@ -662,8 +750,34 @@ class DashboardScreen(Screen):
     # HF model memory estimation (common feature on main dashboard)
     # ------------------------------------------------------------------
 
+    def _mem_area_visible(self) -> bool:
+        return self.query_one("#mem-search-area").styles.display != "none"
+
+    def _set_mem_area(self, visible: bool) -> None:
+        area = self.query_one("#mem-search-area")
+        bar = self.query_one("#mem-result-bar")
+        area.styles.display = "block" if visible else "none"
+        bar.styles.display = "block" if visible else "none"
+
     def action_mem_estimate(self) -> None:
+        """Toggle the HF memory-estimate row (hidden by default to save rows).
+
+        While the Input has focus `m` is a literal character, so the only way
+        this fires with the area open is from the table — treat that as a
+        request to collapse it again.
+        """
+        if self._mem_area_visible():
+            self._set_mem_area(False)
+            self.query_one("#profile-table", DataTable).focus()
+            return
+        self._set_mem_area(True)
         self.query_one("#mem-search-input", Input).focus()
+
+    def action_hide_mem_search(self) -> None:
+        if not self._mem_area_visible():
+            return
+        self._set_mem_area(False)
+        self.query_one("#profile-table", DataTable).focus()
 
     @on(Input.Submitted, "#mem-search-input")
     def _on_mem_search(self, event: Input.Submitted) -> None:

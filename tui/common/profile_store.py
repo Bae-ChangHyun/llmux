@@ -8,6 +8,7 @@ each profile is rendered into `.runtime/<backend>/<name>.env` for
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 import os
 import re
 import shlex
@@ -15,6 +16,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
+
+log = logging.getLogger(__name__)
 
 def _resolve_project_root() -> Path:
     env_root = os.environ.get("LLMUX_ROOT", "").strip()
@@ -82,6 +85,18 @@ _RESERVED_ENV_KEYS_BY_BACKEND: dict[str, frozenset[str]] = {
         }
     ),
 }
+
+
+def effective_defaults(backend: str) -> dict[str, Any]:
+    """Backend defaults with the user's `defaults:` block from profiles.yaml
+    applied on top.
+
+    The profile *loader* already honors these overrides (`_backend_defaults`),
+    so callers resolving a "use the backend default" sentinel must go through
+    here too — reading the hardcoded DEFAULTS instead would hand back 8080 when
+    the user's profiles.yaml says the llama.cpp default port is 9000.
+    """
+    return _backend_defaults(_load_yaml(), backend)
 
 
 def reserved_env_keys(backend: str) -> frozenset[str]:
@@ -152,7 +167,7 @@ def _dump_yaml(data: dict) -> str:
 
 
 def _write_yaml(data: dict) -> None:
-    PROFILES_YAML.write_text(_dump_yaml(data))
+    _atomic_write(PROFILES_YAML, _dump_yaml(data))
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -186,14 +201,28 @@ def _to_profile(entry: dict, defaults: dict[str, Any] | None = None) -> StoredPr
     merged: dict[str, Any] = dict(defaults)
     merged.update(entry)
     name = merged["name"]
+
+    def _as_int(field_name: str, raw: Any) -> int:
+        # A hand-edited `port: abc` used to raise a bare ValueError deep inside
+        # int(), taking down every read path. Re-raise with the profile + field
+        # so list_profiles can skip just this entry and say why.
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"profile {name!r}: invalid {field_name} {raw!r} (must be an integer)"
+            ) from None
+
     return StoredProfile(
         name=name,
         backend=backend,
         container_name=merged.get("container_name", name),
-        port=int(merged.get("port", defaults["port"])),
+        port=_as_int("port", merged.get("port", defaults["port"])),
         gpu_id=str(merged.get("gpu_id", "0")),
         config_name=merged.get("config_name", name),
-        tensor_parallel_size=int(merged.get("tensor_parallel_size", 1)),
+        tensor_parallel_size=_as_int(
+            "tensor_parallel_size", merged.get("tensor_parallel_size", 1)
+        ),
         model_id=merged.get("model_id", ""),
         enable_lora=_parse_bool(merged.get("enable_lora", False)),
         max_loras=merged.get("max_loras"),
@@ -237,8 +266,6 @@ def _profile_to_entry(
             out["lora_modules"] = profile.lora_modules
         if profile.extra_pip_packages:
             out["extra_pip_packages"] = profile.extra_pip_packages
-        if profile.env_vars:
-            out["env_vars"] = dict(profile.env_vars)
     else:
         if profile.model_file:
             out["model_file"] = profile.model_file
@@ -246,6 +273,8 @@ def _profile_to_entry(
             out["hf_repo"] = profile.hf_repo
         if profile.hf_file:
             out["hf_file"] = profile.hf_file
+    if profile.env_vars:
+        out["env_vars"] = dict(profile.env_vars)
     if profile.image_tag:
         out["image_tag"] = profile.image_tag
     return out
@@ -254,11 +283,29 @@ def _profile_to_entry(
 def list_profiles(backend: str) -> list[StoredProfile]:
     data = _load_yaml()
     defaults = _backend_defaults(data, backend)
-    return [
-        _to_profile(p, defaults)
-        for p in data.get("profiles", [])
-        if p.get("backend") == backend
-    ]
+    out: list[StoredProfile] = []
+    for p in data.get("profiles", []):
+        # A non-dict list item (e.g. a stray string from a hand edit) has no
+        # .get — guard before touching it so it can't crash the whole scan.
+        if not isinstance(p, dict):
+            log.warning(
+                "skipping non-mapping entry in profiles.yaml: %r — each profile "
+                "must be a key/value mapping.", p,
+            )
+            continue
+        if p.get("backend") != backend:
+            continue
+        try:
+            out.append(_to_profile(p, defaults))
+        except (ValueError, KeyError, AttributeError, TypeError) as exc:
+            # One malformed entry (missing name, non-integer port, wrong types
+            # from a hand edit) must not blank out the whole list — skip it, but
+            # say so loudly so the user can fix profiles.yaml.
+            log.warning(
+                "skipping malformed profile in profiles.yaml: %s — fix the value "
+                "or remove the entry.", exc,
+            )
+    return out
 
 
 def list_profile_names(backend: str) -> list[str]:
@@ -339,10 +386,38 @@ def runtime_env_path(name: str, backend: str) -> Path:
     return RUNTIME_DIR / backend / f"{name}.env"
 
 
+def env_value_rejection(value: str) -> str:
+    """Why this value can't be rendered into a .env, or "" if it can.
+
+    docker compose parses the rendered file with a dotenv (godotenv-style)
+    reader, not a shell. `shlex.quote` escapes a single quote as `'"'"'`,
+    which that reader chokes on — the profile saves fine and then `up` dies
+    with an opaque parse error. Quotes, newlines and control characters have no
+    safe shlex encoding that dotenv also accepts, so refuse them up front
+    rather than emitting a file that only breaks later.
+    """
+    if "'" in value:
+        return "single quote (')"
+    if '"' in value:
+        return 'double quote (")'
+    if "\n" in value or "\r" in value:
+        return "newline"
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        return "control character"
+    return ""
+
+
 def _env_line(key: str, value: Any) -> str:
     if not _ENV_KEY_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
-    return f"{key}={shlex.quote(str(value))}"
+    text = str(value)
+    reason = env_value_rejection(text)
+    if reason:
+        raise ValueError(
+            f"env value for {key!r} contains a {reason}, which docker compose's "
+            f".env parser cannot read: {text!r}"
+        )
+    return f"{key}={shlex.quote(text)}"
 
 
 def _render_env_lines(profile: StoredProfile) -> list[str]:
@@ -398,6 +473,17 @@ def _render_env_lines(profile: StoredProfile) -> list[str]:
             lines.append(_env_line("HF_REPO", profile.hf_repo))
         if profile.hf_file:
             lines.append(_env_line("HF_FILE", profile.hf_file))
+        reserved = _RESERVED_ENV_KEYS_BY_BACKEND["llamacpp"]
+        for k, v in profile.env_vars.items():
+            if k in reserved:
+                # Same rationale as the vllm branch: a reserved key set through
+                # env_vars would shadow the StoredProfile field the conflict
+                # checker/TUI/CLI all report, so refuse the write outright.
+                raise ValueError(
+                    f"env_vars cannot override reserved profile key {k!r}; "
+                    f"set it on the profile itself (gpu_id/port/etc.) instead."
+                )
+            lines.append(_env_line(k, v))
         if profile.image_tag:
             if profile.image_tag.startswith("llamacpp-dev:"):
                 # llama.cpp dev-build images are consumed in

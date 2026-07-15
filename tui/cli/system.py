@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from pathlib import Path
 
 import typer
 
@@ -139,11 +138,16 @@ def disk(
     """
     from tui.backends.llamacpp.backend import (
         ROOT,
+        _get_hf_cache_dir,
         _get_model_dir,
         get_disk_usage,
+        list_cached_gguf,
     )
 
     model_dir = _get_model_dir()
+    hf_cache_dir = _get_hf_cache_dir()
+    cached = list_cached_gguf()
+    cached_total_gb = round(sum(c["size_bytes"] for c in cached) / 1024**3, 1)
     files: list[dict] = []
     if model_dir.exists():
         for f in sorted(
@@ -170,12 +174,15 @@ def disk(
                 "project_root": str(ROOT),
                 "model_dir": str(model_dir),
                 "model_dir_exists": model_dir.exists(),
+                "hf_cache_dir": str(hf_cache_dir),
                 "df_target": target,
                 "df_used": used,
                 "df_avail": avail,
                 "df_percent": pct,
                 "gguf_files": files,
                 "gguf_total_gb": total_gb,
+                "hf_cache_gguf_files": cached,
+                "hf_cache_gguf_total_gb": cached_total_gb,
             }
         )
         return
@@ -188,6 +195,11 @@ def disk(
         print(f"GGUF files   : {len(files)}  (total {total_gb:.1f} GB)")
         for f in files:
             print(f"  {f['name']}  {f['size_gb']:.1f} GB")
+    # llama-server's `-hf` download lands here, not in MODEL_DIR.
+    print(f"HF cache dir : {hf_cache_dir}")
+    print(f"HF cache GGUF: {len(cached)}  (total {cached_total_gb:.1f} GB)")
+    for c in cached:
+        print(f"  {c['repo']}/{c['name']}  {c['size_gb']:.1f} GB")
     if used:
         print(f"df {target}: used {used}, avail {avail}  ({pct})")
 
@@ -199,45 +211,46 @@ def env_check(
     """Validate `.env.common` and report key paths."""
     from tui.common.profile_store import PROJECT_ROOT
     from tui.common.mem import _parse_env_file
+    from tui.common.env import validate_common_env
 
     common = PROJECT_ROOT / ".env.common"
+    # Defer the verdict to the same validator the start path gates on, instead
+    # of a second, stricter list. HF_TOKEN is optional (public repos need none)
+    # and VLLM_VERSION isn't even in .env.common.example — the runtime injects
+    # it into the compose env at start time — so requiring both here failed a
+    # perfectly good default setup.
+    ok, messages = validate_common_env(common)
     findings = {
         "project_root": str(PROJECT_ROOT),
         "env_common_path": str(common),
         "env_common_exists": common.exists(),
-        "issues": [],
+        "issues": [] if ok else list(messages),
     }
-    if not common.exists():
-        findings["issues"].append(
-            "Missing .env.common — copy from .env.common.example and fill in HF_TOKEN/HF_CACHE_PATH."
-        )
-    else:
-        env = _parse_env_file(common)
-        for key in ("HF_TOKEN", "HF_CACHE_PATH", "VLLM_VERSION"):
-            findings[key] = env.get(key, "")
-            if not env.get(key):
-                findings["issues"].append(f"{key} not set in .env.common")
-        hf_cache = env.get("HF_CACHE_PATH", "")
-        if hf_cache and not Path(hf_cache).is_absolute():
-            findings["issues"].append(f"HF_CACHE_PATH must be absolute: {hf_cache}")
+    env = _parse_env_file(common) if common.exists() else {}
+    for key in ("HF_TOKEN", "HF_CACHE_PATH"):
+        findings[key] = env.get(key, "")
 
-    findings["status"] = "ok" if not findings["issues"] else "error"
+    findings["status"] = "ok" if ok else "error"
 
     if json_out:
         emit_json(findings)
-        raise typer.Exit(code=0 if findings["status"] == "ok" else 1)
+        raise typer.Exit(code=0 if ok else 1)
 
     print(f"Project root : {findings['project_root']}")
     print(f"Env common   : {findings['env_common_path']}")
     if not findings["env_common_exists"]:
         print("Status       : MISSING .env.common")
         raise typer.Exit(code=1)
-    for k in ("HF_TOKEN", "HF_CACHE_PATH", "VLLM_VERSION"):
-        v = findings.get(k, "") or "(unset)"
-        # Mask token but reveal length so users can spot truncation issues.
-        if k == "HF_TOKEN" and v and v != "(unset)":
-            v = f"<set, {len(v)} chars>"
-        print(f"  {k:<14}: {v}")
+
+    token = findings["HF_TOKEN"]
+    # Mask token but reveal length so users can spot truncation issues.
+    print(
+        f"  {'HF_TOKEN':<14}: "
+        + (f"<set, {len(token)} chars>" if token else "(unset — optional, needed for gated models)")
+    )
+    print(f"  {'HF_CACHE_PATH':<14}: {findings['HF_CACHE_PATH'] or '(unset)'}")
+    print(f"  {'VLLM_VERSION':<14}: (injected at start time)")
+
     if findings["issues"]:
         print("\nIssues:")
         for i in findings["issues"]:

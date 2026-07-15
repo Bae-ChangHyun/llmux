@@ -26,8 +26,11 @@ async def estimate_model_memory(model_id: str, hf_token: str | None = None) -> s
         from hf_mem import arun  # type: ignore[import-not-found]
 
         if hf_token is None:
-            project_root = Path(__file__).resolve().parents[2]
-            common_env = _parse_env_file(project_root / ".env.common")
+            # Same root every other module resolves against — honors LLMUX_ROOT
+            # instead of hardcoding the installed package's location.
+            from tui.common.profile_store import PROJECT_ROOT
+
+            common_env = _parse_env_file(PROJECT_ROOT / ".env.common")
             hf_token = common_env.get("HF_TOKEN", "") or os.environ.get("HF_TOKEN", "")
 
         kwargs: dict = {"model_id": model_id, "experimental": True}

@@ -12,17 +12,40 @@ removes the asymmetry.
 from __future__ import annotations
 
 import os
-import shlex
 from pathlib import Path
+
+# Escapes interpreted inside a double-quoted value (godotenv-compatible subset).
+_DQ_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", '"': '"', "\\": "\\"}
+
+
+def _read_double_quoted(s: str) -> str:
+    """Body of a `"..."` value: honor \\n/\\r/\\t/\\"/\\\\, drop the rest."""
+    out: list[str] = []
+    i = 1  # skip opening quote
+    while i < len(s):
+        ch = s[i]
+        if ch == "\\" and i + 1 < len(s):
+            out.append(_DQ_ESCAPES.get(s[i + 1], "\\" + s[i + 1]))
+            i += 2
+            continue
+        if ch == '"':
+            break  # closing quote — anything after (incl. comments) is dropped
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def parse_env_file(path: Path | str) -> dict[str, str]:
-    """Parse a .env file into a dict.
+    """Parse a .env file the way docker compose (godotenv) does.
 
-    Skips blank lines and comments. Strips matched leading/trailing single or
-    double quotes from values, and unwraps single-token shell quoting via
-    shlex (so `KEY="foo bar"` and `KEY='foo bar'` both yield `foo bar`).
-    Missing file → empty dict, never raises.
+    Rules: split on the first `=`; strip surrounding whitespace. A value that
+    opens with `"` runs to the matching `"` (with `\\n`/`\\r`/`\\t`/`\\"`/`\\\\`
+    escapes) and anything after it — comments included — is discarded; a `'`
+    value is literal to the matching `'`. An unquoted value keeps backslashes
+    verbatim and has an inline ` #` comment trimmed. This matters because these
+    values are also injected into the process env, where they *outrank*
+    compose's own `--env-file` read — so a mismatch here silently overrides
+    compose. Missing file → empty dict, never raises.
     """
     p = Path(path)
     data: dict[str, str] = {}
@@ -32,20 +55,45 @@ def parse_env_file(path: Path | str) -> dict[str, str]:
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
+        # `export KEY=value` — dotenv/godotenv strip the leading keyword; without
+        # this the key became `export KEY` and the real var was silently lost.
+        if line[:7] in ("export ", "export\t"):
+            line = line[7:].lstrip()
         key, _, value = line.partition("=")
+        key = key.strip()
         value = value.strip()
-        if " #" in value and not value.startswith(("'", '"')):
-            value = value[: value.index(" #")].rstrip()
-        try:
-            parsed = shlex.split(value, comments=False, posix=True)
-        except ValueError:
-            parsed = []
-        if len(parsed) == 1:
-            value = parsed[0]
-        elif len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
-            value = value[1:-1]
-        data[key.strip()] = value
+        if not value:
+            data[key] = ""
+            continue
+        if value[0] == '"':
+            data[key] = _read_double_quoted(value)
+        elif value[0] == "'":
+            end = value.find("'", 1)
+            data[key] = value[1:end] if end != -1 else value[1:]
+        else:
+            if " #" in value:
+                value = value[: value.index(" #")]
+            data[key] = value.rstrip()
     return data
+
+
+def host_expand(value: str) -> str:
+    """Expand `$VAR` and `~` the way a shell would, for host-side paths."""
+    return os.path.expanduser(os.path.expandvars(value))
+
+
+def expand_env_values(env: dict[str, str]) -> dict[str, str]:
+    """Expand `$VAR`/`~` in values read from a .env file.
+
+    docker compose expands these itself when it reads an `--env-file`, but we
+    also merge the same values into the *process* env — and process env wins
+    over --env-file in compose's precedence order. Passing them through raw
+    meant `.env.common.example`'s default `HF_CACHE_PATH=/home/$USER/.cache/...`
+    reached compose unexpanded and got bind-mounted as a literal `/home/$USER`
+    directory. Only apply this to file-derived values; os.environ is already
+    expanded by the shell.
+    """
+    return {k: host_expand(v) for k, v in env.items()}
 
 
 def validate_common_env(

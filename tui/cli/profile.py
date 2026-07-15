@@ -46,6 +46,10 @@ def list_profiles(
     json_out: bool = typer.Option(False, "--json", help="Emit JSON instead of a table."),
 ) -> None:
     """List all profiles across (or within) backends."""
+    # profile_store.list_profiles raises a bare ValueError on an unknown
+    # backend, which surfaced as a traceback instead of a usage error.
+    if backend and backend not in BACKENDS:
+        raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
     backends = [backend] if backend else list(BACKENDS)
     rows = []
     for bk in backends:
@@ -85,6 +89,151 @@ _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # to round-trip cleanly via vLLM but fail validation on the llama.cpp side, so
 # both backends now share the lowercase rule.
 _PROFILE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+# GPU id rule (unified across CLI + TUI + both backends). Multi-digit indices
+# are allowed so hosts with 10+ GPUs are addressable — the older
+# `[0-9](,[0-9])*` capped every index at a single digit.
+_GPU_ID_RE = re.compile(r"^[0-9]+(,[0-9]+)*$")
+
+PORT_MIN = 1024
+PORT_MAX = 65535
+
+
+def _validate_port(port: int, *, param_hint: str = "--port") -> None:
+    if not PORT_MIN <= int(port) <= PORT_MAX:
+        raise typer.BadParameter(
+            f"port must be in {PORT_MIN}–{PORT_MAX}", param_hint=param_hint
+        )
+
+
+def _validate_gpu_id(gpu_id: str, *, param_hint: str = "--gpu-id") -> None:
+    if not _GPU_ID_RE.match(gpu_id):
+        raise typer.BadParameter(
+            "GPU id must be digit(s) separated by single commas "
+            "(e.g. '0', '0,1', '0,10').",
+            param_hint=param_hint,
+        )
+
+
+def _validate_tensor_parallel(size: int, *, param_hint: str = "--tensor-parallel") -> None:
+    if size < 1:
+        raise typer.BadParameter(
+            f"tensor-parallel size must be >= 1, got {size}", param_hint=param_hint
+        )
+
+
+def _validate_gpu_mem(gpu_mem: str, *, param_hint: str = "--gpu-mem") -> None:
+    """Same 0.0 < x <= 1.0 rule the TUI config/quick-setup forms enforce.
+
+    Imported by `tui.cli.config` too — an unvalidated value reaches the config
+    YAML verbatim and only fails much later inside vLLM.
+    """
+    try:
+        value = float(gpu_mem)
+    except ValueError:
+        raise typer.BadParameter(
+            f"gpu-memory-utilization must be a number, got {gpu_mem!r}",
+            param_hint=param_hint,
+        ) from None
+    if not 0.0 < value <= 1.0:
+        raise typer.BadParameter(
+            "gpu-memory-utilization must be between 0.0 and 1.0 (exclusive of 0.0).",
+            param_hint=param_hint,
+        )
+
+
+def _reject_cross_backend_options(
+    backend: str,
+    *,
+    vllm_only: dict[str, bool],
+    llamacpp_only: dict[str, bool],
+) -> None:
+    """Refuse options the target backend has no field for.
+
+    StoredProfile is a superset of both backends, and `_profile_to_entry` only
+    persists the fields belonging to the profile's own backend — so
+    `profile new -b llamacpp --model org/x` used to report success and quietly
+    drop the model. Fail loudly instead.
+    """
+    if backend == "llamacpp":
+        offenders = [flag for flag, given in vllm_only.items() if given]
+        owner = "vLLM"
+    else:
+        offenders = [flag for flag, given in llamacpp_only.items() if given]
+        owner = "llama.cpp"
+    if not offenders:
+        return
+    verb = "is" if len(offenders) == 1 else "are"
+    raise typer.BadParameter(
+        f"{', '.join(offenders)} {verb} {owner}-only and not supported by "
+        f"backend '{backend}'.",
+        param_hint=offenders[0],
+    )
+
+
+def _require_config_exists(
+    backend: str, name: str, *, param_hint: str = "--copy-from"
+) -> None:
+    """Fail loudly when an option names a config that isn't there.
+
+    Both backends' `load_config()` return an empty Config for a missing file,
+    so a typo used to sail through and produce a config with none of the
+    params the user meant to copy.
+    """
+    if backend == "vllm":
+        from tui.backends.vllm.backend_common import CONFIG_DIR
+    else:
+        from tui.backends.llamacpp.backend import CONFIG_DIR
+
+    path = CONFIG_DIR / f"{name}.yaml"
+    if not path.exists():
+        raise typer.BadParameter(
+            f"config not found: {path}", param_hint=param_hint
+        )
+
+
+def _reject_example_config(config_name: str, *, from_profile_name: bool) -> None:
+    """`example.yaml` is the tracked template — a profile linked to it writes
+    its params into a git-tracked file. The TUI filters `example` out of every
+    config picker; the CLI used to link it silently, including when the profile
+    was simply *named* `example` and picked up the default link.
+    """
+    if config_name != "example":
+        return
+    if from_profile_name:
+        raise typer.BadParameter(
+            "'example' is the tracked template config, and a profile named "
+            "'example' links to it by default. Pick a different profile name, "
+            "or pass --config with another name.",
+            param_hint="NAME",
+        )
+    raise typer.BadParameter(
+        "'example' is the tracked template config and may not be linked; "
+        "pick a different config name.",
+        param_hint="--config",
+    )
+
+
+def _require_linked_config_exists(backend: str, profile_name: str, config_name: str) -> None:
+    """Reject `--config` naming a config file that doesn't exist.
+
+    Exception: a config named after the profile is allowed even when absent —
+    start-up auto-creates that one, which is the documented default path.
+    """
+    if config_name == profile_name:
+        return
+    if backend == "vllm":
+        from tui.backends.vllm.backend_common import CONFIG_DIR
+    else:
+        from tui.backends.llamacpp.backend import CONFIG_DIR
+
+    path = CONFIG_DIR / f"{config_name}.yaml"
+    if not path.exists():
+        raise typer.BadParameter(
+            f"config not found: {path}. Only a config named after the profile "
+            f"('{profile_name}') may be missing — that one is auto-created at start.",
+            param_hint="--config",
+        )
 
 
 def _validate_profile_name(name: str, backend: str, *, param_hint: str = "NAME") -> None:
@@ -137,6 +286,15 @@ def _parse_set_kv(items: list[str], *, backend: str = "") -> dict[str, str]:
                 f"use the dedicated profile field (e.g. --port, --gpu-id) instead.",
                 param_hint="--set",
             )
+        # Same rule _env_line enforces, applied here so the failure is a clean
+        # usage error rather than a ValueError traceback out of save_profile.
+        reason = profile_store.env_value_rejection(value)
+        if reason:
+            raise typer.BadParameter(
+                f"--set value for {key!r} contains a {reason}, which docker "
+                f"compose's .env parser cannot read: {value!r}",
+                param_hint="--set",
+            )
         out[key] = value
     return out
 
@@ -149,6 +307,10 @@ def new_profile(
     ),
     port: int = typer.Option(0, "--port", "-p", help="Host port (0 = backend default)."),
     gpu_id: str = typer.Option("0", "--gpu-id", "-g", help="GPU id(s), comma-separated."),
+    tensor_parallel: int = typer.Option(
+        0, "--tensor-parallel",
+        help="vLLM only: tensor_parallel_size (0 = derive from the --gpu-id count).",
+    ),
     model: str = typer.Option("", "--model", "-m", help="Hugging Face model id (vLLM)."),
     config_name: str = typer.Option(
         "", "--config", "-c", help="Linked config name (defaults to profile name)."
@@ -172,12 +334,43 @@ def new_profile(
     if backend not in BACKENDS:
         raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
     _validate_profile_name(name, backend)
+    # `new` has no None sentinel, so "was it given?" is "does it differ from the
+    # default?". (--no-lora is therefore indistinguishable from omitting it.)
+    _reject_cross_backend_options(
+        backend,
+        vllm_only={
+            "--model": bool(model),
+            "--extra-pip": bool(extra_pip),
+            "--lora": enable_lora,
+            "--tensor-parallel": bool(tensor_parallel),
+        },
+        llamacpp_only={
+            "--model-file": bool(model_file),
+            "--hf-repo": bool(hf_repo),
+            "--hf-file": bool(hf_file),
+        },
+    )
+    # The container name becomes a docker object name — same lowercase rule the
+    # TUI form enforces.
+    if container_name:
+        _validate_profile_name(container_name, backend, param_hint="--container")
+    # port 0 is the documented "use the backend default" sentinel; any other
+    # out-of-range value is a mistake.
+    if port:
+        _validate_port(port)
+    if gpu_id:
+        _validate_gpu_id(gpu_id)
+    if tensor_parallel:
+        _validate_tensor_parallel(tensor_parallel)
     if profile_store.load_profile(name, backend) is not None:
         raise typer.BadParameter(
             f"profile '{name}' already exists in backend '{backend}'", param_hint="NAME"
         )
+    _reject_example_config(config_name or name, from_profile_name=not config_name)
+    if config_name:
+        _require_linked_config_exists(backend, name, config_name)
 
-    defaults = profile_store.DEFAULTS[backend]
+    defaults = profile_store.effective_defaults(backend)
     sp = profile_store.StoredProfile(
         name=name,
         backend=backend,
@@ -185,7 +378,7 @@ def new_profile(
         port=port or int(defaults["port"]),
         gpu_id=gpu_id or str(defaults["gpu_id"]),
         config_name=config_name or name,
-        tensor_parallel_size=len(gpu_id.split(",")) if gpu_id else 1,
+        tensor_parallel_size=tensor_parallel or (len(gpu_id.split(",")) if gpu_id else 1),
         model_id=model,
         enable_lora=enable_lora,
         extra_pip_packages=extra_pip,
@@ -202,8 +395,14 @@ def new_profile(
 def edit_profile(
     name: str = typer.Argument(..., help="Profile name."),
     backend: Optional[str] = typer.Option(None, "--backend", "-b"),
-    port: Optional[int] = typer.Option(None, "--port", "-p"),
+    port: Optional[int] = typer.Option(
+        None, "--port", "-p", help="Host port (0 = backend default)."
+    ),
     gpu_id: Optional[str] = typer.Option(None, "--gpu-id", "-g"),
+    tensor_parallel: Optional[int] = typer.Option(
+        None, "--tensor-parallel",
+        help="vLLM only: tensor_parallel_size. Overrides the value --gpu-id would derive.",
+    ),
     model: Optional[str] = typer.Option(None, "--model", "-m"),
     config_name: Optional[str] = typer.Option(None, "--config", "-c"),
     container_name: Optional[str] = typer.Option(None, "--container"),
@@ -226,18 +425,64 @@ def edit_profile(
     """Edit fields of an existing profile (only specified options change)."""
     bk = detect_backend(name, override=backend)
     _validate_profile_name(name, bk)
+    _reject_cross_backend_options(
+        bk,
+        vllm_only={
+            "--model": model is not None,
+            "--extra-pip": extra_pip is not None,
+            "--lora/--no-lora": enable_lora is not None,
+            "--tensor-parallel": tensor_parallel is not None,
+        },
+        llamacpp_only={
+            "--model-file": model_file is not None,
+            "--hf-repo": hf_repo is not None,
+            "--hf-file": hf_file is not None,
+        },
+    )
     sp = profile_store.load_profile(name, bk)
 
     if port is not None:
-        sp.port = port
+        # 0 is the same "use the backend default" sentinel `new` accepts, and
+        # is resolved eagerly the same way — leaving port=0 on the profile
+        # would render a literal `PORT=0` into the runtime .env.
+        if port:
+            _validate_port(port)
+            sp.port = port
+        else:
+            sp.port = int(profile_store.effective_defaults(bk)["port"])
     if gpu_id is not None:
+        _validate_gpu_id(gpu_id)
         sp.gpu_id = gpu_id
-        sp.tensor_parallel_size = len(gpu_id.split(",")) if gpu_id else 1
+        # TP is a vLLM-only concept: llama.cpp never persists the field, and
+        # --tensor-parallel is rejected for that backend — so re-deriving it
+        # (let alone announcing it) on a llama.cpp profile would be a lie.
+        if bk == "vllm":
+            derived = len(gpu_id.split(",")) if gpu_id else 1
+            # --gpu-id still re-derives TP (a 2-GPU profile left at TP=1 would
+            # idle the second card), but it used to do so silently — say it out
+            # loud.
+            if tensor_parallel is None and derived != sp.tensor_parallel_size:
+                print(
+                    f"tensor_parallel_size adjusted to {derived} to match --gpu-id "
+                    "(pass --tensor-parallel to override)"
+                )
+            sp.tensor_parallel_size = derived
+    if tensor_parallel is not None:
+        _validate_tensor_parallel(tensor_parallel)
+        sp.tensor_parallel_size = tensor_parallel
     if model is not None:
         sp.model_id = model
     if config_name is not None:
+        # An empty --config clears the link, which resolves back to the profile
+        # name at start time — so the "example" check has to look at the
+        # resolved value, not the raw flag.
+        _reject_example_config(config_name or name, from_profile_name=not config_name)
+        if config_name:
+            _require_linked_config_exists(bk, name, config_name)
         sp.config_name = config_name
     if container_name is not None:
+        if container_name:
+            _validate_profile_name(container_name, bk, param_hint="--container")
         sp.container_name = container_name
     if enable_lora is not None:
         sp.enable_lora = enable_lora
@@ -250,6 +495,11 @@ def edit_profile(
     if hf_file is not None:
         sp.hf_file = hf_file
     if image_tag is not None:
+        from tui.common.dev_build import image_tag_error
+
+        err = image_tag_error(image_tag)
+        if err:
+            raise typer.BadParameter(err, param_hint="--image-tag")
         sp.image_tag = image_tag
     for k, v in _parse_set_kv(set_env, backend=bk).items():
         sp.env_vars[k] = v
@@ -380,11 +630,36 @@ def quick_setup(
     if backend not in BACKENDS:
         raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
 
+    # Same "given == differs from default" heuristic as `new` (see the helper's
+    # docstring for its one blind spot: passing a flag's default explicitly).
+    _reject_cross_backend_options(
+        backend,
+        vllm_only={
+            "--gpu-mem": gpu_memory_utilization != "0.9",
+            "--lora": enable_lora,
+        },
+        llamacpp_only={
+            "--hf-repo": bool(hf_repo),
+            "--hf-file": bool(hf_file),
+            "--ctx-size": ctx_size != "32768",
+            "--n-gpu-layers": n_gpu_layers != "99",
+            "--cache-type-k": cache_type_k != "bf16",
+            "--cache-type-v": cache_type_v != "bf16",
+            "--no-flash-attn": not flash_attn,
+            "--no-jinja": not jinja,
+            "--override-tensors": bool(override_tensors),
+        },
+    )
+
     if backend == "vllm":
+        _validate_gpu_mem(gpu_memory_utilization)
         _quick_setup_vllm(
             model=model,
             name=name,
-            port=port or 8000,
+            # `0` = backend default — resolved through effective_defaults() so a
+            # user `defaults:` override in profiles.yaml is honored, same as
+            # `profile new`.
+            port=port or int(profile_store.effective_defaults("vllm")["port"]),
             gpu_id=gpu_id,
             gpu_memory_utilization=gpu_memory_utilization,
             enable_lora=enable_lora,
@@ -415,7 +690,7 @@ def quick_setup(
         hf_repo=hf_repo,
         hf_file=hf_file,
         name=name,
-        port=port or 8080,
+        port=port or int(profile_store.effective_defaults("llamacpp")["port"]),
         gpu_id=gpu_id,
         ctx_size=ctx_size,
         n_gpu_layers=n_gpu_layers,
@@ -444,6 +719,9 @@ def _quick_setup_vllm(
             param_hint="MODEL",
         )
 
+    _validate_port(port)
+    _validate_gpu_id(gpu_id)
+
     if not name:
         tail = model.rsplit("/", 1)[-1]
         derived = re.sub(r"[^a-z0-9-]", "-", tail.lower()).strip("-")
@@ -464,8 +742,10 @@ def _quick_setup_vllm(
     )
     from tui.backends.vllm.backend_common import Config
 
+    # `example` is added explicitly — v_clist() filters it out, so without it a
+    # profile named "example" would overwrite the tracked example.yaml.
     existing_profiles = v_list()
-    existing_configs = v_clist()
+    existing_configs = set(v_clist()) | {"example"}
     final_name = name
     suffix = 0
     while final_name in existing_profiles or final_name in existing_configs:
@@ -473,9 +753,14 @@ def _quick_setup_vllm(
         final_name = f"{name}-{suffix}"
 
     extra_params: dict = {}
+    disabled_params: dict = {}
     if copy_config_from:
+        # load_config() returns an empty Config for a missing file, so without
+        # this check a typo'd --copy-from silently produced an empty config.
+        _require_config_exists("vllm", copy_config_from)
         src = load_config(copy_config_from)
         extra_params = dict(src.extra_params)
+        disabled_params = dict(src.disabled_params)
 
     save_config(
         Config(
@@ -483,6 +768,7 @@ def _quick_setup_vllm(
             model=model,
             gpu_memory_utilization=gpu_memory_utilization,
             extra_params=extra_params,
+            disabled_params=disabled_params,
         )
     )
 
@@ -529,15 +815,8 @@ def _quick_setup_llamacpp(
             "llama.cpp quick-setup requires --hf-file (GGUF filename inside the repo).",
             param_hint="--hf-file",
         )
-    if not 1024 <= int(port) <= 65535:
-        raise typer.BadParameter(
-            "port must be in 1024–65535", param_hint="--port"
-        )
-    if not re.fullmatch(r"[0-9](,[0-9])*", gpu_id):
-        raise typer.BadParameter(
-            "GPU id must be digits separated by commas (e.g. '0' or '0,1').",
-            param_hint="--gpu-id",
-        )
+    _validate_port(port)
+    _validate_gpu_id(gpu_id)
 
     from tui.backends.llamacpp.backend import (
         Config as LcppConfig,
@@ -585,7 +864,9 @@ def _quick_setup_llamacpp(
             param_hint="--name",
         )
 
-    existing = set(l_list()) | set(l_clist())
+    # `example` is added explicitly — l_clist() filters it out, so without it a
+    # profile named "example" would overwrite the tracked example.yaml.
+    existing = set(l_list()) | set(l_clist()) | {"example"}
     final_name = name
     suffix = 0
     while final_name in existing:
@@ -594,9 +875,13 @@ def _quick_setup_llamacpp(
 
     # --- Build llama.cpp config params (mirrors QuickSetupScreen.on_create) ---
     params: dict = {}
+    disabled_params: dict = {}
     if copy_config_from:
+        # See _quick_setup_vllm — load_config() falls back to an empty Config.
+        _require_config_exists("llamacpp", copy_config_from)
         src = l_load_config(copy_config_from)
         params.update(src.params)
+        disabled_params = dict(src.disabled_params)
     params["model-file"] = hf_file
     params.setdefault("alias", final_name)
 
@@ -633,7 +918,7 @@ def _quick_setup_llamacpp(
     else:
         params.pop("override-tensors", None)
 
-    l_save_config(LcppConfig(name=final_name, params=params))
+    l_save_config(LcppConfig(name=final_name, params=params, disabled_params=disabled_params))
 
     profile_store.save_profile(
         profile_store.StoredProfile(

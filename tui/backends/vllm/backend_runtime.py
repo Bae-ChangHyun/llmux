@@ -30,9 +30,9 @@ from .backend_storage import (
     save_config,
     save_profile,
 )
-from tui.common import dev_build
+from tui.common import dev_build, profile_store
 from tui.common.conflicts import gpu_conflict_messages as _shared_gpu_conflict_messages
-from tui.common.env import validate_common_env
+from tui.common.env import expand_env_values, validate_common_env
 
 
 _BUILD_LOCK = asyncio.Lock()
@@ -157,7 +157,12 @@ def _compose_env(
     vllm_image: str = "",
 ) -> dict[str, str]:
     env = os.environ.copy()
-    env.update(_common_env())
+    # Expand $VAR/~ only in the shared .env.common path values (HF_CACHE_PATH,
+    # MODEL_DIR, ...): process env outranks --env-file in compose, so a raw
+    # `/home/$USER/...` would be bind-mounted literally. The profile .env
+    # carries user env_vars, which must stay literal — expanding them would make
+    # a deliberate `$VAR`/`~` value impossible to pass through.
+    env.update(expand_env_values(_common_env()))
     env.update(_parse_env_file(profile.path))
     env["PROFILE_PATH"] = str(profile.path)
     env["CONFIG_NAME"] = profile.config_name
@@ -190,10 +195,16 @@ def _env_file_args(profile: Profile) -> list[str]:
     return args
 
 
-async def _container_exists(container_name: str) -> bool:
+async def _container_exists(container_name: str) -> bool | None:
+    """True/False if the probe succeeded, None if `docker ps` failed/timed out.
+
+    Collapsing a failed probe to False (the old behavior) let a slow daemon be
+    reported as "container gone" — `container_down` then claimed success while
+    the container kept running.
+    """
     rc, out = await run_command("docker", "ps", "-a", "--format", "{{.Names}}", timeout=10)
     if rc != 0:
-        return False
+        return None
     return container_name in out.strip().splitlines()
 
 
@@ -407,6 +418,7 @@ async def get_container_statuses() -> list[ContainerStatus]:
                 health=health,
                 port=profile.port,
                 gpu_id=profile.gpu_id,
+                image=profile.image_tag,
                 model=model,
                 lora=profile.enable_lora == "true",
             )
@@ -430,6 +442,16 @@ async def check_port_conflict(profile: Profile) -> str | None:
                 continue
             container_name, ports = parts
             if container_name == profile.container_name:
+                # Our own container is already up. If it publishes this port,
+                # the LISTENing socket the bind probe below would trip over is
+                # our own docker-proxy — the probe can't tell that apart from a
+                # foreign process, so it reported "another local process" and
+                # blocked a re-`up` that compose treats as a no-op (exactly the
+                # recovery _post_start_validation tells users to perform).
+                # If it is running on some *other* port, fall through: the
+                # probe on this port is still meaningful.
+                if re.search(rf"(^|[^\d]){re.escape(profile.port)}->", ports):
+                    return None
                 continue
             if re.search(rf"(^|[^\d]){re.escape(profile.port)}->", ports):
                 for name in list_profile_names():
@@ -677,12 +699,29 @@ async def _post_start_validation(
 async def stream_container_up(
     profile_name: str,
     use_dev: bool = False,
+    use_default_image: bool = False,
     tag: str = "",
     pull: bool = False,
     repo_url: str = "",
     branch: str = "",
 ):
-    """Async generator that streams container startup output line by line."""
+    """Async generator that streams container startup output line by line.
+
+    `use_default_image=True` mirrors llama.cpp's flag of the same name (and the
+    TUI's "Default Image" selection): drop the profile's pinned image_tag for
+    this run so compose falls back to its built-in default.
+
+    Priority order (identical to llama.cpp):
+      use_default_image > use_dev / explicit tag > profile.image_tag > default.
+    """
+    # Guard against an unknown name up front — load_profile() below returns a
+    # fresh default Profile for a missing name, which would then get persisted
+    # as a junk profile. Mirrors llama.cpp's stream_container_up.
+    if profile_store.load_profile(profile_name, "vllm") is None:
+        yield ("log", f"✗ 프로필 없음: vllm/{profile_name} (profiles.yaml 확인)")
+        yield ("rc", 1)
+        return
+
     profile = load_profile(profile_name)
 
     conflict = await check_port_conflict(profile)
@@ -698,12 +737,55 @@ async def stream_container_up(
         yield ("rc", 1)
         return
 
-    ok, messages = _ensure_profile_config(profile)
+    try:
+        ok, messages = _ensure_profile_config(profile)
+    except ValueError as exc:
+        # _ensure_profile_config persists the profile (save_profile), which
+        # rejects env_vars with forbidden characters — surface that through the
+        # log/rc contract instead of a raw traceback.
+        yield ("log", f"Error: cannot save {profile_name} — {exc}")
+        yield ("rc", 1)
+        return
     for message in messages:
         yield ("log", message)
     if not ok:
         yield ("rc", 1)
         return
+
+    # load_profile() swallows a render failure so one bad profile can't break
+    # every read path — so re-render here, where it *is* this profile's start,
+    # and fail loudly with the offending key/character. Mirrors llamacpp.
+    stored = profile_store.load_profile(profile_name, "vllm")
+    if stored is not None:
+        try:
+            profile_store.render_env(stored)
+        except ValueError as exc:
+            yield ("log", f"Error: cannot render {profile_name}.env — {exc}")
+            yield ("log", "  Fix the value in profiles.yaml (e.g. `llmux profile edit "
+                          f"{profile_name} --unset <KEY>`).")
+            yield ("rc", 1)
+            return
+
+    if use_default_image:
+        # Clear the pin *in memory*, before the image branch below reads it.
+        # A caller cannot do this by rewriting the .env — load_profile() above
+        # re-renders that file from profiles.yaml on every start, restoring the
+        # pin. Clearing the field is enough because _compose_env always sets
+        # VLLM_IMAGE explicitly, and an empty value makes compose's
+        # `${VLLM_IMAGE:-...}` fall through to the default.
+        #
+        # Must run AFTER _ensure_profile_config: that helper persists the
+        # profile (save_profile) when it auto-links a config, so clearing the
+        # tag any earlier would write image_tag="" into profiles.yaml and
+        # destroy the user's pin permanently — a one-off override must not
+        # mutate saved state.
+        had_pin = bool((profile.image_tag or "").strip())
+        profile.image_tag = ""
+        if had_pin:
+            yield (
+                "log",
+                "Default Image: ignoring the profile's pinned image_tag for this run.",
+            )
 
     for message in await _gpu_conflict_messages(profile):
         yield ("log", message)
@@ -718,7 +800,10 @@ async def stream_container_up(
         default_repo_url, default_branch = get_dev_build_defaults()
         resolved_repo_url = repo_url.strip() or default_repo_url
         resolved_branch = branch.strip() or default_branch
-        image_tag = tag or resolved_branch
+        # Must go through the same sanitizer the builder uses — it tags the
+        # image `vllm-dev:<safe_branch>`, so a raw `feat/foo` here would look
+        # up an invalid reference that can never match.
+        image_tag = dev_build.sanitize_docker_tag(tag or resolved_branch)
         rc, _ = await run_command("docker", "image", "inspect", f"vllm-dev:{image_tag}", timeout=20)
         needs_build = rc != 0
         if not tag and not needs_build:
@@ -949,7 +1034,15 @@ async def _verify_vllm_version(container_name: str, expected_tag: str):
 
 async def container_down(profile_name: str) -> tuple[int, str]:
     profile = load_profile(profile_name)
-    if not await _container_exists(profile.container_name):
+    exists = await _container_exists(profile.container_name)
+    if exists is None:
+        # Don't report a green "stopped" when we couldn't even tell — a slow or
+        # hung daemon must surface as an error, not a silent success.
+        return 1, (
+            f"could not determine container state for {profile_name} "
+            "(docker ps failed or timed out)"
+        )
+    if not exists:
         return 0, f"{profile_name} is not running"
 
     image_rc, image = await run_command(

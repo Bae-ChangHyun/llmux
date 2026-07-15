@@ -45,6 +45,7 @@ class LlmuxApp(App):
     def __init__(self) -> None:
         super().__init__()
         self._too_narrow: TooNarrowScreen | None = None
+        self._width_guard_armed = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -52,9 +53,16 @@ class LlmuxApp(App):
 
     def on_mount(self) -> None:
         self.push_screen("dashboard")
+        # Only arm the guard once the dashboard is on the stack. Textual
+        # delivers the initial Resize *before* on_mount, so an unarmed
+        # on_resize would push the guard first and let the dashboard land on
+        # top of it — a buried guard that can never surface to release itself.
+        self._width_guard_armed = True
         self._enforce_width(self.size.width)
 
     def on_resize(self, event: Resize) -> None:
+        if not self._width_guard_armed:
+            return
         self._enforce_width(event.size.width)
 
     def _enforce_width(self, width: int) -> None:
@@ -67,20 +75,46 @@ class LlmuxApp(App):
             return
         if self._too_narrow is not None:
             guard = self._too_narrow
-            self._too_narrow = None
             if self.screen is guard:
-                self.pop_screen()
+                self._release_width_guard(guard)
+            # Guard is buried under another screen — keep the reference so a
+            # re-narrow reuses it instead of pushing a duplicate. The guard
+            # pops itself from on_screen_resume once it surfaces on a terminal
+            # that is wide enough. Clearing the reference here (the old
+            # behavior) orphaned the guard: it stayed on the stack and
+            # resurfaced on an already-wide terminal, unfixable by resizing.
+
+    def _release_width_guard(self, guard: TooNarrowScreen) -> None:
+        """Pop the width guard and drop our reference. Called by `_enforce_width`
+        and by the guard itself when it resumes on a wide-enough terminal."""
+        if self._too_narrow is not guard:
+            return
+        self._too_narrow = None
+        if self.screen is guard:
+            self.pop_screen()
 
     def action_show_dashboard(self) -> None:
-        if not isinstance(self.screen, DashboardScreen):
-            self.switch_screen("dashboard")
+        # Pop back to the dashboard already at the bottom of the stack.
+        # switch_screen("dashboard") replaced the *top* screen with a second
+        # DashboardScreen instance, leaving the original buried underneath.
+        while not isinstance(self.screen, DashboardScreen) and len(self.screen_stack) > 1:
+            if self.screen is self._too_narrow:
+                # The guard outranks F1 while the terminal is still narrow —
+                # popping it would expose the very screens it exists to hide.
+                if self.size.width < self.MIN_WIDTH:
+                    return
+                # Wide again: release it and keep unwinding to the dashboard.
+                self._release_width_guard(self.screen)
+                continue
+            self.pop_screen()
 
     def action_help(self) -> None:
         self.notify(
             "[b]Dashboard[/b]\n"
             "  Enter action menu · u/d/l start/stop/logs\n"
             "  e/c/x edit profile/config, delete\n"
-            "  n new · s system · r refresh · q quit",
+            "  m estimate model memory\n"
+            "  C config list · n new · s system · r refresh · q quit",
             title="llmux",
             timeout=10,
         )

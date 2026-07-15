@@ -31,6 +31,7 @@ from tui.backends.llamacpp.backend import (
     save_profile,
     validate_name,
 )
+from tui.common import profile_store
 
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$")
@@ -165,7 +166,10 @@ class QuickSetupScreen(ModalScreen[str]):
                 yield Input(placeholder="auto", id="name-input")
 
                 yield Label("Port")
-                yield Input(placeholder="8080", value="8080", id="port-input")
+                # Prefill from the effective default (profiles.yaml `defaults:`
+                # can override the built-in 8080).
+                _port = str(profile_store.effective_defaults("llamacpp")["port"])
+                yield Input(placeholder=_port, value=_port, id="port-input")
 
                 yield Label("GPU ID (예: 0 또는 0,1)")
                 yield Input(placeholder="0", value="0", id="gpu-input")
@@ -372,7 +376,9 @@ class QuickSetupScreen(ModalScreen[str]):
             self.notify("GGUF 파일 선택 필요 (Fetch 후)", severity="error")
             return
         try:
-            port_num = int(port_raw or "8080")
+            port_num = int(
+                port_raw or profile_store.effective_defaults("llamacpp")["port"]
+            )
             if not 1024 <= port_num <= 65535:
                 raise ValueError
         except ValueError:
@@ -394,12 +400,13 @@ class QuickSetupScreen(ModalScreen[str]):
                 severity="error",
             )
             return
-        if not re.fullmatch(r"[0-9](,[0-9])*", gpu):
+        if not re.fullmatch(r"[0-9]+(,[0-9]+)*", gpu):
             self.notify("GPU ID 는 숫자/콤마 (예: 0 또는 0,1)", severity="error")
             return
 
-        # 충돌 시 suffix
-        existing = set(list_profile_names()) | set(list_config_names())
+        # 충돌 시 suffix. list_config_names() 가 example 을 걸러내므로 명시 추가 —
+        # 없으면 "example" 이름이 tracked example.yaml 을 덮어쓴다.
+        existing = set(list_profile_names()) | set(list_config_names()) | {"example"}
         final_name = name_raw
         i = 0
         while final_name in existing:
