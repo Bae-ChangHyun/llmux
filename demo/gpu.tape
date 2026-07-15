@@ -3,6 +3,7 @@
 Output demo/gpu.gif
 
 Set Shell "bash"
+Set FontFamily "DejaVu Sans Mono"
 Set FontSize 14
 Set Width 1280
 Set Height 800
