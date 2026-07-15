@@ -160,6 +160,25 @@ override-tensors:
   - ".ffn_.*_exps.=CPU"   # FFN expert tensors &rarr; CPU; everything else &rarr; GPU</code></pre>
     <p>Each rule renders to a <code>-ot &lt;rule&gt;</code> argument.</p>
 
+    <h2 id="import-a-vllm-recipe">Import a vLLM recipe</h2>
+    <p>vLLM publishes verified serving configs per model at <a href="https://github.com/vllm-project/recipes">vllm-project/recipes</a> (rendered on <a href="https://recipes.vllm.ai">recipes.vllm.ai</a>). llmux can pull one and turn it into a config — but a recipe verified on an 80 GB card may not fit yours, so it never applies blindly.</p>
+    <p>In the vLLM <strong>Quick Setup</strong> form, type a model id and press <strong>📋 Fetch vLLM recipe</strong>. A review window opens showing:</p>
+    <ul>
+      <li>each <strong>precision variant</strong> (bf16 / fp8 / awq …) with its VRAM floor, marked <span style="color:#a6e22e">✓</span> or <span style="color:#f92672">✗</span> against your detected GPU — the best-fitting one is preselected;</li>
+      <li>optional <strong>features</strong> (tool calling, reasoning parser …) as toggles;</li>
+      <li>a live preview of the exact config flags that will be written.</li>
+    </ul>
+    <p>Confirm and it creates the profile + config (swapping in the FP8/AWQ checkpoint and quantization flags when you pick that variant).</p>
+    <p>Headless equivalent:</p>
+    <pre data-lang="bash"><code># See the recipe's variants + features
+llmux config from-recipe Qwen/Qwen3-32B --list
+
+# Auto-pick a GPU-fitting variant (or force one with --variant)
+llmux config from-recipe Qwen/Qwen3-32B --variant fp8 --feature reasoning
+
+# Preview without writing
+llmux config from-recipe Qwen/Qwen3-32B --variant awq --json</code></pre>
+
     <h2 id="editing-configs-from-the-cli">Editing configs from the CLI</h2>
     <pre data-lang="bash"><code># List configs across both backends
 llmux config list
