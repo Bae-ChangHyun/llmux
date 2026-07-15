@@ -106,6 +106,9 @@ uv tool update-shell           # one-time: adds ~/.local/bin to PATH
 > Prefer not to install globally? `uv run llmux` works from inside the repo. From
 > elsewhere, set `LLMUX_ROOT=/path/to/llmux`.
 
+> **Language:** the TUI is bilingual (English / Korean). It follows your system
+> locale by default; force one with `LLMUX_LANG=en` or `LLMUX_LANG=ko`.
+
 See the [Installation guide](https://Bae-ChangHyun.github.io/llmux/getting-started/installation/)
 and [Quick Start](https://Bae-ChangHyun.github.io/llmux/getting-started/quickstart/) for the full walkthrough.
 
