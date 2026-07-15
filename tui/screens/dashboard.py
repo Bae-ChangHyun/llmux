@@ -26,6 +26,7 @@ from tui.common.conflicts import (
     port_conflicts,
 )
 from tui.common.http import list_served_models, run_bench
+from tui.common.i18n import t
 from tui.common.mem import estimate_model_memory
 from tui.common.metrics import ThroughputTracker, fetch_token_counters
 from tui.common.widgets import BackendPickerModal, ConfirmModal
@@ -74,7 +75,10 @@ class DashboardScreen(Screen):
         yield Static("", id="status-bar")
         yield DataTable(id="profile-table", cursor_type="row")
         yield Static(
-            "\n  No profiles yet — press [b]n[/b] to create one\n",
+            t(
+                "\n  No profiles yet — press [b]n[/b] to create one\n",
+                "\n  아직 프로필이 없습니다 — [b]n[/b] 키로 하나 만드세요\n",
+            ),
             id="empty-state",
         )
         yield Static("", id="gpu-bar")
@@ -142,7 +146,8 @@ class DashboardScreen(Screen):
             running = await common_docker.running_container_names()
         except Exception as exc:
             self.notify(
-                f"Docker status scan failed: {exc}",
+                t(f"Docker status scan failed: {exc}",
+                  f"Docker 상태 스캔 실패: {exc}"),
                 severity="error",
                 timeout=8,
             )
@@ -152,11 +157,13 @@ class DashboardScreen(Screen):
         try:
             rows.extend(self._vllm.rows(running))
         except Exception as exc:
-            self.notify(f"vLLM scan failed: {exc}", severity="error")
+            self.notify(t(f"vLLM scan failed: {exc}", f"vLLM 스캔 실패: {exc}"),
+                        severity="error")
         try:
             rows.extend(self._llamacpp.rows(running))
         except Exception as exc:
-            self.notify(f"llama.cpp scan failed: {exc}", severity="error")
+            self.notify(t(f"llama.cpp scan failed: {exc}", f"llama.cpp 스캔 실패: {exc}"),
+                        severity="error")
         # Running containers float to the top so the active workload is
         # always visible without scrolling. Within each running/stopped group
         # rows stay (backend, name)-sorted for predictable navigation.
@@ -195,7 +202,7 @@ class DashboardScreen(Screen):
         status_bar.update(
             f" [magenta]vLLM[/] {v_run}/{v_total}  ·  "
             f"[green]llama.cpp[/] {l_run}/{l_total}  ·  "
-            "[dim]Enter = actions[/dim]"
+            + t("[dim]Enter = actions[/dim]", "[dim]Enter = 작업 메뉴[/dim]")
         )
 
         for r in rows:
@@ -453,7 +460,8 @@ class DashboardScreen(Screen):
         elif action == "delete":
             if row.running:
                 self.notify(
-                    "Cannot delete: container is running. Stop it first.",
+                    t("Cannot delete: container is running. Stop it first.",
+                      "삭제 불가: 컨테이너가 실행 중입니다. 먼저 중지하세요."),
                     severity="error",
                 )
                 return
@@ -468,24 +476,30 @@ class DashboardScreen(Screen):
 
         self.app.push_screen(
             ConfirmModal(
-                f"Stop vLLM container [b]{name}[/b]?",
-                confirm_label="Yes, stop",
+                t(f"Stop vLLM container [b]{name}[/b]?",
+                  f"vLLM 컨테이너 [b]{name}[/b] 을 중지할까요?"),
+                confirm_label=t("Yes, stop", "네, 중지"),
             ),
             on_ok,
         )
 
     @work(exclusive=True)
     async def _run_vllm_bench(self, row: DashboardRow) -> None:
-        """vLLM /v1/chat/completions — warmup 후 3회 측정, median 보고."""
+        """vLLM /v1/chat/completions — warmup then 3 measured runs, median."""
         if not row.port:
-            self.notify("포트 정보 없음", severity="error")
+            self.notify(t("No port information", "포트 정보 없음"), severity="error")
             return
         models = await list_served_models(row.port)
         model = models[0] if models else (row.model or "")
         if not model:
-            self.notify("서빙 모델 식별 실패 (/v1/models 응답 없음)", severity="error")
+            self.notify(
+                t("Could not identify a served model (/v1/models returned nothing)",
+                  "서빙 모델 식별 실패 (/v1/models 응답 없음)"),
+                severity="error",
+            )
             return
-        self.notify(f"벤치마크 실행 (warmup+3회, {model})...")
+        self.notify(t(f"Benchmarking (warmup + 3 runs, {model})…",
+                      f"벤치마크 실행 (warmup+3회, {model})…"))
         try:
             r = await run_bench(row.port, model, runs=3, warmup=1)
             self.notify(
@@ -495,16 +509,18 @@ class DashboardScreen(Screen):
                 timeout=10,
             )
         except Exception as exc:
-            self.notify(f"✗ 벤치마크 실패: {exc}", severity="error")
+            self.notify(t(f"✗ benchmark failed: {exc}", f"✗ 벤치마크 실패: {exc}"),
+                        severity="error")
 
     @work(exclusive=False)
     async def _run_vllm_stop(self, name: str) -> None:
-        self.notify(f"Stopping {name}...")
+        self.notify(t(f"Stopping {name}…", f"{name} 중지 중…"))
         rc, output = await vbackend.container_down(name)
         if rc == 0:
-            self.notify(f"Stopped {name}.")
+            self.notify(t(f"Stopped {name}.", f"{name} 중지됨."))
         else:
-            self.notify(f"Error stopping {name}: {output}", severity="error")
+            self.notify(t(f"Error stopping {name}: {output}",
+                          f"{name} 중지 오류: {output}"), severity="error")
         self._reload()
         # Trigger an immediate GPU poll so the memory bar reflects the
         # released VRAM right away — without this the bar waits for the
@@ -555,22 +571,24 @@ class DashboardScreen(Screen):
 
         self.app.push_screen(
             ConfirmModal(
-                f"Stop llama.cpp container [b]{name}[/b]?",
-                confirm_label="Yes, stop",
+                t(f"Stop llama.cpp container [b]{name}[/b]?",
+                  f"llama.cpp 컨테이너 [b]{name}[/b] 을 중지할까요?"),
+                confirm_label=t("Yes, stop", "네, 중지"),
             ),
             on_ok,
         )
 
     @work(exclusive=False)
     async def _run_llamacpp_stop(self, name: str) -> None:
-        self.notify(f"Stopping {name}...")
+        self.notify(t(f"Stopping {name}…", f"{name} 중지 중…"))
         code, out = await lruntime.container_down(name)
         if code == 0:
-            self.notify(f"✓ '{name}' 중지")
+            self.notify(t(f"✓ Stopped '{name}'", f"✓ '{name}' 중지"))
         else:
             tail = out.splitlines()[-3:] if out else []
             msg = " / ".join(tail) if tail else f"code={code}"
-            self.notify(f"✗ stop 실패: {msg}", severity="error")
+            self.notify(t(f"✗ stop failed: {msg}", f"✗ 중지 실패: {msg}"),
+                        severity="error")
         self._reload()
         # See _run_vllm_stop — refresh the GPU bar immediately so the
         # VRAM bar mirrors the just-released allocation.
@@ -583,7 +601,8 @@ class DashboardScreen(Screen):
         config_name = profile.config_name or profile.name
         cfg = lbackend.load_config(config_name)
         alias = cfg.get("alias", config_name)
-        self.notify(f"벤치마크 실행 (warmup+3회, {alias})...")
+        self.notify(t(f"Benchmarking (warmup + 3 runs, {alias})…",
+                      f"벤치마크 실행 (warmup+3회, {alias})…"))
         try:
             r = await run_bench(profile.port, alias, runs=3, warmup=1)
             self.notify(
@@ -593,7 +612,8 @@ class DashboardScreen(Screen):
                 timeout=10,
             )
         except Exception as exc:
-            self.notify(f"✗ 벤치마크 실패: {exc}", severity="error")
+            self.notify(t(f"✗ benchmark failed: {exc}", f"✗ 벤치마크 실패: {exc}"),
+                        severity="error")
 
     # ------------------------------------------------------------------
     # Quick shortcuts (u / d / l / e / c / x)
@@ -604,7 +624,8 @@ class DashboardScreen(Screen):
         if row is None:
             return
         if row.running:
-            self.notify("Container already running.", severity="warning", timeout=3)
+            self.notify(t("Container already running.", "컨테이너가 이미 실행 중입니다."),
+                        severity="warning", timeout=3)
             return
         if row.backend == "vllm":
             self._dispatch_vllm("start", row)
@@ -666,7 +687,9 @@ class DashboardScreen(Screen):
             return
         if row.running:
             self.notify(
-                "Cannot delete: container running. Stop first.", severity="error"
+                t("Cannot delete: container running. Stop first.",
+                  "삭제 불가: 컨테이너가 실행 중입니다. 먼저 중지하세요."),
+                severity="error",
             )
             return
         if row.backend == "vllm":
@@ -732,14 +755,23 @@ class DashboardScreen(Screen):
 
     def action_help(self) -> None:
         self.notify(
-            "[b]Dashboard[/b]\n"
-            "  Enter   action menu\n"
-            "  u/d/l   start/stop/logs\n"
-            "  e/c/x   edit profile/config, delete\n"
-            "  C       config list (clone/edit/delete)\n"
-            "  m       estimate model memory\n"
-            "  n s r q new/system/refresh/quit",
-            title="Keys",
+            t(
+                "[b]Dashboard[/b]\n"
+                "  Enter   action menu\n"
+                "  u/d/l   start/stop/logs\n"
+                "  e/c/x   edit profile/config, delete\n"
+                "  C       config list (clone/edit/delete)\n"
+                "  m       estimate model memory\n"
+                "  n s r q new/system/refresh/quit",
+                "[b]대시보드[/b]\n"
+                "  Enter   작업 메뉴\n"
+                "  u/d/l   시작/중지/로그\n"
+                "  e/c/x   프로필/config 편집, 삭제\n"
+                "  C       config 목록 (복제/편집/삭제)\n"
+                "  m       모델 메모리 추정\n"
+                "  n s r q 새로/시스템/새로고침/종료",
+            ),
+            title=t("Keys", "단축키"),
             timeout=10,
         )
 
