@@ -41,6 +41,7 @@ from tui.backends.llamacpp.backend_runtime import (
 from tui.common.dev_build import list_local_dev_images
 
 
+VER_PINNED = "pinned_image"
 VER_DEFAULT = "default_image"
 VER_DEV = "dev_build"
 VER_CUSTOM = "custom_tag"
@@ -172,11 +173,14 @@ class ContainerUpScreen(Screen):
                     "[yellow]No config linked. A default config will be generated on start.[/yellow]"
                 )
 
-            # If the profile is already pinned to a dev image, surface that.
-            if self._profile.image_tag.startswith(f"{LLAMACPP_DEV_SPEC.image_prefix}:"):
+            # Surface ANY pinned image, not just `llamacpp-dev:` ones — a
+            # profile pinned to e.g. `ghcr.io/foo/bar:v1` was equally silent.
+            pinned = self._profile.image_tag
+            if pinned:
                 yield Static(
-                    f"[cyan]Profile pinned to: {self._profile.image_tag}[/cyan]  "
-                    "[dim](selecting Default Image or Custom Tag will override for this start only)[/dim]",
+                    f"[cyan]Profile pinned to: {pinned}[/cyan]  "
+                    "[dim](pick another option to override for this run)[/dim]",
+                    id="pinned-label",
                 )
 
             with VerticalScroll(id="version-scroll"):
@@ -186,10 +190,16 @@ class ContainerUpScreen(Screen):
                     id="version-help",
                 )
                 with RadioSet(id="version-radio"):
+                    # A pinned profile defaulted to "Default Image", i.e. the
+                    # default selection silently *discarded* the user's pin.
+                    if pinned:
+                        yield RadioButton(
+                            f"Pinned Image  ({pinned})", id=VER_PINNED, value=True
+                        )
                     yield RadioButton(
                         "Default Image  (ghcr.io/ggml-org/llama.cpp:server-cuda)",
                         id=VER_DEFAULT,
-                        value=True,
+                        value=not pinned,
                     )
                     yield RadioButton(
                         "Dev Build  (llamacpp-dev:<branch>)  (loading...)",
@@ -305,7 +315,8 @@ class ContainerUpScreen(Screen):
     async def _do_start(self) -> None:
         radio_set = self.query_one("#version-radio", RadioSet)
         pressed = radio_set.pressed_button
-        selected_id = pressed.id if pressed else VER_DEFAULT
+        default_id = VER_PINNED if self._profile.image_tag else VER_DEFAULT
+        selected_id = pressed.id if pressed else default_id
 
         use_dev = False
         use_default_image = False
@@ -313,7 +324,11 @@ class ContainerUpScreen(Screen):
         repo_url = ""
         branch = ""
 
-        if selected_id == VER_DEV:
+        if selected_id == VER_PINNED:
+            # All-zero → the runtime honors profile.image_tag. Same behavior as
+            # a pinned profile always had, just now the selected, visible one.
+            pass
+        elif selected_id == VER_DEV:
             use_dev = True
             repo_url = self.query_one("#dev-repo-input", Input).value.strip()
             branch = self.query_one("#dev-branch-input", Input).value.strip()

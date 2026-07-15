@@ -6,7 +6,7 @@ from typing import Any
 
 from textual.app import ComposeResult
 from textual.screen import Screen, ModalScreen
-from textual.widgets import Button, Static, Label, Input, DataTable, Footer, Header
+from textual.widgets import Button, Static, Label, Input, DataTable, Footer, Header, Switch
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.binding import Binding
 from textual.suggester import SuggestFromList
@@ -14,6 +14,7 @@ from textual import on
 
 from textual import work
 
+from tui.backends.vllm.backend_common import CONFIG_DIR
 from tui.backends.vllm.backend import (
     Config,
     load_config,
@@ -146,6 +147,10 @@ class ConfigFormScreen(ModalScreen[str | None]):
     ConfigFormScreen .param-row .param-value {
         width: 1fr;
         margin-right: 1;
+    }
+    ConfigFormScreen .param-row.-disabled .param-key,
+    ConfigFormScreen .param-row.-disabled .param-value {
+        color: $text-muted;
     }
     ConfigFormScreen .param-row .param-remove {
         min-width: 5;
@@ -299,7 +304,10 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 severity="error",
             )
             return
-        if not self._edit_mode and name in list_config_names():
+        # File existence, not `in list_config_names()` — that helper filters
+        # out `example`, so a config named "example" passed the check and
+        # silently overwrote the tracked example.yaml.
+        if not self._edit_mode and (CONFIG_DIR / f"{name}.yaml").exists():
             self.notify(f"Config '{name}' already exists.", severity="error")
             return
         if gpu_mem:
@@ -485,7 +493,7 @@ class ConfigListScreen(Screen):
         Binding("n", "new_config", "New", show=True),
         Binding("e", "edit_config", "Edit", show=True),
         Binding("c", "clone_config", "Clone", show=True),
-        Binding("delete", "delete_config", "Delete", show=True),
+        Binding("delete,x", "delete_config", "Delete", show=True),
         Binding("r", "refresh", "Refresh", show=True),
         Binding("escape", "go_back", "Back", show=True),
     ]
@@ -500,6 +508,15 @@ class ConfigListScreen(Screen):
         table = self.query_one("#config-table", DataTable)
         table.add_columns("Name", "Model", "GPU Mem", "Params")
         self._refresh_table()
+
+    def on_screen_resume(self) -> None:
+        # Named SCREENS entries are cached instances — on_mount fires once, so
+        # without this the list goes stale after configs change elsewhere.
+        self._refresh_table()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        event.stop()
+        self.action_edit_config()
 
     def _refresh_table(self) -> None:
         table = self.query_one("#config-table", DataTable)
@@ -555,7 +572,7 @@ class ConfigListScreen(Screen):
                     severity="error",
                 )
                 return
-            if new_name in set(list_config_names()):
+            if (CONFIG_DIR / f"{new_name}.yaml").exists():
                 self.notify(f"Config '{new_name}' already exists.", severity="error")
                 return
             cfg = load_config(name)

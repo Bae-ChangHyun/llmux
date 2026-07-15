@@ -32,9 +32,10 @@ def up(
     ),
     tag: str = typer.Option(
         "", "--tag", "-t",
-        help="Image tag override. vLLM: vllm/vllm-openai:<tag> or vllm-dev:<tag> with --dev. "
-        "llama.cpp: full image ref (e.g. ghcr.io/foo/bar:v1) or llamacpp-dev:<tag> with --dev. "
-        "Empty = profile's pinned image_tag or backend default.",
+        help="Image tag override. Without --dev: a full image ref "
+        "(vLLM vllm/vllm-openai:<tag>, llama.cpp ghcr.io/foo/bar:v1). "
+        "With --dev: pass just the dev tag (it's sanitized and resolved to "
+        "<backend>-dev:<tag>). Empty = profile's pinned image_tag or backend default.",
     ),
     dev: bool = typer.Option(
         False, "--dev",
@@ -73,8 +74,8 @@ def up(
     ),
 ) -> None:
     """Start a profile's container. Streams compose output to stdout."""
-    bk = detect_backend(profile, override=backend)
-
+    # Flag sanity first — these are contradictions in the invocation itself and
+    # don't depend on the profile resolving.
     if dev and default_image:
         typer.echo(
             "Error: --dev and --default-image are mutually exclusive (one forces a "
@@ -82,6 +83,19 @@ def up(
             err=True,
         )
         raise typer.Exit(code=2)
+
+    if tag and default_image:
+        # Contradictory: one names an image, the other says "use the default".
+        # Rejecting up-front also removes a cross-backend divergence — llama.cpp
+        # ignored the tag here while vLLM honored it.
+        typer.echo(
+            "Error: --tag and --default-image are mutually exclusive (one names an "
+            "image, the other falls back to the compose default).",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    bk = detect_backend(profile, override=backend)
 
     # Conflict pre-flight: mirror the TUI dashboard. The headless CLI defaults
     # to ABORT-on-conflict so scripts/agents don't silently start a container
@@ -104,21 +118,11 @@ def up(
     if bk == "vllm":
         from tui.backends.vllm.backend_runtime import stream_container_up
 
-        if default_image:
-            # vLLM's stream_container_up uses an empty `tag` + no pinned
-            # image_tag as "default image" already. Override the profile's
-            # pinned image_tag transiently via a stored-profile rewrite so the
-            # priority order (UI override > profile.image_tag > compose default)
-            # picks the compose default. The TUI side does the same.
-            from tui.common import profile_store as _ps
-            sp = _ps.load_profile(profile, "vllm")
-            if sp is not None and sp.image_tag:
-                sp.image_tag = ""
-                _ps.render_env(sp)  # rewrites .env without mutating profiles.yaml
         rc = stream_async(
             stream_container_up(
                 profile,
                 use_dev=dev,
+                use_default_image=default_image,
                 tag=tag,
                 pull=pull,
                 repo_url=repo_url,
@@ -350,6 +354,10 @@ def stats(
 
     if backend and backend not in BACKENDS:
         raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
+    if interval <= 0:
+        # asyncio.sleep(0) would spin the poll loop as fast as the event loop
+        # can schedule it, hammering /metrics and pinning a core.
+        raise typer.BadParameter("interval must be > 0", param_hint="--interval")
     backends = [backend] if backend else list(BACKENDS)
 
     from tui.common.metrics import ThroughputTracker, fetch_token_counters
@@ -375,10 +383,20 @@ def stats(
 
     async def _sample() -> list[dict]:
         rows: list[dict] = []
+        targets = await _running()
+        # Fetch concurrently (same as the dashboard's _poll_throughput): polling
+        # in turn let one slow/hanging /metrics endpoint delay every profile
+        # behind it, skewing the deltas of the ones that answered promptly.
+        samples = await asyncio.gather(
+            *(fetch_token_counters(t["port"]) for t in targets),
+            return_exceptions=True,
+        )
+        # One timestamp for the whole batch, taken after the fetches resolve.
         now = time.monotonic()
-        for t in await _running():
+        for t, counters in zip(targets, samples):
             key = f"{t['backend']}:{t['profile']}"
-            counters = await fetch_token_counters(t["port"])
+            if isinstance(counters, BaseException):
+                counters = None
             if counters is None:
                 # Unreachable / no metrics — drop the baseline so a later
                 # restart doesn't diff against a stale pre-restart counter.
@@ -450,6 +468,10 @@ def ps(
     ),
 ) -> None:
     """List profiles and their container status across backends."""
+    # Unvalidated, `-b foo` fell through to the llamacpp branch and printed rows
+    # labelled with the bogus backend name.
+    if backend and backend not in BACKENDS:
+        raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
     backends = [backend] if backend else list(BACKENDS)
     rows = []
 
@@ -510,13 +532,34 @@ def render_env(
     ),
 ) -> None:
     """Re-render `.runtime/<backend>/<profile>.env` from `profiles.yaml`."""
+    # The PROFILE path validates via detect_backend; the render-all path went
+    # straight into profile_store and died with a raw ValueError traceback.
+    if backend and backend not in BACKENDS:
+        raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
     if profile is None:
-        paths = profile_store.render_all(backend=backend)
-        for p in paths:
-            print(p)
+        # Render per-profile rather than via render_all(): a single unrenderable
+        # value would otherwise abort the whole batch with a traceback and never
+        # say which profile was at fault.
+        failures: list[str] = []
+        for bk in ([backend] if backend else list(BACKENDS)):
+            for sp in profile_store.list_profiles(bk):
+                try:
+                    print(profile_store.render_env(sp))
+                except ValueError as exc:
+                    failures.append(f"{bk}/{sp.name}: {exc}")
+        if failures:
+            print("\nFailed to render:")
+            for f in failures:
+                print(f"  - {f}")
+            raise typer.Exit(code=1)
         return
 
     bk = detect_backend(profile, override=backend)
     sp = profile_store.load_profile(profile, bk)
-    out_path = profile_store.render_env(sp)
+    try:
+        out_path = profile_store.render_env(sp)
+    except ValueError as exc:
+        print(f"Error: cannot render {bk}/{profile}.env — {exc}")
+        print(f"  Fix it with: llmux profile edit {profile} --unset <KEY>")
+        raise typer.Exit(code=1)
     print(out_path)

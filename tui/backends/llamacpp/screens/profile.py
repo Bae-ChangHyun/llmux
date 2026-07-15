@@ -27,6 +27,13 @@ from tui.backends.llamacpp.backend import (
 # ---------------------------------------------------------------------------
 
 
+def _default_port() -> str:
+    """Backend default port, honoring a `defaults:` override in profiles.yaml."""
+    from tui.common import profile_store
+
+    return str(profile_store.effective_defaults("llamacpp")["port"])
+
+
 class ProfileFormScreen(ModalScreen[str | None]):
     """Profile 생성/편집 modal."""
 
@@ -100,6 +107,13 @@ class ProfileFormScreen(ModalScreen[str | None]):
         configs = list_config_names()
         config_options: list[tuple[str, str]] = [(name, name) for name in configs]
 
+        # A dangling link (config YAML deleted out from under the profile) has
+        # no matching option, so the Select would fall back to BLANK and saving
+        # would silently rewrite config_name. Surface it instead.
+        if p and p.config_name and p.config_name not in configs:
+            config_options.insert(0, (f"{p.config_name} (missing)", p.config_name))
+            configs = [*configs, p.config_name]
+
         with Vertical():
             yield Static(f"[b]{title}[/b]", id="form-title")
 
@@ -123,9 +137,10 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
                 with Horizontal(classes="form-row"):
                     yield Label("Port")
+                    _port = _default_port()
                     yield Input(
-                        value=str(p.port) if p else "8080",
-                        placeholder="8080",
+                        value=str(p.port) if p else _port,
+                        placeholder=_port,
                         id="port-input",
                     )
 
@@ -212,11 +227,20 @@ class ProfileFormScreen(ModalScreen[str | None]):
         if not self._edit_mode and name in list_profile_names():
             self.notify(f"Profile '{name}' 이미 존재", severity="error")
             return
+
+        if not self._edit_mode and name == "example":
+            # config 링크 기본값이 프로필 이름이라, 'example' 프로필은 tracked
+            # example.yaml 에 파라미터를 써버린다.
+            self.notify(
+                "'example' 은 tracked 템플릿 config 이름 — 다른 이름을 쓸 것",
+                severity="error",
+            )
+            return
         if container and not validate_name(container):
             self.notify("컨테이너 이름 규칙 위반", severity="error")
             return
         try:
-            port_int = int(port or "8080")
+            port_int = int(port or _default_port())
             if not (1024 <= port_int <= 65535):
                 raise ValueError
         except ValueError:
@@ -227,6 +251,12 @@ class ProfileFormScreen(ModalScreen[str | None]):
             return
         if hf_repo and not re.match(r"^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$", hf_repo):
             self.notify("HF Repo 형식: org/name (예: unsloth/Qwen3-8B-GGUF)", severity="error")
+            return
+        from tui.common.dev_build import image_tag_error
+
+        tag_err = image_tag_error(image_tag)
+        if tag_err:
+            self.notify(tag_err, severity="error")
             return
 
         # --- Build ---
@@ -263,6 +293,11 @@ class ProfileFormScreen(ModalScreen[str | None]):
         if not hf_repo:
             self.notify(
                 "HF Repo 없이는 컨테이너 시작 불가 (-hf 다운로드 소스 필요)",
+                severity="warning",
+            )
+        if not effective_model_file:
+            self.notify(
+                "HF File/Model File 없음 — 링크된 config 에 model-file 이 있어야 시작 가능",
                 severity="warning",
             )
         self._saved_name = name
@@ -342,7 +377,15 @@ class ProfileDeleteScreen(ModalScreen[bool]):
         ] if cfg else []
 
         with Vertical():
-            if cfg and not other_refs:
+            if cfg == "example":
+                # delete_profile() 이 tracked 템플릿은 건너뛴다 — 삭제된다고
+                # 말하면 거짓 안내가 된다.
+                yield Static(
+                    f"[b]{self._profile_name}[/b] 삭제?\n"
+                    f"[dim](config 'example' 은 tracked 템플릿이라 유지됨)[/dim]",
+                    id="delete-message",
+                )
+            elif cfg and not other_refs:
                 yield Static(
                     f"[b]{self._profile_name}[/b] 삭제?\n"
                     f"[dim](연결된 config '{cfg}' 도 함께 삭제됨 — 다른 프로필 참조 없음)[/dim]",
@@ -372,8 +415,11 @@ class ProfileDeleteScreen(ModalScreen[bool]):
         ] if cfg else []
         delete_config_too = bool(cfg) and not other_refs
         delete_profile(self._profile_name, delete_config_too=delete_config_too)
-        if delete_config_too:
+        # backend 가 example.yaml 삭제를 스킵하므로 notify 도 맞춰야 한다.
+        if delete_config_too and cfg != "example":
             self.app.notify(f"삭제: {self._profile_name} + config '{cfg}'")
+        elif cfg == "example":
+            self.app.notify(f"삭제: {self._profile_name} (tracked 템플릿 config 'example' 유지)")
         else:
             self.app.notify(f"삭제: {self._profile_name}")
         self.dismiss(True)

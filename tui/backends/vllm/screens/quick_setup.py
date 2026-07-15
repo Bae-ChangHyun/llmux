@@ -12,6 +12,8 @@ from textual.containers import Vertical, Horizontal, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static, Switch, Select
 
+from tui.common import profile_store
+
 
 class QuickSetupScreen(ModalScreen[str]):
     """Quick setup: create a profile + config from a model name."""
@@ -87,7 +89,11 @@ class QuickSetupScreen(ModalScreen[str]):
                 yield Label("GPU ID")
                 yield Input(placeholder="0", value="0", id="gpu-input")
                 yield Label("Port")
-                yield Input(placeholder="8000", value="8000", id="port-input")
+                # Prefill from the effective default (profiles.yaml `defaults:`
+                # can override the built-in 8000) so the form agrees with what
+                # `profile new --port 0` / quick-setup would pick.
+                _port = str(profile_store.effective_defaults("vllm")["port"])
+                yield Input(placeholder=_port, value=_port, id="port-input")
                 yield Label("GPU Memory Utilization")
                 yield Input(placeholder="0.9", value="0.9", id="gpu-mem-input")
                 yield Label("Copy params from (optional)")
@@ -208,9 +214,11 @@ class QuickSetupScreen(ModalScreen[str]):
             list_profile_names, list_config_names, load_config,
         )
 
-        # Auto-resolve name collision by appending suffix
+        # Auto-resolve name collision by appending suffix. `example` is added
+        # explicitly because list_config_names() filters it out — without it a
+        # model named "example" would overwrite the tracked example.yaml.
         existing_profiles = list_profile_names()
-        existing_configs = list_config_names()
+        existing_configs = set(list_config_names()) | {"example"}
         original_name = safe_name
         suffix = 0
         while safe_name in existing_profiles or safe_name in existing_configs:

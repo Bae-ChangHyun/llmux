@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from time import monotonic
 
@@ -248,14 +249,28 @@ class DashboardScreen(Screen):
         container shows "—" for one tick. A server without metrics exposed
         (or not yet up) stays "—" rather than erroring the whole poll.
         """
-        now = monotonic()
+        live: list[DashboardRow] = []
         for r in list(self._rows):
             key = f"{r.backend}:{r.profile_name}"
             if not r.running or not r.port:
                 self._tps.pop(key, None)
                 self._tps_tracker.forget(key)
                 continue
-            counters = await fetch_token_counters(r.port)
+            live.append(r)
+
+        # Fetch concurrently — awaiting each container in turn meant one
+        # slow/hanging /metrics endpoint delayed (and could starve) every
+        # profile behind it in the list.
+        samples = await asyncio.gather(
+            *(fetch_token_counters(r.port) for r in live),
+            return_exceptions=True,
+        )
+        now = monotonic()
+
+        for r, counters in zip(live, samples):
+            key = f"{r.backend}:{r.profile_name}"
+            if isinstance(counters, BaseException):
+                counters = None
             if counters is None:
                 self._tps.pop(key, None)
                 self._tps_tracker.forget(key)
@@ -263,6 +278,10 @@ class DashboardScreen(Screen):
             else:
                 rate = self._tps_tracker.update(key, counters, now)
                 if rate is None:
+                    # First sample, or the counters went backwards (server
+                    # restart). Drop the cached value too — otherwise the next
+                    # _render_rows would resurrect the pre-restart tok/s.
+                    self._tps.pop(key, None)
                     cell = "—"
                 else:
                     cell = f"{rate[1]:.1f}"
@@ -559,8 +578,11 @@ class DashboardScreen(Screen):
 
     @work(exclusive=True)
     async def _run_llamacpp_bench(self, profile) -> None:
-        cfg = lbackend.load_config(profile.config_name)
-        alias = cfg.get("alias", profile.config_name)
+        # config_name defaults to the profile name when unset — same fallback
+        # the CLI's bench uses.
+        config_name = profile.config_name or profile.name
+        cfg = lbackend.load_config(config_name)
+        alias = cfg.get("alias", config_name)
         self.notify(f"벤치마크 실행 (warmup+3회, {alias})...")
         try:
             r = await run_bench(profile.port, alias, runs=3, warmup=1)
@@ -715,6 +737,7 @@ class DashboardScreen(Screen):
             "  u/d/l   start/stop/logs\n"
             "  e/c/x   edit profile/config, delete\n"
             "  C       config list (clone/edit/delete)\n"
+            "  m       estimate model memory\n"
             "  n s r q new/system/refresh/quit",
             title="Keys",
             timeout=10,

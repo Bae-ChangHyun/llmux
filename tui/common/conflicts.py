@@ -49,6 +49,11 @@ async def gpu_conflict_messages(
         ]
     running_names = {line.strip() for line in out.splitlines() if line.strip()}
     profile_gpu_ids = parse_gpu_ids(profile_gpu_id)
+    # No GPUs requested → nothing to overlap. Without this, an empty set against
+    # a wildcard-GPU container (`gpu_sets_overlap(∅, {*}) == {*}`) produced a
+    # false "all GPUs" warning — mirror the sync gpu_conflicts() guard.
+    if not profile_gpu_ids:
+        return []
     messages: list[str] = []
     for backend_name in ("vllm", "llamacpp"):
         for other in profile_store.list_profiles(backend_name):
