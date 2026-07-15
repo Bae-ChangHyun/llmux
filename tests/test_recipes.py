@@ -138,5 +138,36 @@ class DeriveNameTests(unittest.TestCase):
         self.assertEqual(_derive_config_name("Qwen/Qwen3-32B-AWQ"), "qwen3-32b-awq")
 
 
+class FromRecipeWriteTests(unittest.TestCase):
+    """The write path (no --json) was crashing on a missing `param_hint`; only
+    --list / --json had been exercised. Cover the actual config creation."""
+
+    def test_from_recipe_writes_config(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import AsyncMock, patch
+
+        from tui.backends.vllm import backend_common as vc
+        from tui.backends.vllm import backend_storage as vs
+        from tui.cli import config as cli_config
+
+        recipe = recipes._parse(_QWEN32B, "Qwen/Qwen3-32B")
+        with tempfile.TemporaryDirectory() as tmp:
+            # variant="awq" is explicit, so no GPU auto-pick / network is touched.
+            with patch.object(cli_config, "_config_dir", lambda b: Path(tmp)), \
+                 patch.object(vs, "CONFIG_DIR", Path(tmp)), \
+                 patch.object(vc, "CONFIG_DIR", Path(tmp)), \
+                 patch("tui.common.recipes.fetch_recipe",
+                       new=AsyncMock(return_value=recipe)):
+                cli_config.config_from_recipe(
+                    "Qwen/Qwen3-32B", variant="awq", feature=["reasoning"],
+                    name="q32-awq", list_only=False, json_out=False, overwrite=False,
+                )
+            written = (Path(tmp) / "q32-awq.yaml").read_text()
+            self.assertIn("Qwen/Qwen3-32B-AWQ", written)   # awq swaps the model
+            self.assertIn("quantization", written)
+            self.assertIn("reasoning-parser", written)
+
+
 if __name__ == "__main__":
     unittest.main()
