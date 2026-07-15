@@ -11,6 +11,7 @@ from tui.backends.llamacpp.screens.config import ConfigListScreen as LlamacppCon
 from tui.backends.llamacpp.screens.system import SystemScreen as LlamacppSystemScreen
 from tui.backends.vllm.screens.config import ConfigListScreen as VllmConfigListScreen
 from tui.backends.vllm.screens.system import SystemScreen as VllmSystemScreen
+from tui.common.i18n import t
 from tui.screens.dashboard import DashboardScreen
 from tui.screens.too_narrow import TooNarrowScreen
 
@@ -29,7 +30,7 @@ class LlmuxApp(App):
     pop it back as soon as the user widens the terminal."""
 
     BINDINGS = [
-        Binding("q", "quit", "Quit", show=True),
+        Binding("q", "quit", t("Quit", "종료"), show=True),
         Binding("f1", "show_dashboard", "Dashboard", show=False),
         Binding("question_mark", "help", "Help", show=False),
     ]
@@ -110,11 +111,18 @@ class LlmuxApp(App):
 
     def action_help(self) -> None:
         self.notify(
-            "[b]Dashboard[/b]\n"
-            "  Enter action menu · u/d/l start/stop/logs\n"
-            "  e/c/x edit profile/config, delete\n"
-            "  m estimate model memory\n"
-            "  C config list · n new · s system · r refresh · q quit",
+            t(
+                "[b]Dashboard[/b]\n"
+                "  Enter action menu · u/d/l start/stop/logs\n"
+                "  e/c/x edit profile/config, delete\n"
+                "  m estimate model memory\n"
+                "  C config list · n new · s system · r refresh · q quit",
+                "[b]대시보드[/b]\n"
+                "  Enter 작업 메뉴 · u/d/l 시작/중지/로그\n"
+                "  e/c/x 프로필/config 편집, 삭제\n"
+                "  m 모델 메모리 추정\n"
+                "  C config 목록 · n 새로 · s 시스템 · r 새로고침 · q 종료",
+            ),
             title="llmux",
             timeout=10,
         )

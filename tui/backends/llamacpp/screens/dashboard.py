@@ -19,6 +19,7 @@ from textual.widgets import (
 from textual.widgets.option_list import Option
 
 from tui.backends.llamacpp import backend
+from tui.common.i18n import t
 
 
 class ActionModal(ModalScreen[str]):
@@ -58,24 +59,24 @@ class ActionModal(ModalScreen[str]):
         running = p.running
 
         if running:
-            status = "[green]● running[/]"
+            status = t("[green]● running[/]", "[green]● 실행 중[/]")
         else:
-            status = "[dim]○ stopped[/]"
+            status = t("[dim]○ stopped[/]", "[dim]○ 중지됨[/]")
 
         options: list[Option] = []
         if running:
-            options.append(Option("■ Stop Container", id="stop"))
+            options.append(Option(t("■ Stop Container", "■ 컨테이너 중지"), id="stop"))
         else:
-            options.append(Option("▶ Start Container", id="start"))
+            options.append(Option(t("▶ Start Container", "▶ 컨테이너 시작"), id="start"))
         # `docker logs` also works on exited containers, so the log viewer is
         # offered in both states — matching the `l` binding on the dashboard.
-        options.append(Option("◉ View Logs", id="logs"))
+        options.append(Option(t("◉ View Logs", "◉ 로그 보기"), id="logs"))
         if running:
-            options.append(Option("⚡ Benchmark", id="benchmark"))
-        options.append(Option("✎ Edit Profile", id="edit-profile"))
-        options.append(Option("⚙ Edit Config", id="edit-config"))
+            options.append(Option(t("⚡ Benchmark", "⚡ 벤치마크"), id="benchmark"))
+        options.append(Option(t("✎ Edit Profile", "✎ 프로필 편집"), id="edit-profile"))
+        options.append(Option(t("⚙ Edit Config", "⚙ Config 편집"), id="edit-config"))
         if not running:
-            options.append(Option("✗ Delete Profile", id="delete-profile"))
+            options.append(Option(t("✗ Delete Profile", "✗ 프로필 삭제"), id="delete-profile"))
 
         with Vertical():
             yield Static(f"{p.name}  {status}", id="action-title")
@@ -93,8 +94,8 @@ class LogViewer(ModalScreen[None]):
     """docker logs -f 실시간 표시. RichLog 로 스크롤/자동 follow 지원."""
 
     BINDINGS = [
-        Binding("escape,q", "close", "Close", show=True),
-        Binding("f", "toggle_follow", "Follow on/off"),
+        Binding("escape,q", "close", t("Close", "닫기"), show=True),
+        Binding("f", "toggle_follow", t("Follow on/off", "자동 스크롤")),
     ]
 
     def __init__(self, container_name: str) -> None:
@@ -104,8 +105,12 @@ class LogViewer(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="log-container"):
             yield Label(
-                f"  Logs — {self.container_name}   "
-                "[dim](esc:close  f:auto-follow  ↑↓/PgUp/PgDn:scroll)[/dim]",
+                t(
+                    f"  Logs — {self.container_name}   "
+                    "[dim](esc:close  f:auto-follow  ↑↓/PgUp/PgDn:scroll)[/dim]",
+                    f"  로그 — {self.container_name}   "
+                    "[dim](esc:닫기  f:자동 추적  ↑↓/PgUp/PgDn:스크롤)[/dim]",
+                ),
                 id="log-title",
             )
             yield RichLog(
@@ -127,14 +132,20 @@ class LogViewer(ModalScreen[None]):
             async for line in backend.stream_logs(self.container_name, tail=200):
                 log.write(backend.strip_ansi(line))
         except Exception as exc:  # pragma: no cover
-            log.write(f"[로그 스트림 오류] {exc}")
+            log.write(t(f"[log stream error] {exc}", f"[로그 스트림 오류] {exc}"))
 
     def action_toggle_follow(self) -> None:
         log = self.query_one("#log-body", RichLog)
         log.auto_scroll = not log.auto_scroll
         if log.auto_scroll:
             log.scroll_end(animate=False)
-        self.notify(f"auto-follow: {'ON' if log.auto_scroll else 'OFF'}", timeout=2)
+        self.notify(
+            t(
+                f"auto-follow: {'ON' if log.auto_scroll else 'OFF'}",
+                f"자동 추적: {'켜짐' if log.auto_scroll else '꺼짐'}",
+            ),
+            timeout=2,
+        )
 
     def action_close(self) -> None:
         self.workers.cancel_group(self, "logviewer-stream")

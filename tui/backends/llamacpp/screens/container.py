@@ -39,6 +39,7 @@ from tui.backends.llamacpp.backend_runtime import (
     stream_container_up,
 )
 from tui.common.dev_build import list_local_dev_images
+from tui.common.i18n import t
 
 
 VER_PINNED = "pinned_image"
@@ -53,7 +54,7 @@ class ContainerUpScreen(Screen):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=False),
         Binding("q", "cancel", "Quit", show=False),
-        Binding("f", "toggle_follow", "Follow on/off"),
+        Binding("f", "toggle_follow", t("Follow on/off", "자동 스크롤")),
     ]
 
     DEFAULT_CSS = """
@@ -166,11 +167,14 @@ class ContainerUpScreen(Screen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal-dialog"):
-            yield Static("Start llama.cpp Container", id="title-label")
-            yield Static(f"Profile: [b]{self.profile_name}[/b]", id="profile-label")
+            yield Static(t("Start llama.cpp Container", "llama.cpp 컨테이너 시작"), id="title-label")
+            yield Static(t(f"Profile: [b]{self.profile_name}[/b]", f"프로필: [b]{self.profile_name}[/b]"), id="profile-label")
             if not self._profile.config_name:
                 yield Static(
-                    "[yellow]No config linked. A default config will be generated on start.[/yellow]"
+                    t(
+                        "[yellow]No config linked. A default config will be generated on start.[/yellow]",
+                        "[yellow]연결된 config 가 없습니다. 시작 시 기본 config 가 생성됩니다.[/yellow]",
+                    )
                 )
 
             # Surface ANY pinned image, not just `llamacpp-dev:` ones — a
@@ -178,15 +182,22 @@ class ContainerUpScreen(Screen):
             pinned = self._profile.image_tag
             if pinned:
                 yield Static(
-                    f"[cyan]Profile pinned to: {pinned}[/cyan]  "
-                    "[dim](pick another option to override for this run)[/dim]",
+                    t(
+                        f"[cyan]Profile pinned to: {pinned}[/cyan]  "
+                        "[dim](pick another option to override for this run)[/dim]",
+                        f"[cyan]프로필 고정 이미지: {pinned}[/cyan]  "
+                        "[dim](이번 실행만 재정의하려면 다른 옵션 선택)[/dim]",
+                    ),
                     id="pinned-label",
                 )
 
             with VerticalScroll(id="version-scroll"):
-                yield Label("Version", id="version-label")
+                yield Label(t("Version", "버전"), id="version-label")
                 yield Static(
-                    "[dim]Click or use ↑↓ + Enter/Space to select[/dim]",
+                    t(
+                        "[dim]Click or use ↑↓ + Enter/Space to select[/dim]",
+                        "[dim]클릭 또는 ↑↓ + Enter/Space 로 선택[/dim]",
+                    ),
                     id="version-help",
                 )
                 with RadioSet(id="version-radio"):
@@ -194,32 +205,41 @@ class ContainerUpScreen(Screen):
                     # default selection silently *discarded* the user's pin.
                     if pinned:
                         yield RadioButton(
-                            f"Pinned Image  ({pinned})", id=VER_PINNED, value=True
+                            t(f"Pinned Image  ({pinned})", f"고정 이미지  ({pinned})"), id=VER_PINNED, value=True
                         )
                     yield RadioButton(
-                        "Default Image  (ghcr.io/ggml-org/llama.cpp:server-cuda)",
+                        t(
+                            "Default Image  (ghcr.io/ggml-org/llama.cpp:server-cuda)",
+                            "기본 이미지  (ghcr.io/ggml-org/llama.cpp:server-cuda)",
+                        ),
                         id=VER_DEFAULT,
                         value=not pinned,
                     )
                     yield RadioButton(
-                        "Dev Build  (llamacpp-dev:<branch>)  (loading...)",
+                        t(
+                            "Dev Build  (llamacpp-dev:<branch>)  (loading...)",
+                            "개발 빌드  (llamacpp-dev:<branch>)  (불러오는 중...)",
+                        ),
                         id=VER_DEV,
                     )
-                    yield RadioButton("Custom Tag", id=VER_CUSTOM)
+                    yield RadioButton(t("Custom Tag", "커스텀 태그"), id=VER_CUSTOM)
                 yield Input(
-                    placeholder="Enter custom image tag (e.g. llamacpp-dev:mtp-clean)...",
+                    placeholder=t(
+                        "Enter custom image tag (e.g. llamacpp-dev:mtp-clean)...",
+                        "커스텀 이미지 태그 입력 (예: llamacpp-dev:mtp-clean)...",
+                    ),
                     id="custom-tag-input",
                 )
                 with Vertical(id="dev-build-options"):
                     with Horizontal(classes="dev-build-row"):
-                        yield Label("Repo URL")
+                        yield Label(t("Repo URL", "저장소 URL"))
                         yield Input(
                             value=self._dev_repo_url,
                             placeholder="https://github.com/ggml-org/llama.cpp.git",
                             id="dev-repo-input",
                         )
                     with Horizontal(classes="dev-build-row"):
-                        yield Label("Branch")
+                        yield Label(t("Branch", "브랜치"))
                         yield Input(
                             value=self._dev_branch,
                             placeholder="master",
@@ -237,8 +257,8 @@ class ContainerUpScreen(Screen):
                 )
             yield Static("", id="gpu-bar")
             with Horizontal(classes="buttons"):
-                yield Button("Start", variant="primary", id="start-btn")
-                yield Button("Cancel", variant="default", id="cancel-btn")
+                yield Button(t("Start", "시작"), variant="primary", id="start-btn")
+                yield Button(t("Cancel", "취소"), variant="default", id="cancel-btn")
 
     def on_mount(self) -> None:
         self._refresh_dev_label()
@@ -270,9 +290,15 @@ class ContainerUpScreen(Screen):
         images = await list_local_dev_images(LLAMACPP_DEV_SPEC)
         self._has_local_dev = bool(images)
         label = (
-            f"Dev Build  ({len(images)} local tag{'s' if len(images) != 1 else ''})"
+            t(
+                f"Dev Build  ({len(images)} local tag{'s' if len(images) != 1 else ''})",
+                f"개발 빌드  (로컬 태그 {len(images)} 개)",
+            )
             if images
-            else "Dev Build  (no local tags — will build from source)"
+            else t(
+                "Dev Build  (no local tags — will build from source)",
+                "개발 빌드  (로컬 태그 없음 — 소스에서 빌드)",
+            )
         )
         btn.label = label
 
@@ -333,15 +359,15 @@ class ContainerUpScreen(Screen):
             repo_url = self.query_one("#dev-repo-input", Input).value.strip()
             branch = self.query_one("#dev-branch-input", Input).value.strip()
             if not repo_url:
-                self.app.notify("Please enter a repository URL.", severity="error")
+                self.app.notify(t("Please enter a repository URL.", "저장소 URL 을 입력하세요."), severity="error")
                 return
             if not branch:
-                self.app.notify("Please enter a branch.", severity="error")
+                self.app.notify(t("Please enter a branch.", "브랜치를 입력하세요."), severity="error")
                 return
         elif selected_id == VER_CUSTOM:
             tag = self.query_one("#custom-tag-input", Input).value.strip()
             if not tag:
-                self.app.notify("Please enter a custom tag.", severity="error")
+                self.app.notify(t("Please enter a custom tag.", "커스텀 태그를 입력하세요."), severity="error")
                 return
         else:
             # VER_DEFAULT: explicitly clear any pinned image_tag so the
@@ -355,7 +381,10 @@ class ContainerUpScreen(Screen):
         conflict = await check_port_conflict(self._profile)
         if conflict:
             self.app.notify(
-                f"Port {self._profile.port} is already used by {conflict}.",
+                t(
+                    f"Port {self._profile.port} is already used by {conflict}.",
+                    f"Port {self._profile.port} 는 이미 {conflict} 이(가) 사용 중입니다.",
+                ),
                 severity="error",
                 timeout=5,
             )
@@ -368,7 +397,7 @@ class ContainerUpScreen(Screen):
             self.query_one("#start-btn").styles.display = "none"
             status = self.query_one("#startup-status", Static)
             log_widget = self.query_one("#startup-log", RichLog)
-            status.update("[bold]Starting container...[/bold]")
+            status.update(t("[bold]Starting container...[/bold]", "[bold]컨테이너 시작 중...[/bold]"))
         except Exception:
             return
 
@@ -392,7 +421,10 @@ class ContainerUpScreen(Screen):
         try:
             if rc == 0:
                 status.update(
-                    "[green bold]Container started. Logs: (Esc/q to close)[/green bold]"
+                    t(
+                        "[green bold]Container started. Logs: (Esc/q to close)[/green bold]",
+                        "[green bold]컨테이너 시작됨. 로그: (Esc/q 로 닫기)[/green bold]",
+                    )
                 )
                 try:
                     async for line in backend.stream_logs(
@@ -400,9 +432,9 @@ class ContainerUpScreen(Screen):
                     ):
                         log_widget.write(backend.strip_ansi(line))
                 except Exception as exc:
-                    log_widget.write(f"Log stream error: {exc}")
+                    log_widget.write(t(f"Log stream error: {exc}", f"로그 스트림 오류: {exc}"))
             else:
-                status.update(f"[red bold]Failed to start (rc={rc})[/red bold]")
+                status.update(t(f"[red bold]Failed to start (rc={rc})[/red bold]", f"[red bold]시작 실패 (rc={rc})[/red bold]"))
         except Exception:
             pass
 
@@ -415,5 +447,9 @@ class ContainerUpScreen(Screen):
         if log_widget.auto_scroll:
             log_widget.scroll_end(animate=False)
         self.notify(
-            f"auto-follow: {'ON' if log_widget.auto_scroll else 'OFF'}", timeout=2
+            t(
+                f"auto-follow: {'ON' if log_widget.auto_scroll else 'OFF'}",
+                f"자동 추적: {'켜짐' if log_widget.auto_scroll else '꺼짐'}",
+            ),
+            timeout=2,
         )

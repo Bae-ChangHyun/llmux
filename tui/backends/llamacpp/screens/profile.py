@@ -20,6 +20,7 @@ from tui.backends.llamacpp.backend import (
     save_profile,
     validate_name,
 )
+from tui.common.i18n import t
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +103,11 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         p = self._profile
-        title = f"Edit Profile: {p.name}" if p else "New Profile"
+        title = (
+            t(f"Edit Profile: {p.name}", f"프로필 편집: {p.name}")
+            if p
+            else t("New Profile", "새 프로필")
+        )
 
         configs = list_config_names()
         config_options: list[tuple[str, str]] = [(name, name) for name in configs]
@@ -111,7 +116,9 @@ class ProfileFormScreen(ModalScreen[str | None]):
         # no matching option, so the Select would fall back to BLANK and saving
         # would silently rewrite config_name. Surface it instead.
         if p and p.config_name and p.config_name not in configs:
-            config_options.insert(0, (f"{p.config_name} (missing)", p.config_name))
+            config_options.insert(
+                0, (t(f"{p.config_name} (missing)", f"{p.config_name} (없음)"), p.config_name)
+            )
             configs = [*configs, p.config_name]
 
         with Vertical():
@@ -119,7 +126,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
             with VerticalScroll():
                 with Horizontal(classes="form-row"):
-                    yield Label("Profile Name")
+                    yield Label(t("Profile Name", "프로필 이름"))
                     yield Input(
                         value=p.name if p else "",
                         placeholder="my-profile",
@@ -128,10 +135,10 @@ class ProfileFormScreen(ModalScreen[str | None]):
                     )
 
                 with Horizontal(classes="form-row"):
-                    yield Label("Container Name")
+                    yield Label(t("Container Name", "컨테이너 이름"))
                     yield Input(
                         value=p.container_name if p else "",
-                        placeholder="(기본: profile name)",
+                        placeholder=t("(default: profile name)", "(기본: profile name)"),
                         id="container-input",
                     )
 
@@ -155,7 +162,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 with Horizontal(classes="form-row"):
                     yield Label("Config")
                     select_kwargs: dict = dict(
-                        prompt="Select config",
+                        prompt=t("Select config", "config 선택"),
                         allow_blank=True,
                         id="config-select",
                     )
@@ -167,7 +174,10 @@ class ProfileFormScreen(ModalScreen[str | None]):
                     yield Label("HF Repo")
                     yield Input(
                         value=p.hf_repo if p else "",
-                        placeholder="org/Model-GGUF — 필수 (컨테이너 내 -hf 다운로드 소스)",
+                        placeholder=t(
+                            "org/Model-GGUF — required (in-container -hf download source)",
+                            "org/Model-GGUF — 필수 (컨테이너 내 -hf 다운로드 소스)",
+                        ),
                         id="hf-repo-input",
                     )
 
@@ -175,7 +185,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
                     yield Label("HF File")
                     yield Input(
                         value=p.hf_file if p else "",
-                        placeholder="(선택) model-Q4_K_M.gguf",
+                        placeholder=t("(optional) model-Q4_K_M.gguf", "(선택) model-Q4_K_M.gguf"),
                         id="hf-file-input",
                     )
 
@@ -183,21 +193,27 @@ class ProfileFormScreen(ModalScreen[str | None]):
                     yield Label("Model File")
                     yield Input(
                         value=p.model_file if p else "",
-                        placeholder="(선택) GGUF 파일명 — HF File과 다를 때만",
+                        placeholder=t(
+                            "(optional) GGUF filename — only when it differs from HF File",
+                            "(선택) GGUF 파일명 — HF File과 다를 때만",
+                        ),
                         id="model-file-input",
                     )
 
                 with Horizontal(classes="form-row"):
-                    yield Label("Image Tag")
+                    yield Label(t("Image Tag", "이미지 태그"))
                     yield Input(
                         value=p.image_tag if p else "",
-                        placeholder="(비우면 기본 이미지) 예: llamacpp-dev:mtp-clean",
+                        placeholder=t(
+                            "(blank = default image) e.g. llamacpp-dev:mtp-clean",
+                            "(비우면 기본 이미지) 예: llamacpp-dev:mtp-clean",
+                        ),
                         id="image-tag-input",
                     )
 
             with Horizontal(classes="form-buttons"):
-                yield Button("Save", id="save-btn", variant="primary")
-                yield Button("Close", id="cancel-btn", variant="default")
+                yield Button(t("Save", "저장"), id="save-btn", variant="primary")
+                yield Button(t("Close", "닫기"), id="cancel-btn", variant="default")
 
     @on(Button.Pressed, "#save-btn")
     def _on_save(self, event: Button.Pressed) -> None:
@@ -217,40 +233,44 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
         # --- Validation ---
         if not name:
-            self.notify("Profile 이름 필수", severity="error")
+            self.notify(t("Profile name is required", "Profile 이름 필수"), severity="error")
             return
         if not validate_name(name):
             self.notify(
-                "이름은 소문자/숫자/대시/언더스코어", severity="error"
+                t("Name must be lowercase letters/digits/dashes/underscores", "이름은 소문자/숫자/대시/언더스코어"),
+                severity="error",
             )
             return
         if not self._edit_mode and name in list_profile_names():
-            self.notify(f"Profile '{name}' 이미 존재", severity="error")
+            self.notify(t(f"Profile '{name}' already exists", f"Profile '{name}' 이미 존재"), severity="error")
             return
 
         if not self._edit_mode and name == "example":
             # config 링크 기본값이 프로필 이름이라, 'example' 프로필은 tracked
             # example.yaml 에 파라미터를 써버린다.
             self.notify(
-                "'example' 은 tracked 템플릿 config 이름 — 다른 이름을 쓸 것",
+                t(
+                    "'example' is the tracked template config name — use another name",
+                    "'example' 은 tracked 템플릿 config 이름 — 다른 이름을 쓸 것",
+                ),
                 severity="error",
             )
             return
         if container and not validate_name(container):
-            self.notify("컨테이너 이름 규칙 위반", severity="error")
+            self.notify(t("Container name violates the naming rule", "컨테이너 이름 규칙 위반"), severity="error")
             return
         try:
             port_int = int(port or _default_port())
             if not (1024 <= port_int <= 65535):
                 raise ValueError
         except ValueError:
-            self.notify("Port 는 1024–65535 정수", severity="error")
+            self.notify(t("Port must be an integer 1024–65535", "Port 는 1024–65535 정수"), severity="error")
             return
         if gpu_id and not re.match(r"^[0-9]+(,[0-9]+)*$", gpu_id):
-            self.notify("GPU ID 는 숫자/콤마 (예: 0 또는 0,1)", severity="error")
+            self.notify(t("GPU ID must be digits/commas (e.g. 0 or 0,1)", "GPU ID 는 숫자/콤마 (예: 0 또는 0,1)"), severity="error")
             return
         if hf_repo and not re.match(r"^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$", hf_repo):
-            self.notify("HF Repo 형식: org/name (예: unsloth/Qwen3-8B-GGUF)", severity="error")
+            self.notify(t("HF Repo format: org/name (e.g. unsloth/Qwen3-8B-GGUF)", "HF Repo 형식: org/name (예: unsloth/Qwen3-8B-GGUF)"), severity="error")
             return
         from tui.common.dev_build import image_tag_error
 
@@ -289,15 +309,21 @@ class ProfileFormScreen(ModalScreen[str | None]):
             )
 
         save_profile(p)
-        self.notify(f"저장: {name}", severity="information")
+        self.notify(t(f"Saved: {name}", f"저장: {name}"), severity="information")
         if not hf_repo:
             self.notify(
-                "HF Repo 없이는 컨테이너 시작 불가 (-hf 다운로드 소스 필요)",
+                t(
+                    "Cannot start container without HF Repo (-hf download source required)",
+                    "HF Repo 없이는 컨테이너 시작 불가 (-hf 다운로드 소스 필요)",
+                ),
                 severity="warning",
             )
         if not effective_model_file:
             self.notify(
-                "HF File/Model File 없음 — 링크된 config 에 model-file 이 있어야 시작 가능",
+                t(
+                    "No HF File/Model File — the linked config must have model-file to start",
+                    "HF File/Model File 없음 — 링크된 config 에 model-file 이 있어야 시작 가능",
+                ),
                 severity="warning",
             )
         self._saved_name = name
@@ -307,7 +333,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             self._profile = p
             self.query_one("#name-input", Input).disabled = True
             self.query_one("#form-title", Static).update(
-                f"[b]Edit Profile: {name}[/b]"
+                t(f"[b]Edit Profile: {name}[/b]", f"[b]프로필 편집: {name}[/b]")
             )
 
     @on(Button.Pressed, "#cancel-btn")
@@ -381,30 +407,42 @@ class ProfileDeleteScreen(ModalScreen[bool]):
                 # delete_profile() 이 tracked 템플릿은 건너뛴다 — 삭제된다고
                 # 말하면 거짓 안내가 된다.
                 yield Static(
-                    f"[b]{self._profile_name}[/b] 삭제?\n"
-                    f"[dim](config 'example' 은 tracked 템플릿이라 유지됨)[/dim]",
+                    t(
+                        f"Delete [b]{self._profile_name}[/b]?\n"
+                        f"[dim](config 'example' is the tracked template — kept)[/dim]",
+                        f"[b]{self._profile_name}[/b] 삭제?\n"
+                        f"[dim](config 'example' 은 tracked 템플릿이라 유지됨)[/dim]",
+                    ),
                     id="delete-message",
                 )
             elif cfg and not other_refs:
                 yield Static(
-                    f"[b]{self._profile_name}[/b] 삭제?\n"
-                    f"[dim](연결된 config '{cfg}' 도 함께 삭제됨 — 다른 프로필 참조 없음)[/dim]",
+                    t(
+                        f"Delete [b]{self._profile_name}[/b]?\n"
+                        f"[dim](linked config '{cfg}' is deleted too — no other profile references it)[/dim]",
+                        f"[b]{self._profile_name}[/b] 삭제?\n"
+                        f"[dim](연결된 config '{cfg}' 도 함께 삭제됨 — 다른 프로필 참조 없음)[/dim]",
+                    ),
                     id="delete-message",
                 )
             elif cfg:
                 yield Static(
-                    f"[b]{self._profile_name}[/b] 삭제?\n"
-                    f"[dim](config '{cfg}' 는 {', '.join(other_refs)} 도 사용 중 → 유지)[/dim]",
+                    t(
+                        f"Delete [b]{self._profile_name}[/b]?\n"
+                        f"[dim](config '{cfg}' is also used by {', '.join(other_refs)} → kept)[/dim]",
+                        f"[b]{self._profile_name}[/b] 삭제?\n"
+                        f"[dim](config '{cfg}' 는 {', '.join(other_refs)} 도 사용 중 → 유지)[/dim]",
+                    ),
                     id="delete-message",
                 )
             else:
                 yield Static(
-                    f"[b]{self._profile_name}[/b] 삭제?",
+                    t(f"Delete [b]{self._profile_name}[/b]?", f"[b]{self._profile_name}[/b] 삭제?"),
                     id="delete-message",
                 )
             with Horizontal(classes="form-buttons"):
-                yield Button("Delete", id="delete-btn", variant="error")
-                yield Button("Cancel", id="cancel-btn", variant="default")
+                yield Button(t("Delete", "삭제"), id="delete-btn", variant="error")
+                yield Button(t("Cancel", "취소"), id="cancel-btn", variant="default")
 
     @on(Button.Pressed, "#delete-btn")
     def _on_delete(self, event: Button.Pressed) -> None:
@@ -417,11 +455,16 @@ class ProfileDeleteScreen(ModalScreen[bool]):
         delete_profile(self._profile_name, delete_config_too=delete_config_too)
         # backend 가 example.yaml 삭제를 스킵하므로 notify 도 맞춰야 한다.
         if delete_config_too and cfg != "example":
-            self.app.notify(f"삭제: {self._profile_name} + config '{cfg}'")
+            self.app.notify(t(f"Deleted: {self._profile_name} + config '{cfg}'", f"삭제: {self._profile_name} + config '{cfg}'"))
         elif cfg == "example":
-            self.app.notify(f"삭제: {self._profile_name} (tracked 템플릿 config 'example' 유지)")
+            self.app.notify(
+                t(
+                    f"Deleted: {self._profile_name} (tracked template config 'example' kept)",
+                    f"삭제: {self._profile_name} (tracked 템플릿 config 'example' 유지)",
+                )
+            )
         else:
-            self.app.notify(f"삭제: {self._profile_name}")
+            self.app.notify(t(f"Deleted: {self._profile_name}", f"삭제: {self._profile_name}"))
         self.dismiss(True)
 
     @on(Button.Pressed, "#cancel-btn")

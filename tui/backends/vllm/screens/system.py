@@ -32,15 +32,16 @@ from tui.backends.vllm.backend import (
 from tui.common import profile_store
 from tui.common.docker import get_disk_usage
 from tui.common.env import host_expand, parse_env_file
+from tui.common.i18n import t
 
 
 class SystemScreen(Screen):
     """Full screen with tabbed content showing GPU, Docker images, and containers."""
 
     BINDINGS = [
-        Binding("escape,backspace,s", "go_back", "Back", show=True),
+        Binding("escape,backspace,s", "go_back", t("Back", "뒤로"), show=True),
         Binding("q", "go_back", "Back", show=False),
-        Binding("r", "refresh_all", "Refresh All", show=True),
+        Binding("r", "refresh_all", t("Refresh All", "전체 새로고침"), show=True),
     ]
 
     DEFAULT_CSS = """
@@ -75,25 +76,25 @@ class SystemScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         with TabbedContent():
-            with TabPane("GPU Status", id="gpu-tab"):
+            with TabPane(t("GPU Status", "GPU 상태"), id="gpu-tab"):
                 yield DataTable(id="gpu-table")
-            with TabPane("Docker Images", id="images-tab"):
+            with TabPane(t("Docker Images", "Docker 이미지"), id="images-tab"):
                 # Wrap in VerticalScroll so the two stacked DataTables
                 # remain reachable on short terminals — without this,
                 # both tables shrink to ~1–2 rows each and the bottom
                 # one can disappear entirely.
                 with VerticalScroll(id="images-scroll"):
-                    yield Static("Official Images (vllm/vllm-openai)", classes="section-title")
+                    yield Static(t("Official Images (vllm/vllm-openai)", "공식 이미지 (vllm/vllm-openai)"), classes="section-title")
                     yield DataTable(id="official-images")
-                    yield Static("Dev Images (vllm-dev)", classes="section-title")
+                    yield Static(t("Dev Images (vllm-dev)", "개발 이미지 (vllm-dev)"), classes="section-title")
                     yield DataTable(id="dev-images")
                 yield Horizontal(
-                    Button("Refresh Images", id="btn-refresh-images", variant="primary"),
+                    Button(t("Refresh Images", "이미지 새로고침"), id="btn-refresh-images", variant="primary"),
                     id="refresh-bar",
                 )
-            with TabPane("Containers", id="containers-tab"):
+            with TabPane(t("Containers", "컨테이너"), id="containers-tab"):
                 yield RichLog(id="container-info", highlight=True)
-            with TabPane("Disk / HF Cache", id="disk-tab"):
+            with TabPane(t("Disk / HF Cache", "디스크 / HF 캐시"), id="disk-tab"):
                 yield RichLog(id="disk-info", highlight=True)
         yield Footer()
 
@@ -221,10 +222,10 @@ class SystemScreen(Screen):
         log = self.query_one("#container-info", RichLog)
         log.clear()
         if rc != 0:
-            log.write("[red]Failed to get container info[/]")
+            log.write(t("[red]Failed to get container info[/]", "[red]컨테이너 정보를 가져오지 못했습니다[/]"))
             log.write(output)
         elif not output.strip():
-            log.write("[dim]No containers running.[/]")
+            log.write(t("[dim]No containers running.[/]", "[dim]실행 중인 컨테이너가 없습니다.[/]"))
         else:
             lines = output.strip().splitlines()
             filtered = [lines[0]]
@@ -233,7 +234,7 @@ class SystemScreen(Screen):
                 if line.split()[0] in known_names
             )
             if len(filtered) == 1:
-                log.write("[dim]No profile containers found.[/]")
+                log.write(t("[dim]No profile containers found.[/]", "[dim]프로필 컨테이너가 없습니다.[/]"))
                 return
             for line in filtered:
                 log.write(line)
@@ -253,19 +254,19 @@ class SystemScreen(Screen):
         env = parse_env_file(COMMON_ENV)
         hf_cache = env.get("HF_CACHE_PATH", "")
         if not hf_cache:
-            log.write("[yellow]HF_CACHE_PATH is not set in .env.common[/]")
+            log.write(t("[yellow]HF_CACHE_PATH is not set in .env.common[/]", "[yellow].env.common 에 HF_CACHE_PATH 가 설정되지 않았습니다[/]"))
             return
         # The template default is `/home/$USER/...`; df needs the expanded path
         # or it always reports "Could not stat" (parity with the CLI/llama.cpp).
         hf_cache = host_expand(hf_cache)
-        log.write(f"[b]HF cache path:[/b] {hf_cache}")
+        log.write(t(f"[b]HF cache path:[/b] {hf_cache}", f"[b]HF 캐시 경로:[/b] {hf_cache}"))
         log.write("")
         used, avail, pct = await get_disk_usage(hf_cache)
         if used:
-            log.write("[b]Filesystem usage[/b]")
-            log.write(f"  Used: {used}  Available: {avail}  ({pct})")
+            log.write(t("[b]Filesystem usage[/b]", "[b]파일시스템 사용량[/b]"))
+            log.write(t(f"  Used: {used}  Available: {avail}  ({pct})", f"  사용: {used}  남음: {avail}  ({pct})"))
         else:
-            log.write(f"[yellow]Could not stat {hf_cache} (does it exist?)[/]")
+            log.write(t(f"[yellow]Could not stat {hf_cache} (does it exist?)[/]", f"[yellow]{hf_cache} 를 확인할 수 없습니다 (존재하나요?)[/]"))
 
     # ----- Actions -----
 
@@ -280,11 +281,11 @@ class SystemScreen(Screen):
         self._refresh_images()
         self._refresh_containers()
         self._refresh_disk()
-        self.notify("Refreshing all system info...")
+        self.notify(t("Refreshing all system info...", "모든 시스템 정보 새로고침 중..."))
 
     # ----- Button handlers -----
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-refresh-images":
             self._refresh_images()
-            self.notify("Refreshing Docker images...")
+            self.notify(t("Refreshing Docker images...", "Docker 이미지 새로고침 중..."))

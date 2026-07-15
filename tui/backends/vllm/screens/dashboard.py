@@ -13,6 +13,8 @@ from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
+from tui.common.i18n import t
+
 
 class ProfileActionScreen(ModalScreen[str]):
     """Context action menu for a selected profile.
@@ -53,24 +55,24 @@ class ProfileActionScreen(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         if self._profile_running:
-            status = "[green]● running[/]"
+            status = t("[green]● running[/]", "[green]● 실행 중[/]")
         else:
-            status = "[dim]○ stopped[/]"
+            status = t("[dim]○ stopped[/]", "[dim]○ 중지됨[/]")
 
         options: list[Option] = []
         if self._profile_running:
-            options.append(Option("■ Stop Container", id="stop"))
+            options.append(Option(t("■ Stop Container", "■ 컨테이너 중지"), id="stop"))
         else:
-            options.append(Option("▶ Start Container", id="start"))
+            options.append(Option(t("▶ Start Container", "▶ 컨테이너 시작"), id="start"))
         # `docker logs` also works on exited containers, so the log viewer is
         # offered in both states — matching the `l` binding on the dashboard.
-        options.append(Option("◉ View Logs", id="logs"))
+        options.append(Option(t("◉ View Logs", "◉ 로그 보기"), id="logs"))
         if self._profile_running:
-            options.append(Option("⚡ Benchmark", id="benchmark"))
-        options.append(Option("✎ Edit Profile", id="edit_profile"))
-        options.append(Option("⚙ Edit Config", id="edit_config"))
+            options.append(Option(t("⚡ Benchmark", "⚡ 벤치마크"), id="benchmark"))
+        options.append(Option(t("✎ Edit Profile", "✎ 프로필 편집"), id="edit_profile"))
+        options.append(Option(t("⚙ Edit Config", "⚙ Config 편집"), id="edit_config"))
         if not self._profile_running:
-            options.append(Option("✗ Delete Profile", id="delete"))
+            options.append(Option(t("✗ Delete Profile", "✗ 프로필 삭제"), id="delete"))
 
         with Vertical():
             yield Static(
