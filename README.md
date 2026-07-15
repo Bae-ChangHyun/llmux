@@ -33,21 +33,20 @@ llmux unifies both under a single Textual dashboard backed by Docker Compose.
 
 <div align="center">
 
+<b>One dashboard for vLLM + llama.cpp</b> &mdash; toggle a config flag on/off, add one with autocomplete, then import a model from its official vLLM recipe &mdash; reviewed against your GPU's VRAM<br/>
+<img src="demo/llmux.gif" alt="llmux walkthrough — config editing, autocomplete, and GPU-aware recipe import" width="800"/>
+
+<br/><br/>
+
 <table>
 <tr>
 <td align="center" width="50%">
-  <b>llama.cpp</b> &mdash; Quick Setup → edit config → start → stream logs<br/>
-  <img src="demo/llamacpp.gif" alt="llama.cpp demo" width="100%"/>
+  <b>Headless CLI</b> &mdash; recipe import, parameter on/off, status<br/>
+  <img src="demo/cli.gif" alt="CLI demo" width="100%"/>
 </td>
 <td align="center" width="50%">
-  <b>vLLM</b> &mdash; Quick Setup → tune GPU mem → Local Latest → APIServer logs<br/>
-  <img src="demo/vllm.gif" alt="vLLM demo" width="100%"/>
-</td>
-</tr>
-<tr>
-<td align="center" colspan="2">
-  <b>GPU memory estimator</b> &mdash; per-GPU fit bar across models + system view<br/>
-  <img src="demo/gpu.gif" alt="GPU memory estimator demo" width="60%"/>
+  <b>GPU memory estimator</b> &mdash; per-GPU fit bar across models<br/>
+  <img src="demo/gpu.gif" alt="GPU memory estimator demo" width="100%"/>
 </td>
 </tr>
 </table>
