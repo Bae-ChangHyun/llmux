@@ -521,8 +521,8 @@ def config_from_recipe(
         return
 
     cfg_name = name or _derive_config_name(model)
-    _validate_new_name(cfg_name)
-    _reject_creating_example(cfg_name)
+    _validate_new_name(cfg_name, param_hint="--name")
+    _reject_creating_example(cfg_name, param_hint="--name")
     path = _config_dir("vllm") / f"{cfg_name}.yaml"
     if path.exists() and not overwrite:
         raise typer.BadParameter(
