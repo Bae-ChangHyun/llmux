@@ -13,6 +13,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static, Switch, Select
 
 from tui.common import profile_store
+from tui.common.i18n import t
 
 
 class QuickSetupScreen(ModalScreen[str]):
@@ -81,9 +82,9 @@ class QuickSetupScreen(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("Quick Setup", classes="title")
+            yield Static(t("Quick Setup", "빠른 설정"), classes="title")
             with VerticalScroll():
-                yield Label("HuggingFace Model (e.g., meta-llama/Llama-3-8B)")
+                yield Label(t("HuggingFace Model (e.g., meta-llama/Llama-3-8B)", "HuggingFace 모델 (예: meta-llama/Llama-3-8B)"))
                 yield Input(placeholder="org/model-name", id="model-input")
                 yield Static("", id="mem-estimate")
                 yield Label("GPU ID")
@@ -94,27 +95,27 @@ class QuickSetupScreen(ModalScreen[str]):
                 # `profile new --port 0` / quick-setup would pick.
                 _port = str(profile_store.effective_defaults("vllm")["port"])
                 yield Input(placeholder=_port, value=_port, id="port-input")
-                yield Label("GPU Memory Utilization")
+                yield Label(t("GPU Memory Utilization", "GPU 메모리 사용률"))
                 yield Input(placeholder="0.9", value="0.9", id="gpu-mem-input")
-                yield Label("Copy params from (optional)")
+                yield Label(t("Copy params from (optional)", "파라미터 복사 원본 (선택)"))
                 yield Select(
                     self._build_config_options(),
-                    prompt="None",
+                    prompt=t("None", "없음"),
                     allow_blank=True,
                     id="copy-config-select",
                 )
                 with Horizontal():
-                    yield Label("Enable LoRA")
+                    yield Label(t("Enable LoRA", "LoRA 사용"))
                     yield Switch(id="lora-switch")
             with Horizontal(classes="buttons"):
-                yield Button("Create", variant="primary", id="create-btn")
-                yield Button("Cancel", id="cancel-btn")
+                yield Button(t("Create", "생성"), variant="primary", id="create-btn")
+                yield Button(t("Cancel", "취소"), id="cancel-btn")
 
     def _build_config_options(self) -> list[tuple[str, str]]:
         from tui.backends.vllm.backend import list_config_names, load_config
 
         return [
-            (f"{name} ({len(load_config(name).extra_params)} params)", name)
+            (t(f"{name} ({len(load_config(name).extra_params)} params)", f"{name} ({len(load_config(name).extra_params)} 파라미터)"), name)
             for name in list_config_names()
         ]
 
@@ -129,14 +130,14 @@ class QuickSetupScreen(ModalScreen[str]):
     async def _estimate_memory(self, model_id: str) -> None:
         try:
             label = self.query_one("#mem-estimate", Static)
-            label.update(f"[dim]Estimating memory for {model_id}...[/dim]")
+            label.update(t(f"[dim]Estimating memory for {model_id}...[/dim]", f"[dim]{model_id} 메모리 추정 중...[/dim]"))
         except Exception:
             return
         from tui.backends.vllm.backend import estimate_model_memory
         result = await estimate_model_memory(model_id)
         try:
             self.query_one("#mem-estimate", Static).update(
-                f"[bold]Est. Memory:[/bold] {result}"
+                t(f"[bold]Est. Memory:[/bold] {result}", f"[bold]예상 메모리:[/bold] {result}")
             )
         except Exception:
             pass
@@ -171,7 +172,7 @@ class QuickSetupScreen(ModalScreen[str]):
         lora = self.query_one("#lora-switch", Switch).value
 
         if not model:
-            self.notify("Model name is required", severity="error")
+            self.notify(t("Model name is required", "모델 이름은 필수입니다"), severity="error")
             return
 
         # Derive name from model
@@ -179,7 +180,8 @@ class QuickSetupScreen(ModalScreen[str]):
         safe_name = re.sub(r"[^a-zA-Z0-9-]", "-", name_part).lower().strip("-")
 
         if not safe_name:
-            self.notify("Could not derive a valid name from model", severity="error")
+            self.notify(t("Could not derive a valid name from model", "모델에서 유효한 이름을 만들 수 없습니다"),
+                        severity="error")
             return
 
         # Validate port
@@ -188,7 +190,8 @@ class QuickSetupScreen(ModalScreen[str]):
             if not 1024 <= port_num <= 65535:
                 raise ValueError
         except ValueError:
-            self.notify("Port must be between 1024 and 65535", severity="error")
+            self.notify(t("Port must be between 1024 and 65535", "Port 는 1024 ~ 65535 사이여야 합니다"),
+                        severity="error")
             return
 
         # Validate GPU Memory Utilization
@@ -198,12 +201,14 @@ class QuickSetupScreen(ModalScreen[str]):
                 if not (0.0 < gpu_mem_val <= 1.0):
                     raise ValueError
             except ValueError:
-                self.notify("GPU Memory Utilization must be between 0.0 and 1.0", severity="error")
+                self.notify(t("GPU Memory Utilization must be between 0.0 and 1.0", "GPU 메모리 사용률은 0.0 ~ 1.0 사이여야 합니다"),
+                            severity="error")
                 return
 
         # Validate GPU
         if not gpu or not re.match(r"^[0-9]+(,[0-9]+)*$", gpu):
-            self.notify("GPU ID is required (e.g., 0 or 0,1)", severity="error")
+            self.notify(t("GPU ID is required (e.g., 0 or 0,1)", "GPU ID 는 필수입니다 (예: 0 또는 0,1)"),
+                        severity="error")
             return
 
         # Calculate tensor parallel from GPU count
@@ -254,5 +259,11 @@ class QuickSetupScreen(ModalScreen[str]):
         )
         save_profile(profile)
 
-        self.notify(f"Created profile + config: {safe_name}", severity="information")
+        self.notify(
+            t(
+                f"✓ Created: {safe_name}  (next: press 'u' to start)",
+                f"✓ 생성: {safe_name}  (다음: 'u' 로 시작)",
+            ),
+            severity="information",
+        )
         self.dismiss(safe_name)

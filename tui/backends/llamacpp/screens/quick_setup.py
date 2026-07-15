@@ -32,6 +32,7 @@ from tui.backends.llamacpp.backend import (
     validate_name,
 )
 from tui.common import profile_store
+from tui.common.i18n import t
 
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$")
@@ -145,24 +146,24 @@ class QuickSetupScreen(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("Quick Setup — HF repo → profile + config", classes="title")
+            yield Static(t("Quick Setup — HF repo → profile + config", "빠른 설정 — HF repo → profile + config"), classes="title")
             with VerticalScroll():
                 # --- HF repo ---
-                yield Label("HuggingFace repo (예: unsloth/Qwen3-30B-A3B-GGUF)")
-                yield Input(placeholder="org/repo-GGUF 또는 URL", id="repo-input")
-                yield Button("Fetch files", id="fetch-btn")
+                yield Label(t("HuggingFace repo (e.g. unsloth/Qwen3-30B-A3B-GGUF)", "HuggingFace repo (예: unsloth/Qwen3-30B-A3B-GGUF)"))
+                yield Input(placeholder=t("org/repo-GGUF or URL", "org/repo-GGUF 또는 URL"), id="repo-input")
+                yield Button(t("Fetch files", "파일 가져오기"), id="fetch-btn")
                 yield Static("", id="gguf-info")
 
-                yield Label("GGUF 파일")
+                yield Label(t("GGUF file", "GGUF 파일"))
                 yield Select(
-                    [("(repo 입력 후 Fetch)", "__none__")],
+                    [(t("(enter repo then Fetch)", "(repo 입력 후 Fetch)"), "__none__")],
                     allow_blank=False,
                     id="gguf-select",
                 )
                 yield Static("", id="moe-hint")
 
                 # --- 기본 ---
-                yield Label("Profile 이름 (비우면 파일명에서 자동 생성)")
+                yield Label(t("Profile name (blank = auto from filename)", "Profile 이름 (비우면 파일명에서 자동 생성)"))
                 yield Input(placeholder="auto", id="name-input")
 
                 yield Label("Port")
@@ -171,83 +172,98 @@ class QuickSetupScreen(ModalScreen[str]):
                 _port = str(profile_store.effective_defaults("llamacpp")["port"])
                 yield Input(placeholder=_port, value=_port, id="port-input")
 
-                yield Label("GPU ID (예: 0 또는 0,1)")
+                yield Label(t("GPU ID (e.g. 0 or 0,1)", "GPU ID (예: 0 또는 0,1)"))
                 yield Input(placeholder="0", value="0", id="gpu-input")
 
                 # --- llama.cpp 공통 파라미터 ---
                 with Collapsible(
-                    title="llama.cpp 공통 파라미터",
+                    title=t("llama.cpp common parameters", "llama.cpp 공통 파라미터"),
                     collapsed=False,
                     id="common-params",
                 ):
                     yield Static(
-                        "[dim]빈 칸은 config 에 기록되지 않고 llama.cpp 기본값을 사용합니다. "
-                        "값이 있으면 config YAML 에 저장됩니다.[/dim]",
+                        t(
+                            "[dim]Blank fields are not written to the config and use llama.cpp defaults. "
+                            "Fields with a value are saved to the config YAML.[/dim]",
+                            "[dim]빈 칸은 config 에 기록되지 않고 llama.cpp 기본값을 사용합니다. "
+                            "값이 있으면 config YAML 에 저장됩니다.[/dim]",
+                        ),
                         classes="section-help",
                     )
 
-                    yield Label("Ctx size (컨텍스트 길이, tokens)")
+                    yield Label(t("Ctx size (context length, tokens)", "Ctx size (컨텍스트 길이, tokens)"))
                     yield Input(placeholder="32768", value="32768", id="ctx-input")
 
-                    yield Label("N-GPU-Layers (GPU 에 올릴 레이어, 99=전체)")
+                    yield Label(t("N-GPU-Layers (layers on GPU, 99=all)", "N-GPU-Layers (GPU 에 올릴 레이어, 99=전체)"))
                     yield Input(placeholder="99", value="99", id="ngl-input")
 
                     yield Label(
-                        "KV cache K 정밀도 (f16 / bf16 / q8_0 / q4_0 — 낮출수록 VRAM ↓)"
+                        t(
+                            "KV cache K precision (f16 / bf16 / q8_0 / q4_0 — lower = less VRAM)",
+                            "KV cache K 정밀도 (f16 / bf16 / q8_0 / q4_0 — 낮출수록 VRAM ↓)",
+                        )
                     )
                     yield Input(placeholder="bf16", value="bf16", id="ctk-input")
 
-                    yield Label("KV cache V 정밀도")
+                    yield Label(t("KV cache V precision", "KV cache V 정밀도"))
                     yield Input(placeholder="bf16", value="bf16", id="ctv-input")
 
-                    yield Label("Batch size (prompt eval 단위, 비우면 기본)")
-                    yield Input(placeholder="기본값 사용", id="batch-input")
+                    yield Label(t("Batch size (prompt eval unit, blank = default)", "Batch size (prompt eval 단위, 비우면 기본)"))
+                    yield Input(placeholder=t("use default", "기본값 사용"), id="batch-input")
 
                     with Horizontal(classes="switch-row"):
-                        yield Label("Flash Attention (속도↑, 정확도는 동일)")
+                        yield Label(t("Flash Attention (faster, same accuracy)", "Flash Attention (속도↑, 정확도는 동일)"))
                         yield Switch(value=True, id="flash-attn-switch")
 
                     with Horizontal(classes="switch-row"):
-                        yield Label("Jinja chat template (/v1/chat/completions 에 필요)")
+                        yield Label(t("Jinja chat template (needed for /v1/chat/completions)", "Jinja chat template (/v1/chat/completions 에 필요)"))
                         yield Switch(value=True, id="jinja-switch")
 
                 # --- MoE Expert Offload ---
                 with Collapsible(
-                    title="MoE Expert Offload (선택)",
+                    title=t("MoE Expert Offload (optional)", "MoE Expert Offload (선택)"),
                     collapsed=True,
                     id="moe-collapsible",
                 ):
                     yield Static(
-                        "[dim]MoE 모델 (Qwen3-A3B, Mixtral 등) 은 전체 파라미터 중 일부만 "
-                        "매 토큰 활성화됩니다. [b]Expert 가중치를 CPU RAM 에 두고 "
-                        "활성 expert 만 GPU 로 스트리밍[/b] 하면 16GB GPU 에 35B MoE 도 올라갑니다.\n"
-                        "예: [b]qwen3.6-35b-a3b UD-Q4_K_XL[/b] → VRAM 7.5GB + RAM 15GB 로 36 tok/s.\n\n"
-                        "파일명에 'A3B', 'A7B' 패턴이 있으면 자동 감지 후 기본 정규식을 채워드립니다. "
-                        "비우면 expert offload 안 함 (Dense 모델은 보통 필요 없음).[/dim]",
+                        t(
+                            "[dim]MoE models (Qwen3-A3B, Mixtral, etc.) activate only a subset of "
+                            "the total parameters per token. [b]Keeping expert weights in CPU RAM and "
+                            "streaming only the active experts to the GPU[/b] fits a 35B MoE on a 16GB GPU.\n"
+                            "e.g. [b]qwen3.6-35b-a3b UD-Q4_K_XL[/b] → 36 tok/s at VRAM 7.5GB + RAM 15GB.\n\n"
+                            "If the filename has an 'A3B' / 'A7B' pattern it is auto-detected and the default regex is filled in. "
+                            "Leave blank for no expert offload (dense models usually don't need it).[/dim]",
+                            "[dim]MoE 모델 (Qwen3-A3B, Mixtral 등) 은 전체 파라미터 중 일부만 "
+                            "매 토큰 활성화됩니다. [b]Expert 가중치를 CPU RAM 에 두고 "
+                            "활성 expert 만 GPU 로 스트리밍[/b] 하면 16GB GPU 에 35B MoE 도 올라갑니다.\n"
+                            "예: [b]qwen3.6-35b-a3b UD-Q4_K_XL[/b] → VRAM 7.5GB + RAM 15GB 로 36 tok/s.\n\n"
+                            "파일명에 'A3B', 'A7B' 패턴이 있으면 자동 감지 후 기본 정규식을 채워드립니다. "
+                            "비우면 expert offload 안 함 (Dense 모델은 보통 필요 없음).[/dim]",
+                        ),
                         classes="section-help",
                     )
-                    yield Label("override-tensors 정규식 (비우면 미적용)")
+                    yield Label(t("override-tensors regex (blank = not applied)", "override-tensors 정규식 (비우면 미적용)"))
                     yield Input(
                         placeholder=_DEFAULT_OT,
                         id="ot-input",
                     )
 
                 # --- 기존 config 복사 ---
-                yield Label("기존 config 에서 추가 파라미터 복사 (선택)")
+                yield Label(t("Copy extra params from an existing config (optional)", "기존 config 에서 추가 파라미터 복사 (선택)"))
                 yield Select(
                     self._build_config_options(),
-                    prompt="None",
+                    prompt=t("None", "없음"),
                     allow_blank=True,
                     id="copy-config-select",
                 )
 
             with Horizontal(classes="buttons"):
-                yield Button("Create", variant="primary", id="create-btn")
-                yield Button("Cancel", id="cancel-btn")
+                yield Button(t("Create", "생성"), variant="primary", id="create-btn")
+                yield Button(t("Cancel", "취소"), id="cancel-btn")
 
     def _build_config_options(self) -> list[tuple[str, str]]:
         return [
-            (f"{name} ({len(load_config(name).params)} params)", name)
+            (t(f"{name} ({len(load_config(name).params)} params)", f"{name} ({len(load_config(name).params)} 파라미터)"), name)
             for name in list_config_names()
         ]
 
@@ -258,11 +274,11 @@ class QuickSetupScreen(ModalScreen[str]):
         repo_raw = self.query_one("#repo-input", Input).value
         repo = _normalize_repo(repo_raw)
         if not repo or not _REPO_RE.match(repo):
-            self.notify("유효한 HF repo 경로가 아님 (org/name)", severity="error")
+            self.notify(t("Not a valid HF repo path (org/name)", "유효한 HF repo 경로가 아님 (org/name)"), severity="error")
             return
         self._last_repo = repo
         info = self.query_one("#gguf-info", Static)
-        info.update(f"[dim]{repo} 파일 목록 가져오는 중...[/dim]")
+        info.update(t(f"[dim]Fetching file list for {repo}...[/dim]", f"[dim]{repo} 파일 목록 가져오는 중...[/dim]"))
         self._fetch_files(repo)
 
     @work(exclusive=True, group="hf-fetch")
@@ -277,8 +293,8 @@ class QuickSetupScreen(ModalScreen[str]):
         info = self.query_one("#gguf-info", Static)
         select = self.query_one("#gguf-select", Select)
         if not gguf_items:
-            info.update("[red]GGUF 파일 없음 (또는 private repo — HF_TOKEN 확인)[/red]")
-            select.set_options([("(없음)", "__none__")])
+            info.update(t("[red]No GGUF files (or private repo — check HF_TOKEN)[/red]", "[red]GGUF 파일 없음 (또는 private repo — HF_TOKEN 확인)[/red]"))
+            select.set_options([(t("(none)", "(없음)"), "__none__")])
             return
 
         opts: list[tuple[str, str]] = []
@@ -290,7 +306,7 @@ class QuickSetupScreen(ModalScreen[str]):
             opts.append((label, path))
         select.set_options(opts)
         select.value = opts[0][1]
-        info.update(f"[green]{len(opts)} 개 GGUF 파일[/green]")
+        info.update(t(f"[green]{len(opts)} GGUF files[/green]", f"[green]{len(opts)} 개 GGUF 파일[/green]"))
         # 첫 파일로 MoE 감지
         self._update_moe_hint(opts[0][1])
 
@@ -309,8 +325,12 @@ class QuickSetupScreen(ModalScreen[str]):
 
         if _MOE_PATTERN.search(gguf_file):
             hint.update(
-                f"[accent]⚠ MoE 감지[/accent]: [dim]'{gguf_file}' → "
-                f"expert offload 권장 (아래 'MoE Expert Offload' 섹션 참고)[/dim]"
+                t(
+                    f"[accent]⚠ MoE detected[/accent]: [dim]'{gguf_file}' → "
+                    f"expert offload recommended (see the 'MoE Expert Offload' section below)[/dim]",
+                    f"[accent]⚠ MoE 감지[/accent]: [dim]'{gguf_file}' → "
+                    f"expert offload 권장 (아래 'MoE Expert Offload' 섹션 참고)[/dim]",
+                )
             )
             # 사용자가 수동으로 값을 지운 게 아니면 기본값 채움
             if not ot_input.value.strip():
@@ -318,7 +338,10 @@ class QuickSetupScreen(ModalScreen[str]):
             moe_collapsible.collapsed = False
         else:
             hint.update(
-                "[dim]Dense 모델 — expert offload 불필요 (전체 VRAM 적재)[/dim]"
+                t(
+                    "[dim]Dense model — no expert offload needed (loads fully into VRAM)[/dim]",
+                    "[dim]Dense 모델 — expert offload 불필요 (전체 VRAM 적재)[/dim]",
+                )
             )
 
     # ----- Create -----
@@ -370,10 +393,10 @@ class QuickSetupScreen(ModalScreen[str]):
 
         # --- 필수 검증 ---
         if not repo or not _REPO_RE.match(repo):
-            self.notify("유효한 HF repo 필요", severity="error")
+            self.notify(t("A valid HF repo is required", "유효한 HF repo 필요"), severity="error")
             return
         if not gguf_file:
-            self.notify("GGUF 파일 선택 필요 (Fetch 후)", severity="error")
+            self.notify(t("Select a GGUF file (after Fetch)", "GGUF 파일 선택 필요 (Fetch 후)"), severity="error")
             return
         try:
             port_num = int(
@@ -382,7 +405,7 @@ class QuickSetupScreen(ModalScreen[str]):
             if not 1024 <= port_num <= 65535:
                 raise ValueError
         except ValueError:
-            self.notify("Port 는 1024–65535", severity="error")
+            self.notify(t("Port must be 1024–65535", "Port 는 1024–65535"), severity="error")
             return
 
         # --- 이름 자동 생성 ---
@@ -391,17 +414,17 @@ class QuickSetupScreen(ModalScreen[str]):
             base = re.sub(r"[-_]?GGUF$", "", base, flags=re.I)
             name_raw = re.sub(r"[^a-z0-9_-]+", "-", base.lower()).strip("-")
         if not name_raw:
-            self.notify("이름 생성 실패", severity="error")
+            self.notify(t("Failed to generate a name", "이름 생성 실패"), severity="error")
             return
         # docker compose project name 으로도 쓰이므로 편집 폼과 동일한 규칙 적용.
         if not validate_name(name_raw):
             self.notify(
-                "이름은 소문자/숫자/대시/언더스코어만 가능",
+                t("Name must be lowercase letters/digits/dashes/underscores", "이름은 소문자/숫자/대시/언더스코어만 가능"),
                 severity="error",
             )
             return
         if not re.fullmatch(r"[0-9]+(,[0-9]+)*", gpu):
-            self.notify("GPU ID 는 숫자/콤마 (예: 0 또는 0,1)", severity="error")
+            self.notify(t("GPU ID must be digits/commas (e.g. 0 or 0,1)", "GPU ID 는 숫자/콤마 (예: 0 또는 0,1)"), severity="error")
             return
 
         # 충돌 시 suffix. list_config_names() 가 example 을 걸러내므로 명시 추가 —
@@ -481,7 +504,10 @@ class QuickSetupScreen(ModalScreen[str]):
         )
 
         self.notify(
-            f"✓ 생성: {final_name}  (다음: 'u' 로 시작 — 처음이면 GGUF 자동 다운로드)",
+            t(
+                f"✓ Created: {final_name}  (next: press 'u' to start — first run auto-downloads the GGUF)",
+                f"✓ 생성: {final_name}  (다음: 'u' 로 시작 — 처음이면 GGUF 자동 다운로드)",
+            ),
             severity="information",
             timeout=8,
         )
