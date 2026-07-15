@@ -83,7 +83,7 @@ llmux &lt;alias&gt;              # top-level shortcut (see below)</code></pre>
         </tr>
         <tr>
           <td><code>config</code></td>
-          <td><code>list</code> · <code>show</code> · <code>new</code> · <code>edit</code> · <code>clone</code> · <code>delete</code></td>
+          <td><code>list</code> · <code>show</code> · <code>new</code> · <code>edit</code> · <code>clone</code> · <code>from-recipe</code> · <code>delete</code></td>
           <td><code>tui/cli/config.py</code></td>
         </tr>
         <tr>
@@ -545,6 +545,24 @@ uv run llmux config edit qwen3-8b --enable enforce-eager</code></pre>
       </tbody>
     </table>
     <pre data-lang="bash"><code>uv run llmux config clone qwen3-0-6b qwen3-0-6b-experiment</code></pre>
+
+    <h3 id="config-from-recipe"><code>config from-recipe</code></h3>
+    <p>Create a vLLM config from the model's official <a href="https://github.com/vllm-project/recipes">vllm-project/recipes</a> recipe. The TUI shows an interactive review window (see <a href="../guide/configs.html#import-a-vllm-recipe">Import a vLLM recipe</a>); this headless form picks a variant with <code>--variant</code>, or auto-picks the highest-quality one that fits the detected GPU.</p>
+    <pre data-lang="text"><code>llmux config from-recipe MODEL_ID [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--list</code></td><td><code>False</code></td><td>List the recipe's variants + features and exit.</td></tr>
+        <tr><td><code>--variant</code></td><td><em>auto</em></td><td>Precision variant (<code>default</code>/<code>fp8</code>/<code>awq</code>/…). Auto-picks a GPU-fitting one if omitted.</td></tr>
+        <tr><td><code>--feature</code></td><td><em>(none)</em></td><td>Repeatable: opt-in feature to enable (e.g. <code>reasoning</code>).</td></tr>
+        <tr><td><code>--name</code>, <code>-n</code></td><td><em>auto</em></td><td>Config name (derived from the model id if omitted).</td></tr>
+        <tr><td><code>--json</code></td><td><code>False</code></td><td>Preview the resulting config as JSON without writing.</td></tr>
+        <tr><td><code>--overwrite</code></td><td><code>False</code></td><td>Overwrite if the config already exists.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux config from-recipe Qwen/Qwen3-32B --list
+uv run llmux config from-recipe Qwen/Qwen3-32B --variant fp8 --feature reasoning
+uv run llmux config from-recipe Qwen/Qwen3-32B --variant awq --json</code></pre>
 
     <h3 id="config-delete"><code>config delete</code></h3>
     <p>Delete a config YAML.</p>

@@ -67,6 +67,7 @@ llmux unifies both under a single Textual dashboard backed by Docker Compose.
 - **Cross-backend conflict gate** &mdash; Port/GPU overlap is checked before start, across *both* backends.
 - **Safe vLLM image resolution** &mdash; Refuses `:latest`, resolves stable picks to semver, verifies the in-container version.
 - **Quick Setup + memory estimator** &mdash; HF model → profile + config auto-generated, with a per-GPU [`hf-mem`](https://github.com/alvarobartt/hf-mem) fit bar.
+- **vLLM recipe import** &mdash; Pull a model's official [vllm-project/recipes](https://github.com/vllm-project/recipes) config, then review its precision variants (bf16 / fp8 / awq) against your actual GPU's VRAM before it's written &mdash; so a recipe verified on an 80 GB card doesn't silently overshoot a 16 GB one.
 
 <br/>
 
