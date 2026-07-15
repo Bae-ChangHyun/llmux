@@ -248,8 +248,8 @@
         <div class="feature-icon">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
         </div>
-        <h3>Unified benchmark</h3>
-        <p>OpenAI-compatible <code>/v1/chat/completions</code> bench for either engine. Apples-to-apples latency.</p>
+        <h3>Live throughput &amp; benchmark</h3>
+        <p>A live tok/s column on the dashboard, polled from each container's <code>/metrics</code> (<code>llmux stats</code>). Plus a warmup + median <code>/v1/chat/completions</code> bench for either engine.</p>
       </div>
       <div class="feature-card">
         <div class="feature-icon">
@@ -292,6 +292,13 @@
         </div>
         <h3>Unified dev builds</h3>
         <p>Build vLLM or llama.cpp from source with one command. Auto-detects your GPU compute capability (<code>CUDA_DOCKER_ARCH</code> / <code>TORCH_CUDA_ARCH_LIST</code>) so the image only ships what your card actually runs.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="5" width="22" height="14" rx="7"/><circle cx="16" cy="12" r="3"/></svg>
+        </div>
+        <h3>Config parameter toggles</h3>
+        <p>Flip any config flag <strong>on or off without deleting it</strong> &mdash; a row switch in the TUI, or <code>config edit --disable/--enable</code> from the CLI. Disabled flags are parked as inert comments, and your own hand-written notes survive every edit.</p>
       </div>
     </div>
   </section>

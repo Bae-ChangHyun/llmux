@@ -58,10 +58,11 @@ llmux unifies both under a single Textual dashboard backed by Docker Compose.
 
 ## Features
 
-- **Unified Textual TUI** &mdash; Every vLLM and llama.cpp profile side-by-side in a single dashboard.
+- **Unified Textual TUI** &mdash; Every vLLM and llama.cpp profile side-by-side in a single dashboard, with a live **tok/s** column per running model.
 - **TUI ⇄ CLI parity** &mdash; Every TUI action is also a headless subcommand, built for scripts, agents, and CI.
 - **YAML-native profiles** &mdash; One `profiles.yaml`, `defaults` block for inheritance, rendered to `.env` only at launch.
-- **Per-model configs** &mdash; `config/<backend>/<name>.yaml` maps 1:1 to engine flags — sampling, context length, KV-cache precision, MoE CPU offload.
+- **Per-model configs** &mdash; `config/<backend>/<name>.yaml` maps 1:1 to engine flags — sampling, context length, KV-cache precision, MoE CPU offload. Toggle any flag **on/off without deleting it**, and your hand-written comments survive edits.
+- **Live throughput + benchmarks** &mdash; Real-time generation tok/s polled from each container's `/metrics` (`llmux stats`), plus a warmup + median benchmark (`llmux bench`).
 - **Dev builds from source** &mdash; Build a `vllm-dev:` / `llamacpp-dev:` image from any fork/branch (GPU arch auto-detected) and pin a profile to it via `image_tag`.
 - **Cross-backend conflict gate** &mdash; Port/GPU overlap is checked before start, across *both* backends.
 - **Safe vLLM image resolution** &mdash; Refuses `:latest`, resolves stable picks to semver, verifies the in-container version.
@@ -117,7 +118,10 @@ launches the TUI, any subcommand bypasses it:
 llmux up <profile>                 # start a container
 llmux logs <profile>               # follow logs
 llmux ps --json --running          # machine-readable status, both backends
+llmux stats --once --json          # live tok/s from every running container
+llmux bench <profile> --runs 3     # warmup + median tok/s benchmark
 llmux profile quick-setup Qwen/Qwen3-8B --gpu-id 0,1
+llmux config edit <name> --disable trust-remote-code   # toggle a flag off, keep it
 llmux image build-dev --backend llamacpp --branch master
 ```
 
