@@ -34,15 +34,16 @@ from tui.backends.llamacpp.backend import (
 from tui.backends.llamacpp.backend_runtime import LLAMACPP_DEV_SPEC
 from tui.common import profile_store
 from tui.common.dev_build import list_local_dev_images
+from tui.common.i18n import t
 
 
 class SystemScreen(Screen):
     """탭: GPU / Docker Images / Containers / Disk."""
 
     BINDINGS = [
-        Binding("escape,backspace,s", "go_back", "Back", show=True),
+        Binding("escape,backspace,s", "go_back", t("Back", "뒤로"), show=True),
         Binding("q", "go_back", "Back", show=False),
-        Binding("r", "refresh_all", "Refresh", show=True),
+        Binding("r", "refresh_all", t("Refresh", "새로고침"), show=True),
     ]
 
     DEFAULT_CSS = """
@@ -75,19 +76,19 @@ class SystemScreen(Screen):
         with TabbedContent():
             with TabPane("GPU", id="gpu-tab"):
                 yield DataTable(id="gpu-table")
-            with TabPane("Docker Images", id="images-tab"):
+            with TabPane(t("Docker Images", "Docker 이미지"), id="images-tab"):
                 with VerticalScroll(id="images-scroll"):
                     yield Static(
-                        "Official Images (ghcr.io/ggml-org/llama.cpp)",
+                        t("Official Images (ghcr.io/ggml-org/llama.cpp)", "공식 이미지 (ghcr.io/ggml-org/llama.cpp)"),
                         classes="section-title",
                     )
                     yield DataTable(id="llama-images")
-                    yield Static("Dev Images (llamacpp-dev)", classes="section-title")
+                    yield Static(t("Dev Images (llamacpp-dev)", "개발 이미지 (llamacpp-dev)"), classes="section-title")
                     yield DataTable(id="dev-images")
-                yield Button("Refresh Images", id="btn-refresh-images", variant="primary")
-            with TabPane("Containers", id="containers-tab"):
+                yield Button(t("Refresh Images", "이미지 새로고침"), id="btn-refresh-images", variant="primary")
+            with TabPane(t("Containers", "컨테이너"), id="containers-tab"):
                 yield RichLog(id="container-info", highlight=True)
-            with TabPane("Disk / Model Dir", id="disk-tab"):
+            with TabPane(t("Disk / Model Dir", "디스크 / 모델 폴더"), id="disk-tab"):
                 yield RichLog(id="disk-info", highlight=True)
         yield Footer()
 
@@ -196,13 +197,13 @@ class SystemScreen(Screen):
         log = self.query_one("#container-info", RichLog)
         log.clear()
         if rc != 0:
-            log.write("[red]docker ps 실패[/]")
+            log.write(t("[red]docker ps failed[/]", "[red]docker ps 실패[/]"))
             if out.strip():
                 log.write(out)
             return
         lines = out.strip().splitlines()
         if len(lines) < 2:
-            log.write("[dim]컨테이너 없음[/]")
+            log.write(t("[dim]No containers[/]", "[dim]컨테이너 없음[/]"))
             return
         header = lines[0]
         rows = [line for line in lines[1:] if line.split()[0] in known]
@@ -211,7 +212,7 @@ class SystemScreen(Screen):
             for line in rows:
                 log.write(line)
         else:
-            log.write("[dim](이 프로젝트의 프로필 컨테이너 없음)[/]")
+            log.write(t("[dim](no profile containers for this project)[/]", "[dim](이 프로젝트의 프로필 컨테이너 없음)[/]"))
 
     # ----- Disk -----
 
@@ -231,37 +232,37 @@ class SystemScreen(Screen):
                 key=lambda f: f.stat().st_size,
                 reverse=True,
             )
-            log.write(f"[b]GGUF 파일 ({len(files)} 개)[/b]")
+            log.write(t(f"[b]GGUF files ({len(files)})[/b]", f"[b]GGUF 파일 ({len(files)} 개)[/b]"))
             total = 0
             for f in files:
                 sz = f.stat().st_size
                 total += sz
                 log.write(f"  {f.name}  [dim]{sz / 1024**3:.1f} GB[/dim]")
-            log.write(f"  [dim]합계: {total / 1024**3:.1f} GB[/dim]")
+            log.write(t(f"  [dim]Total: {total / 1024**3:.1f} GB[/dim]", f"  [dim]합계: {total / 1024**3:.1f} GB[/dim]"))
             log.write("")
         else:
-            log.write(f"[yellow]모델 디렉토리 존재하지 않음: {model_dir}[/]")
+            log.write(t(f"[yellow]Model directory does not exist: {model_dir}[/]", f"[yellow]모델 디렉토리 존재하지 않음: {model_dir}[/]"))
             log.write("")
 
         # HF hub 캐시 — llama-server 가 `-hf` 로 받는 실제 저장 위치
         cached = list_cached_gguf()
-        log.write(f"[b]HF cache GGUF ({len(cached)} 개)[/b]  [dim]{_get_hf_cache_dir()}[/dim]")
+        log.write(t(f"[b]HF cache GGUF ({len(cached)})[/b]  [dim]{_get_hf_cache_dir()}[/dim]", f"[b]HF cache GGUF ({len(cached)} 개)[/b]  [dim]{_get_hf_cache_dir()}[/dim]"))
         if cached:
             for c in cached:
                 log.write(
                     f"  {c['repo']}/{c['name']}  [dim]{c['size_gb']:.1f} GB[/dim]"
                 )
             total_gb = sum(c["size_bytes"] for c in cached) / 1024**3
-            log.write(f"  [dim]합계: {total_gb:.1f} GB[/dim]")
+            log.write(t(f"  [dim]Total: {total_gb:.1f} GB[/dim]", f"  [dim]합계: {total_gb:.1f} GB[/dim]"))
         else:
-            log.write("  [dim](HF 캐시에 받아둔 GGUF 없음)[/dim]")
+            log.write(t("  [dim](no GGUF downloaded in HF cache)[/dim]", "  [dim](HF 캐시에 받아둔 GGUF 없음)[/dim]"))
         log.write("")
 
         # df -h
         used, avail, pct = await get_disk_usage(str(model_dir if model_dir.exists() else ROOT))
         if used:
-            log.write("[b]디스크 사용량[/b]")
-            log.write(f"  사용: {used}  남음: {avail}  ({pct})")
+            log.write(t("[b]Disk usage[/b]", "[b]디스크 사용량[/b]"))
+            log.write(t(f"  Used: {used}  Free: {avail}  ({pct})", f"  사용: {used}  남음: {avail}  ({pct})"))
 
     # ----- Actions -----
 
@@ -273,9 +274,9 @@ class SystemScreen(Screen):
         self._refresh_images()
         self._refresh_containers()
         self._refresh_disk()
-        self.notify("새로고침")
+        self.notify(t("Refreshing", "새로고침"))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-refresh-images":
             self._refresh_images()
-            self.notify("이미지 목록 새로고침")
+            self.notify(t("Refreshing image list", "이미지 목록 새로고침"))

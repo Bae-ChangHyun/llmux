@@ -40,15 +40,17 @@ from tui.common.widgets import BackendPickerModal, ConfirmModal
 class DashboardScreen(Screen):
     """두 backend 프로필을 단일 DataTable 로 통합 표시."""
 
+    # Footer labels resolve at import time — fine, since the UI language is
+    # fixed for the process lifetime (set via LLMUX_LANG / locale before launch).
     BINDINGS = [
         # 시각적 Footer
-        Binding("enter", "action_menu", "Action"),
-        Binding("n", "new_profile", "New"),
-        Binding("m", "mem_estimate", "Memory"),
-        Binding("C", "config_list", "Configs"),
-        Binding("s", "system_info", "System"),
-        Binding("r", "refresh", "Refresh"),
-        Binding("q", "quit", "Quit"),
+        Binding("enter", "action_menu", t("Action", "작업")),
+        Binding("n", "new_profile", t("New", "새로")),
+        Binding("m", "mem_estimate", t("Memory", "메모리")),
+        Binding("C", "config_list", t("Configs", "설정")),
+        Binding("s", "system_info", t("System", "시스템")),
+        Binding("r", "refresh", t("Refresh", "새로고침")),
+        Binding("q", "quit", t("Quit", "종료")),
         # Power-user: footer 에서 숨김
         Binding("u", "start_container", show=False),
         Binding("d", "stop_container", show=False),

@@ -20,6 +20,7 @@ from tui.backends.vllm.backend import (
     list_profile_names,
     validate_name as _validate_name,
 )
+from tui.common.i18n import t
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +118,11 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         p = self._profile
-        title = f"Edit Profile: {p.name}" if self._edit_mode else "New Profile"
+        title = (
+            t(f"Edit Profile: {p.name}", f"프로필 편집: {p.name}")
+            if self._edit_mode
+            else t("New Profile", "새 프로필")
+        )
 
         configs = list_config_names()
         config_options: list[tuple[str, str]] = [(name, name) for name in configs]
@@ -126,7 +131,9 @@ class ProfileFormScreen(ModalScreen[str | None]):
         # no matching option, so the Select would fall back to BLANK and saving
         # would silently rewrite config_name to "". Surface it instead.
         if p and p.config_name and p.config_name not in configs:
-            config_options.insert(0, (f"{p.config_name} (missing)", p.config_name))
+            config_options.insert(
+                0, (t(f"{p.config_name} (missing)", f"{p.config_name} (없음)"), p.config_name)
+            )
             configs = [*configs, p.config_name]
 
         with Vertical():
@@ -134,7 +141,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
             with VerticalScroll():
                 with Horizontal(classes="form-row"):
-                    yield Label("Profile Name")
+                    yield Label(t("Profile Name", "프로필 이름"))
                     yield Input(
                         value=p.name if p else "",
                         placeholder="my-profile",
@@ -143,7 +150,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
                     )
 
                 with Horizontal(classes="form-row"):
-                    yield Label("Container Name")
+                    yield Label(t("Container Name", "컨테이너 이름"))
                     yield Input(
                         value=p.container_name if p else "",
                         placeholder="container-name",
@@ -167,7 +174,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
                     )
 
                 with Horizontal(classes="form-row"):
-                    yield Label("Tensor Parallel")
+                    yield Label(t("Tensor Parallel", "텐서 병렬"))
                     yield Input(
                         value=p.tensor_parallel if p else "",
                         placeholder="1",
@@ -177,7 +184,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 with Horizontal(classes="form-row"):
                     yield Label("Config")
                     select_kwargs: dict = dict(
-                        prompt="Select config",
+                        prompt=t("Select config", "config 선택"),
                         allow_blank=True,
                         id="config-select",
                     )
@@ -189,36 +196,42 @@ class ProfileFormScreen(ModalScreen[str | None]):
                     yield Label("Model ID")
                     yield Input(
                         value=(p.model_id if p else ""),
-                        placeholder="org/model-name (used for auto config)",
+                        placeholder=t(
+                            "org/model-name (used for auto config)",
+                            "org/model-name (자동 config 생성에 사용)",
+                        ),
                         id="model-id-input",
                     )
 
                 with Horizontal(classes="form-row"):
-                    yield Label("Enable LoRA")
+                    yield Label(t("Enable LoRA", "LoRA 사용"))
                     yield Switch(
                         value=(p.enable_lora == "true") if p else False,
                         id="lora-switch",
                     )
 
                 with Horizontal(classes="form-row"):
-                    yield Label("Extra Pip Packages")
+                    yield Label(t("Extra Pip Packages", "추가 Pip 패키지"))
                     yield Input(
                         value=(p.extra_pip_packages if p else ""),
-                        placeholder="e.g. flash-attn bitsandbytes",
+                        placeholder=t("e.g. flash-attn bitsandbytes", "예: flash-attn bitsandbytes"),
                         id="extra-pip-input",
                     )
 
                 with Horizontal(classes="form-row"):
-                    yield Label("Image Tag")
+                    yield Label(t("Image Tag", "이미지 태그"))
                     yield Input(
                         value=p.image_tag if p else "",
-                        placeholder="(blank = default image) e.g. myregistry/vllm:custom",
+                        placeholder=t(
+                            "(blank = default image) e.g. myregistry/vllm:custom",
+                            "(비우면 기본 이미지) 예: myregistry/vllm:custom",
+                        ),
                         id="image-tag-input",
                     )
 
             with Horizontal(classes="form-buttons"):
-                yield Button("Save", id="save-btn", variant="primary")
-                yield Button("Close", id="cancel-btn", variant="default")
+                yield Button(t("Save", "저장"), id="save-btn", variant="primary")
+                yield Button(t("Close", "닫기"), id="cancel-btn", variant="default")
 
     @on(Button.Pressed, "#save-btn")
     def _on_save(self, event: Button.Pressed) -> None:
@@ -235,31 +248,42 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
         # --- Validation ---
         if not name:
-            self.notify("Profile name is required.", severity="error")
+            self.notify(t("Profile name is required.", "프로필 이름은 필수입니다."),
+                        severity="error")
             return
         if not _validate_name(name):
             self.notify(
-                "Name must be lowercase: start with [a-z0-9], then lowercase letters, digits, dashes, or underscores only.",
+                t(
+                    "Name must be lowercase: start with [a-z0-9], then lowercase letters, digits, dashes, or underscores only.",
+                    "이름은 소문자여야 합니다: [a-z0-9] 로 시작하고 소문자·숫자·대시·언더스코어만 사용하세요.",
+                ),
                 severity="error",
             )
             return
 
         if not self._edit_mode and name in list_profile_names():
-            self.notify(f"Profile '{name}' already exists.", severity="error")
+            self.notify(t(f"Profile '{name}' already exists.", f"프로필 '{name}' 이(가) 이미 존재합니다."),
+                        severity="error")
             return
 
         if not self._edit_mode and name == "example":
             # The config link defaults to the profile name, so an 'example'
             # profile would write its params into the tracked example.yaml.
             self.notify(
-                "'example' is the tracked template config name — pick another.",
+                t(
+                    "'example' is the tracked template config name — pick another.",
+                    "'example' 은 추적되는 템플릿 config 이름입니다 — 다른 이름을 쓰세요.",
+                ),
                 severity="error",
             )
             return
 
         if container and not _validate_name(container):
             self.notify(
-                "Container name must be lowercase: start with [a-z0-9], then lowercase letters, digits, dashes, or underscores only.",
+                t(
+                    "Container name must be lowercase: start with [a-z0-9], then lowercase letters, digits, dashes, or underscores only.",
+                    "컨테이너 이름은 소문자여야 합니다: [a-z0-9] 로 시작하고 소문자·숫자·대시·언더스코어만 사용하세요.",
+                ),
                 severity="error",
             )
             return
@@ -270,11 +294,13 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 if not (1024 <= port_int <= 65535):
                     raise ValueError
             except ValueError:
-                self.notify("Port must be a number between 1024 and 65535.", severity="error")
+                self.notify(t("Port must be a number between 1024 and 65535.", "Port 는 1024 ~ 65535 사이의 숫자여야 합니다."),
+                            severity="error")
                 return
 
         if gpu_id and not re.match(r"^[0-9]+(,[0-9]+)*$", gpu_id):
-            self.notify("GPU ID must contain only digits and commas.", severity="error")
+            self.notify(t("GPU ID must contain only digits and commas.", "GPU ID 는 숫자와 콤마만 사용할 수 있습니다."),
+                        severity="error")
             return
 
         if tp:
@@ -283,7 +309,8 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 if tp_int < 1:
                     raise ValueError
             except ValueError:
-                self.notify("Tensor Parallel must be a positive integer.", severity="error")
+                self.notify(t("Tensor Parallel must be a positive integer.", "텐서 병렬은 양의 정수여야 합니다."),
+                            severity="error")
                 return
 
         extra_pip = self.query_one("#extra-pip-input", Input).value.strip()
@@ -322,7 +349,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             )
 
         save_profile(profile)
-        self.notify(f"Saved: {name}", severity="information")
+        self.notify(t(f"Saved: {name}", f"저장됨: {name}"), severity="information")
         self._saved_name = name
 
         # New profile → switch to edit mode after first save
@@ -330,7 +357,9 @@ class ProfileFormScreen(ModalScreen[str | None]):
             self._edit_mode = True
             self._profile = profile
             self.query_one("#name-input", Input).disabled = True
-            self.query_one("#form-title", Static).update(f"[b]Edit Profile: {name}[/b]")
+            self.query_one("#form-title", Static).update(
+                t(f"[b]Edit Profile: {name}[/b]", f"[b]프로필 편집: {name}[/b]")
+            )
 
     @on(Button.Pressed, "#cancel-btn")
     def _on_close(self, event: Button.Pressed) -> None:
@@ -411,23 +440,38 @@ class ProfileDeleteScreen(ModalScreen[bool]):
         with Vertical():
             if self._profile.config_name:
                 if self._config_shared:
-                    detail = f"(profile only; config is shared: {self._profile.config_name})"
+                    detail = t(
+                        f"(profile only; config is shared: {self._profile.config_name})",
+                        f"(프로필만 삭제; config 는 공유됨: {self._profile.config_name})",
+                    )
                 elif self._config_is_template:
-                    detail = "(profile only; config 'example' is the tracked template — kept)"
+                    detail = t(
+                        "(profile only; config 'example' is the tracked template — kept)",
+                        "(프로필만 삭제; config 'example' 은 추적 템플릿이라 유지됨)",
+                    )
                 else:
-                    detail = f"(profile + config: {self._profile.config_name})"
+                    detail = t(
+                        f"(profile + config: {self._profile.config_name})",
+                        f"(프로필 + config: {self._profile.config_name})",
+                    )
                 yield Static(
-                    f"Delete [b]{self._profile_name}[/b]?\n{detail}",
+                    t(
+                        f"Delete [b]{self._profile_name}[/b]?\n{detail}",
+                        f"[b]{self._profile_name}[/b] 삭제?\n{detail}",
+                    ),
                     id="delete-message",
                 )
             else:
                 yield Static(
-                    f"Delete profile [b]{self._profile_name}[/b]?",
+                    t(
+                        f"Delete profile [b]{self._profile_name}[/b]?",
+                        f"프로필 [b]{self._profile_name}[/b] 삭제?",
+                    ),
                     id="delete-message",
                 )
             with Horizontal(classes="form-buttons"):
-                yield Button("Delete", id="delete-btn", variant="error")
-                yield Button("Cancel", id="cancel-btn", variant="default")
+                yield Button(t("Delete", "삭제"), id="delete-btn", variant="error")
+                yield Button(t("Cancel", "취소"), id="cancel-btn", variant="default")
 
     @on(Button.Pressed, "#delete-btn")
     def _on_delete(self, event: Button.Pressed) -> None:
@@ -435,16 +479,27 @@ class ProfileDeleteScreen(ModalScreen[bool]):
         delete_profile(self._profile_name, delete_config=has_config)
         if has_config and self._config_shared:
             self.app.notify(
-                f"Deleted profile: {self._profile_name}; shared config kept: {self._profile.config_name}"
+                t(
+                    f"Deleted profile: {self._profile_name}; shared config kept: {self._profile.config_name}",
+                    f"프로필 삭제됨: {self._profile_name}; 공유 config 유지: {self._profile.config_name}",
+                )
             )
         elif has_config and self._config_is_template:
             self.app.notify(
-                f"Deleted profile: {self._profile_name}; tracked template config kept: example"
+                t(
+                    f"Deleted profile: {self._profile_name}; tracked template config kept: example",
+                    f"프로필 삭제됨: {self._profile_name}; 추적 템플릿 config 유지: example",
+                )
             )
         elif has_config:
-            self.app.notify(f"Deleted: {self._profile_name} + config: {self._profile.config_name}")
+            self.app.notify(
+                t(
+                    f"Deleted: {self._profile_name} + config: {self._profile.config_name}",
+                    f"삭제됨: {self._profile_name} + config: {self._profile.config_name}",
+                )
+            )
         else:
-            self.app.notify(f"Deleted profile: {self._profile_name}")
+            self.app.notify(t(f"Deleted profile: {self._profile_name}", f"프로필 삭제됨: {self._profile_name}"))
         self.dismiss(True)
 
     @on(Button.Pressed, "#cancel-btn")
