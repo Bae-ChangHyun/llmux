@@ -181,12 +181,33 @@ llmux config new gemma --backend llamacpp \
 llmux config edit gemma --set temp=0.6 --set top-p=0.95
 llmux config edit gemma --unset top-k
 
+# Clone a tuned config to a new name
+llmux config clone gemma gemma-longctx
+
 # Delete
 llmux config delete gemma</code></pre>
 
     <div class="admonition tip">
       <p class="admonition-title"><code>--set</code> values are YAML-typed</p>
-      <p><code>--set</code> parses each value as YAML: <code>--set ctx-size=8192</code> stores an int, <code>--set jinja=true</code> stores a bool, and an empty value (<code>--set jinja=</code>) stores <code>true</code>. For list-valued keys like <code>override-tensors</code> or <code>extra-args</code>, pass a YAML literal — <code>--set 'override-tensors=[".ffn_.*_exps.=CPU"]'</code> — or edit the file directly / use the <a href="tui.html#profile-and-config-forms">TUI config form</a>.</p>
+      <p><code>--set</code> parses each value as YAML: <code>--set ctx-size=8192</code> stores an int, <code>--set jinja=true</code> stores a bool, and an empty value (<code>--set jinja=</code>) stores <code>true</code>. For list-valued keys like <code>override-tensors</code> or <code>extra-args</code>, pass a YAML literal — <code>--set 'override-tensors=[".ffn_.*_exps.=CPU"]'</code> — or edit the file directly / use the <a href="tui.html#profile-and-config-forms">TUI config form</a>. A plain string works too: <code>--set 'override-tensors=.ffn_.*_exps.=CPU'</code>.</p>
+    </div>
+
+    <h2 id="toggling-parameters-on-off">Toggling parameters on / off</h2>
+    <p>Sometimes you want to <em>keep</em> a flag but stop passing it to the server — an A/B test, a setting that only applies to one model variant, a tweak you're not sure about. Instead of deleting the line (and losing its value), toggle it:</p>
+    <pre data-lang="bash"><code># Park a flag without deleting it
+llmux config edit exaone-off --disable reasoning-parser
+
+# Turn it back on later — the exact value comes back
+llmux config edit exaone-off --enable reasoning-parser</code></pre>
+    <p>A disabled parameter is stored as an inert comment marker at the end of the file:</p>
+    <pre data-lang="yaml"><code>model: LGAI-EXAONE/EXAONE-4.0-1.2B
+gpu-memory-utilization: 0.6
+# llmux:disabled reasoning-parser: deepseek_r1</code></pre>
+    <p>Because it's a comment, neither <code>vllm serve</code> (which reads the YAML directly) nor llama.cpp's flag renderer ever sees it — but llmux does, so it can flip it back on. In the <a href="tui.html#profile-and-config-forms">TUI config form</a> each parameter row has an on/off switch; a switched-off row dims but keeps its value. <code>--set KEY=value</code> re-enables a disabled key automatically; <code>--unset KEY</code> removes it from both states.</p>
+
+    <div class="admonition tip">
+      <p class="admonition-title">Your comments survive edits</p>
+      <p>Editing a config through the TUI or CLI preserves any hand-written <code>#</code> comments — headers, inline notes, trailing explanations — for every parameter that survives the edit. Comment-free files are left byte-for-byte unchanged.</p>
     </div>
 
     <h2 id="see-also">See also</h2>

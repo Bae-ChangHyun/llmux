@@ -73,7 +73,7 @@ llmux &lt;alias&gt;              # top-level shortcut (see below)</code></pre>
       <tbody>
         <tr>
           <td><code>container</code></td>
-          <td><code>up</code> · <code>down</code> · <code>logs</code> · <code>ps</code> · <code>render-env</code></td>
+          <td><code>up</code> · <code>down</code> · <code>logs</code> · <code>ps</code> · <code>benchmark</code> · <code>stats</code> · <code>render-env</code></td>
           <td><code>tui/cli/container.py</code></td>
         </tr>
         <tr>
@@ -98,7 +98,7 @@ llmux &lt;alias&gt;              # top-level shortcut (see below)</code></pre>
         </tr>
         <tr>
           <td><em>(top-level)</em></td>
-          <td><code>tui</code> · <code>gpu</code> · <code>env-check</code> · <code>up</code> · <code>down</code> · <code>logs</code> · <code>ps</code> · <code>render-env</code></td>
+          <td><code>tui</code> · <code>gpu</code> · <code>env-check</code> · <code>up</code> · <code>down</code> · <code>logs</code> · <code>ps</code> · <code>bench</code> · <code>stats</code> · <code>render-env</code></td>
           <td><code>tui/cli/__init__.py</code></td>
         </tr>
       </tbody>
@@ -258,6 +258,42 @@ uv run llmux render-env qwen3-0-6b
 
 # Re-render every llama.cpp profile
 uv run llmux container render-env --backend llamacpp</code></pre>
+
+    <h3 id="container-benchmark"><code>container benchmark</code> · <code>bench</code></h3>
+    <p>Benchmark a running container's generation speed via <code>/v1/chat/completions</code>. A warmup call is discarded, then <code>--runs</code> measured calls report the <strong>median</strong> tok/s (a single cold call conflates model warmup with steady-state decode).</p>
+    <pre data-lang="text"><code>llmux bench PROFILE [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>auto</em></td><td>Force backend; auto-detect if omitted.</td></tr>
+        <tr><td><code>--prompt</code></td><td><em>(built-in)</em></td><td>Prompt sent to the chat endpoint.</td></tr>
+        <tr><td><code>--max-tokens</code></td><td><code>200</code></td><td><code>max_tokens</code> for the request.</td></tr>
+        <tr><td><code>--runs</code></td><td><code>3</code></td><td>Measured runs; the reported figure is their median.</td></tr>
+        <tr><td><code>--warmup</code></td><td><code>1</code></td><td>Warmup runs discarded before measuring.</td></tr>
+        <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit a JSON record (per-run + median/min/max) instead of a human line.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux bench qwen3-0-6b --runs 5
+uv run llmux bench qwen3-0-6b --json</code></pre>
+
+    <h3 id="container-stats"><code>container stats</code> · <code>stats</code></h3>
+    <p>Live token throughput (tok/s) for every running container, polled from its Prometheus <code>/metrics</code> endpoint. Rates are deltas between successive samples, so the first line appears one interval in. A server that's down or was started without metrics exposed shows <code>n/a</code> and keeps being polled.</p>
+    <pre data-lang="text"><code>llmux stats [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>all</em></td><td>Limit to one backend; show all if omitted.</td></tr>
+        <tr><td><code>--interval</code>, <code>-i</code></td><td><code>2.0</code></td><td>Seconds between <code>/metrics</code> samples.</td></tr>
+        <tr><td><code>--once</code></td><td><code>False</code></td><td>Take two samples one interval apart, print one tick, then exit.</td></tr>
+        <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit one compact JSON line per tick (NDJSON).</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux stats                 # live, Ctrl-C to stop
+uv run llmux stats --once --json   # one machine-readable sample</code></pre>
+    <div class="admonition note">
+      <p class="admonition-title">llama.cpp needs <code>--metrics</code></p>
+      <p>vLLM exposes <code>/metrics</code> by default; llama.cpp does not, so llmux injects <code>--metrics</code> into every llama-server command it renders. The same figures drive the live tok/s column on the TUI dashboard.</p>
+    </div>
 
     <h2 id="profile-profile-crud-quick-setup"><code>profile</code> — profile CRUD + quick-setup</h2>
     <pre data-lang="text"><code>llmux profile list|show|new|edit|delete|quick-setup …</code></pre>
@@ -476,13 +512,20 @@ uv run llmux config new gemma-3-4b --backend llamacpp \
       <thead><tr><th>Option</th><th>Backend</th><th>Description</th></tr></thead>
       <tbody>
         <tr><td><code>--backend</code>, <code>-b</code></td><td>both</td><td>Force backend; auto-resolved otherwise.</td></tr>
-        <tr><td><code>--set</code></td><td>both</td><td>Repeatable: <code>KEY=VALUE</code> (YAML-typed values).</td></tr>
-        <tr><td><code>--unset</code></td><td>both</td><td>Repeatable: <code>KEY</code> to remove.</td></tr>
+        <tr><td><code>--set</code></td><td>both</td><td>Repeatable: <code>KEY=VALUE</code> (YAML-typed values). Re-enables a disabled key automatically.</td></tr>
+        <tr><td><code>--unset</code></td><td>both</td><td>Repeatable: <code>KEY</code> to remove (from active or disabled).</td></tr>
+        <tr><td><code>--disable</code></td><td>both</td><td>Repeatable: park <code>KEY</code> as an inert comment marker without deleting its value.</td></tr>
+        <tr><td><code>--enable</code></td><td>both</td><td>Repeatable: restore a previously disabled <code>KEY</code>.</td></tr>
         <tr><td><code>--model</code>, <code>-m</code></td><td>vLLM</td><td>Set the <code>model:</code> field.</td></tr>
         <tr><td><code>--gpu-mem</code></td><td>vLLM</td><td>Set <code>gpu-memory-utilization:</code>.</td></tr>
       </tbody>
     </table>
-    <pre data-lang="bash"><code>uv run llmux config edit qwen3-8b --set max-model-len=16384 --unset enable-prefix-caching</code></pre>
+    <pre data-lang="bash"><code>uv run llmux config edit qwen3-8b --set max-model-len=16384 --unset enable-prefix-caching
+
+# Toggle a flag off without losing its value, then back on
+uv run llmux config edit qwen3-8b --disable enforce-eager
+uv run llmux config edit qwen3-8b --enable enforce-eager</code></pre>
+    <p>A disabled parameter is stored as a <code># llmux:disabled &lt;key&gt;: &lt;value&gt;</code> comment marker — inert to the server, visible to llmux. Hand-written <code>#</code> comments in the file are preserved across edits. See <a href="../guide/configs.html#toggling-parameters-on-off">Toggling parameters on / off</a>.</p>
 
     <h3 id="config-clone"><code>config clone</code></h3>
     <p>Clone <code>SRC</code> config to <code>DST</code> within the same backend. Useful when <code>profile quick-setup --copy-from</code> isn't enough — for example, when you want to clone a tuned config to a new name without creating a profile in the same step. Routes through the backend's canonical serializer so the resulting YAML is byte-identical to a TUI-edited config.</p>
