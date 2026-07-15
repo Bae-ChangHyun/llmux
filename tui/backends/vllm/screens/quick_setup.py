@@ -87,6 +87,12 @@ class QuickSetupScreen(ModalScreen[str]):
                 yield Label(t("HuggingFace Model (e.g., meta-llama/Llama-3-8B)", "HuggingFace 모델 (예: meta-llama/Llama-3-8B)"))
                 yield Input(placeholder="org/model-name", id="model-input")
                 yield Static("", id="mem-estimate")
+                yield Button(
+                    t("📋 Fetch vLLM recipe", "📋 vLLM 레시피 받아오기"),
+                    id="fetch-recipe-btn",
+                    variant="default",
+                )
+                yield Static("", id="recipe-status")
                 yield Label("GPU ID")
                 yield Input(placeholder="0", value="0", id="gpu-input")
                 yield Label("Port")
@@ -142,6 +148,63 @@ class QuickSetupScreen(ModalScreen[str]):
         except Exception:
             pass
 
+    # ----- vLLM recipe import -----
+
+    @on(Button.Pressed, "#fetch-recipe-btn")
+    def _on_fetch_recipe(self, event: Button.Pressed) -> None:
+        event.stop()
+        model = self.query_one("#model-input", Input).value.strip()
+        if not model or "/" not in model:
+            self.notify(
+                t("Enter a HuggingFace model id (org/name) first",
+                  "먼저 HuggingFace 모델 id (org/name) 를 입력하세요"),
+                severity="warning",
+            )
+            return
+        self._fetch_recipe(model)
+
+    @work(exclusive=True, group="recipe-fetch")
+    async def _fetch_recipe(self, model_id: str) -> None:
+        from tui.common.docker import get_gpu_info
+        from tui.common.recipes import fetch_recipe
+
+        status = self.query_one("#recipe-status", Static)
+        status.update(t(f"[dim]Fetching recipe for {model_id}…[/dim]",
+                        f"[dim]{model_id} 레시피 받는 중…[/dim]"))
+        recipe = await fetch_recipe(model_id)
+        if recipe is None:
+            status.update(
+                t(f"[yellow]No vLLM recipe found for {model_id}[/yellow]",
+                  f"[yellow]{model_id} 의 vLLM 레시피 없음[/yellow]"),
+            )
+            return
+        status.update("")
+
+        gpus = await get_gpu_info()
+        gpu_total_gb = None
+        if gpus:
+            try:
+                gpu_total_gb = max(int(g.memory_total) / 1024 for g in gpus)
+            except (TypeError, ValueError):
+                gpu_total_gb = None
+
+        from tui.backends.vllm.backend import get_local_latest_tag
+        local_tag = await get_local_latest_tag()
+        local_ver = "" if local_tag == "none" else local_tag
+
+        from tui.backends.vllm.screens.recipe import RecipeReviewScreen
+
+        def after(result: dict | None) -> None:
+            if result:
+                self._persist(result["model_id"], dict(result["params"]))
+
+        self.app.push_screen(
+            RecipeReviewScreen(
+                recipe, gpu_total_gb=gpu_total_gb, local_vllm_version=local_ver
+            ),
+            after,
+        )
+
     @on(Button.Pressed, "#cancel-btn")
     def on_cancel(self) -> None:
         self.dismiss("")
@@ -166,14 +229,26 @@ class QuickSetupScreen(ModalScreen[str]):
     @on(Button.Pressed, "#create-btn")
     def on_create(self) -> None:
         model = self.query_one("#model-input", Input).value.strip()
+        if not model:
+            self.notify(t("Model name is required", "모델 이름은 필수입니다"), severity="error")
+            return
+        # Manual path: extra params come from the "Copy params from" select.
+        from tui.backends.vllm.backend import load_config
+
+        extra_params: dict[str, Any] = {}
+        copy_select = self.query_one("#copy-config-select", Select)
+        if copy_select.value and copy_select.value != Select.BLANK:
+            extra_params = dict(load_config(str(copy_select.value)).extra_params)
+        self._persist(model, extra_params)
+
+    def _persist(self, model: str, extra_params: dict[str, Any]) -> None:
+        """Validate the form fields and create profile + config for `model`,
+        seeding the config with `extra_params` (copy-from config, or a fetched
+        recipe's flags). Shared by manual create and the recipe importer."""
         gpu = self.query_one("#gpu-input", Input).value.strip()
         port = self.query_one("#port-input", Input).value.strip()
         gpu_mem = self.query_one("#gpu-mem-input", Input).value.strip()
         lora = self.query_one("#lora-switch", Switch).value
-
-        if not model:
-            self.notify(t("Model name is required", "모델 이름은 필수입니다"), severity="error")
-            return
 
         # Derive name from model
         name_part = model.rsplit("/", 1)[-1]
@@ -216,7 +291,7 @@ class QuickSetupScreen(ModalScreen[str]):
 
         from tui.backends.vllm.backend import (
             Profile, Config, save_profile, save_config,
-            list_profile_names, list_config_names, load_config,
+            list_profile_names, list_config_names,
         )
 
         # Auto-resolve name collision by appending suffix. `example` is added
@@ -229,13 +304,6 @@ class QuickSetupScreen(ModalScreen[str]):
         while safe_name in existing_profiles or safe_name in existing_configs:
             suffix += 1
             safe_name = f"{original_name}-{suffix}"
-
-        # Copy extra params from selected config
-        extra_params: dict[str, Any] = {}
-        copy_select = self.query_one("#copy-config-select", Select)
-        if copy_select.value and copy_select.value != Select.BLANK:
-            source_cfg = load_config(str(copy_select.value))
-            extra_params = dict(source_cfg.extra_params)
 
         # Save config
         config = Config(

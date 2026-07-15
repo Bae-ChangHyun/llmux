@@ -465,6 +465,112 @@ def clone_config(
     print(saved)
 
 
+@app.command("from-recipe")
+def config_from_recipe(
+    model_id: str = typer.Argument(..., help="HuggingFace model id, e.g. Qwen/Qwen3-32B."),
+    variant: str = typer.Option(
+        "", "--variant", help="Precision variant (default/fp8/awq/…). Auto-picks a "
+        "GPU-fitting one if omitted.",
+    ),
+    feature: list[str] = typer.Option(
+        [], "--feature", help="Repeatable: opt-in feature to enable (e.g. reasoning)."
+    ),
+    name: str = typer.Option("", "--name", "-n", help="Config name (auto-derived if omitted)."),
+    list_only: bool = typer.Option(
+        False, "--list", help="List the recipe's variants + features and exit."
+    ),
+    json_out: bool = typer.Option(
+        False, "--json", help="Preview the resulting config as JSON without writing."
+    ),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite if it exists."),
+) -> None:
+    """Create a vLLM config from the official vllm-project/recipes recipe.
+
+    The TUI shows a review window; headless callers pick a variant with
+    --variant (or let it auto-pick the highest-quality one that fits the GPU).
+    """
+    from tui.cli._runtime import run_async
+    from tui.common.recipes import build_config, fetch_recipe
+
+    recipe = run_async(fetch_recipe(model_id))
+    if recipe is None:
+        raise typer.BadParameter(
+            f"no vLLM recipe found for {model_id} (see recipes.vllm.ai)",
+            param_hint="MODEL_ID",
+        )
+
+    if list_only:
+        print(f"{recipe.model_id}  (min vLLM {recipe.min_vllm_version or '?'})")
+        if recipe.variants:
+            print("variants:")
+            for v in recipe.variants:
+                vram = f"≥{v.vram_minimum_gb:.0f}GB" if v.vram_minimum_gb else "?"
+                print(f"  {v.name:<10} {v.precision or '':<6} {vram:<8} {v.description}")
+        if recipe.features:
+            print("features:")
+            for f in recipe.features:
+                print(f"  {f.name:<16} {f.description}")
+        return
+
+    chosen = _pick_recipe_variant(recipe, variant)
+    model, params = build_config(recipe, chosen, list(feature))
+
+    if json_out:
+        emit_json({"model": model, "variant": chosen.name if chosen else "",
+                   "params": params})
+        return
+
+    cfg_name = name or _derive_config_name(model)
+    _validate_new_name(cfg_name)
+    _reject_creating_example(cfg_name)
+    path = _config_dir("vllm") / f"{cfg_name}.yaml"
+    if path.exists() and not overwrite:
+        raise typer.BadParameter(
+            f"config already exists: {path} (use --overwrite or --name)",
+            param_hint="--name",
+        )
+    data: dict = {"model": model, "gpu-memory-utilization": "0.9"}
+    data.update(params)
+    saved = _backend_save_config("vllm", cfg_name, data, {})
+    print(saved)
+
+
+def _pick_recipe_variant(recipe, variant_name: str):
+    """Resolve --variant to a RecipeVariant, or auto-pick the best GPU fit."""
+    if not recipe.variants:
+        return None
+    by_name = {v.name: v for v in recipe.variants}
+    if variant_name:
+        if variant_name not in by_name:
+            raise typer.BadParameter(
+                f"unknown variant {variant_name!r}; choose from "
+                f"{', '.join(by_name)}", param_hint="--variant",
+            )
+        return by_name[variant_name]
+    # Auto-pick: highest-quality (recipe order) variant that fits the GPU;
+    # else the smallest-VRAM one. Mirrors the TUI review screen.
+    from tui.cli._runtime import run_async
+    from tui.common.docker import get_gpu_info
+
+    gpus = run_async(get_gpu_info())
+    gpu_gb = None
+    if gpus:
+        try:
+            gpu_gb = max(int(g.memory_total) / 1024 for g in gpus)
+        except (TypeError, ValueError):
+            gpu_gb = None
+    if gpu_gb is not None:
+        for v in recipe.variants:
+            if v.vram_minimum_gb is not None and v.vram_minimum_gb <= gpu_gb:
+                return v
+    return min(recipe.variants, key=lambda v: v.vram_minimum_gb or 1e9)
+
+
+def _derive_config_name(model_id: str) -> str:
+    tail = model_id.rsplit("/", 1)[-1]
+    return re.sub(r"[^a-z0-9._-]+", "-", tail.lower()).strip("-") or "recipe-config"
+
+
 @app.command("delete")
 def delete_config(
     name: str = typer.Argument(...),
