@@ -14,7 +14,11 @@ from typing import Any
 import yaml
 
 from tui.common import profile_store
+from tui.common.config_markers import parse_disabled_markers, render_disabled_markers
 from tui.common.env import parse_env_file as _parse_env_file  # noqa: F401 — re-exported for callers
+
+log = logging.getLogger(__name__)
+
 
 def _resolve_project_root() -> Path:
     env_root = os.environ.get("LLMUX_ROOT", "").strip()
@@ -177,6 +181,8 @@ class Config:
 
     name: str
     params: dict[str, Any] = field(default_factory=dict)
+    # Params kept but not passed to llama-server — stored as comment markers.
+    disabled_params: dict[str, Any] = field(default_factory=dict)
 
     @property
     def path(self) -> Path:
@@ -325,22 +331,27 @@ def load_config(name: str) -> Config:
     path = CONFIG_DIR / f"{name}.yaml"
     if not path.exists():
         return Config(name=name)
-    raw = yaml.safe_load(path.read_text())
+    text = path.read_text()
+    raw = yaml.safe_load(text)
     if not isinstance(raw, dict):
         raw = {}
-    return Config(name=name, params={str(k): v for k, v in raw.items()})
+    params = {str(k): v for k, v in raw.items()}
+    # A disabled marker whose key is also active is ignored — active wins.
+    disabled = {
+        k: v for k, v in parse_disabled_markers(text).items() if k not in params
+    }
+    return Config(name=name, params=params, disabled_params=disabled)
 
 
 def save_config(config: Config) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    config.path.write_text(
-        yaml.dump(
-            config.params,
-            default_flow_style=False,
-            allow_unicode=True,
-            sort_keys=False,
-        )
+    text = yaml.dump(
+        config.params,
+        default_flow_style=False,
+        allow_unicode=True,
+        sort_keys=False,
     )
+    config.path.write_text(text + render_disabled_markers(config.disabled_params))
 
 
 def delete_config(name: str) -> None:

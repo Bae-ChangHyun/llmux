@@ -80,13 +80,25 @@ def _backend_save_config(
             model=model,
             gpu_memory_utilization=gpu_mem,
             extra_params=extra,
+            disabled_params=dict(disabled),
         ))
     else:
         from tui.backends.llamacpp.backend import Config as LcppConfig
         from tui.backends.llamacpp.backend import save_config as l_save
 
-        l_save(LcppConfig(name=name, params=dict(data)))
+        l_save(LcppConfig(name=name, params=dict(data), disabled_params=dict(disabled)))
     return _config_path(backend, name)
+
+
+def _backend_load_disabled(backend: str, name: str) -> dict:
+    """Disabled params of an existing config (empty when none / file absent)."""
+    if backend == "vllm":
+        from tui.backends.vllm.backend_storage import load_config as v_load
+
+        return dict(v_load(name).disabled_params)
+    from tui.backends.llamacpp.backend import load_config as l_load
+
+    return dict(l_load(name).disabled_params)
 
 
 def _backend_load_config(backend: str, name: str) -> dict:
@@ -292,10 +304,20 @@ def show_config(
     """Print a config YAML."""
     bk = _resolve_backend_for_existing(backend, name)
     data = _load_yaml(bk, name)
+    disabled = _backend_load_disabled(bk, name)
     if json_out:
-        emit_json(data)
+        # Structured (params + disabled) so a caller can tell the two apart —
+        # the flat file dump can't express a disabled param (it's a comment).
+        emit_json({"params": data, "disabled": disabled})
         return
     print(yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=False))
+    if disabled:
+        print("# disabled:")
+        print(
+            yaml.safe_dump(
+                disabled, sort_keys=False, allow_unicode=True, default_flow_style=False
+            ).rstrip()
+        )
 
 
 @app.command("new")
@@ -343,21 +365,72 @@ def edit_config(
     name: str = typer.Argument(...),
     backend: Optional[str] = typer.Option(None, "--backend", "-b"),
     set_kv: list[str] = typer.Option([], "--set", help="Repeatable: KEY=VALUE."),
-    unset: list[str] = typer.Option([], "--unset", help="Repeatable: KEY to remove."),
+    unset: list[str] = typer.Option([], "--unset", help="Repeatable: KEY to remove (both active & disabled)."),
+    disable: list[str] = typer.Option(
+        [], "--disable", help="Repeatable: move an active KEY to disabled (kept, not served)."
+    ),
+    enable: list[str] = typer.Option(
+        [], "--enable", help="Repeatable: move a disabled KEY back to active."
+    ),
     model: Optional[str] = typer.Option(None, "--model", "-m"),
     gpu_memory_utilization: Optional[str] = typer.Option(None, "--gpu-mem"),
 ) -> None:
     """Patch fields in an existing config."""
     bk = _resolve_backend_for_existing(backend, name)
+    _warn_touching_example(bk, name, "modifying")
+    _reject_vllm_only_config_options(
+        bk,
+        model_given=model is not None,
+        gpu_mem_given=gpu_memory_utilization is not None,
+    )
     data = _backend_load_config(bk, name)
+    disabled = _backend_load_disabled(bk, name)
     if model is not None:
         data["model"] = model
     if gpu_memory_utilization is not None:
+        _validate_gpu_mem(gpu_memory_utilization)
         data["gpu-memory-utilization"] = gpu_memory_utilization
-    data.update(_parse_set_kv(set_kv))
+    # --set re-activates a key that was disabled (and updates its value).
+    for k, v in _parse_set_kv(set_kv).items():
+        disabled.pop(k, None)
+        data[k] = v
+    # vLLM's model / gpu-memory-utilization are typed fields the serializer
+    # always re-emits with a default, so a disabled marker for them would sit
+    # alongside a live default — `up` would silently use the default, not the
+    # value the user thought they'd toggled. Refuse to toggle them at all.
+    if bk == "vllm":
+        for flag, keys in (("--disable", disable), ("--enable", enable)):
+            for k in keys:
+                if k in ("model", "gpu-memory-utilization"):
+                    raise typer.BadParameter(
+                        f"{k} is a core vLLM field and cannot be toggled; use "
+                        "--model / --gpu-mem to change it.",
+                        param_hint=flag,
+                    )
+    # --disable: active -> disabled. Must currently be active.
+    for k in disable:
+        if k not in data:
+            raise typer.BadParameter(
+                f"cannot disable {k!r}: not an active param in config '{name}'.",
+                param_hint="--disable",
+            )
+        disabled[k] = data.pop(k)
+    # --enable: disabled -> active. Must currently be disabled.
+    for k in enable:
+        if k not in disabled:
+            raise typer.BadParameter(
+                f"cannot enable {k!r}: not a disabled param in config '{name}'.",
+                param_hint="--enable",
+            )
+        data[k] = disabled.pop(k)
+    # Validate AFTER enable so a bad gpu-memory-utilization brought back from
+    # the disabled set (or set above) can't slip through unchecked.
+    _validate_gpu_mem_in_data(bk, data)
+    # --unset removes from wherever it lives.
     for k in unset:
         data.pop(k, None)
-    saved = _backend_save_config(bk, name, data)
+        disabled.pop(k, None)
+    saved = _backend_save_config(bk, name, data, disabled)
     print(saved)
 
 
@@ -387,7 +460,8 @@ def clone_config(
             param_hint="DST",
         )
     data = _backend_load_config(bk, src)
-    saved = _backend_save_config(bk, dst, data)
+    disabled = _backend_load_disabled(bk, src)
+    saved = _backend_save_config(bk, dst, data, disabled)
     print(saved)
 
 

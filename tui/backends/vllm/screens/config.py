@@ -140,6 +140,10 @@ class ConfigFormScreen(ModalScreen[str | None]):
         height: auto;
         margin-bottom: 0;
     }
+    ConfigFormScreen .param-row .param-switch {
+        width: 8;
+        margin-right: 1;
+    }
     ConfigFormScreen .param-row .param-key {
         width: 28;
         margin-right: 1;
@@ -235,6 +239,8 @@ class ConfigFormScreen(ModalScreen[str | None]):
         if self._edit_mode and self._initial_config:
             for key, value in self._initial_config.extra_params.items():
                 self._add_param_row(key, format_config_param_value(value))
+            for key, value in self._initial_config.disabled_params.items():
+                self._add_param_row(key, format_config_param_value(value), enabled=False)
         self._load_vllm_params()
 
     @work(exclusive=False)
@@ -248,11 +254,14 @@ class ConfigFormScreen(ModalScreen[str | None]):
             for inp in self.query(".param-key"):
                 inp.suggester = _PARAM_SUGGESTER
 
-    def _add_param_row(self, key: str = "", value: str = "") -> None:
+    def _add_param_row(self, key: str = "", value: str = "", enabled: bool = True) -> None:
         container = self.query_one("#params-container")
         row_id = f"param-row-{self._param_counter}"
         self._param_counter += 1
+        # A row's Switch decides active (params) vs disabled (comment marker) at
+        # save time; a disabled row is dimmed via the `-disabled` class.
         row = Horizontal(
+            Switch(value=enabled, classes="param-switch"),
             Input(
                 value=key,
                 placeholder="param-name (Tab: autocomplete)",
@@ -262,11 +271,17 @@ class ConfigFormScreen(ModalScreen[str | None]):
             Input(value=value, placeholder="value", classes="param-value"),
             Button("x", classes="param-remove"),
             id=row_id,
-            classes="param-row",
+            classes="param-row" if enabled else "param-row -disabled",
         )
         container.mount(row)
         # Scroll to show newly added row
         self.call_after_refresh(self._scroll_to_bottom)
+
+    @on(Switch.Changed, ".param-switch")
+    def _on_switch(self, event: Switch.Changed) -> None:
+        row = event.switch.parent
+        if row is not None:
+            row.set_class(not event.value, "-disabled")
 
     def _scroll_to_bottom(self) -> None:
         try:
@@ -322,24 +337,29 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 )
                 return
 
-        # --- Collect extra params ---
+        # --- Collect params (Switch on → active, off → disabled) ---
         extra_params: dict[str, Any] = {}
+        disabled_params: dict[str, Any] = {}
         seen_keys: set[str] = set()
         for row in self.query(".param-row"):
             key_input = row.query_one(".param-key", Input)
             value_input = row.query_one(".param-value", Input)
+            switch = row.query_one(".param-switch", Switch)
             k = key_input.value.strip()
             v = value_input.value.strip()
             if k:
+                # Duplicate check spans active + disabled — the same key can't
+                # exist in both, and 'disabled' wins nothing at save time.
                 if k in seen_keys:
                     self.notify(f"Duplicate parameter: {k}", severity="error")
                     return
                 seen_keys.add(k)
                 try:
-                    extra_params[k] = parse_config_param_value(v)
+                    parsed = parse_config_param_value(v)
                 except Exception as exc:
                     self.notify(f"Invalid value for {k}: {exc}", severity="error")
                     return
+                (extra_params if switch.value else disabled_params)[k] = parsed
 
         # --- Warn about unknown params ---
         unknown = [k for k in extra_params if k not in KNOWN_VLLM_PARAMS]
@@ -356,6 +376,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
             model=model,
             gpu_memory_utilization=gpu_mem or "0.9",
             extra_params=extra_params,
+            disabled_params=disabled_params,
         )
 
         save_config(cfg)

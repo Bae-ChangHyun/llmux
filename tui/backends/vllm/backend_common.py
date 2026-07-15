@@ -67,6 +67,8 @@ class Config:
     model: str = ""
     gpu_memory_utilization: str = "0.9"
     extra_params: dict[str, Any] = field(default_factory=dict)
+    # Params kept but not passed to the server — stored as comment markers.
+    disabled_params: dict[str, Any] = field(default_factory=dict)
 
     @property
     def path(self) -> Path:

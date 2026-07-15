@@ -182,6 +182,10 @@ class ConfigFormScreen(ModalScreen[str | None]):
         height: auto;
         margin-bottom: 0;
     }
+    ConfigFormScreen .param-row .param-switch {
+        width: 8;
+        margin-right: 1;
+    }
     ConfigFormScreen .param-row .param-key {
         width: 28;
         margin-right: 1;
@@ -260,6 +264,8 @@ class ConfigFormScreen(ModalScreen[str | None]):
         if self._edit_mode and self._initial_config:
             for key, value in self._initial_config.params.items():
                 self._add_param_row(key, format_config_param_value(value))
+            for key, value in self._initial_config.disabled_params.items():
+                self._add_param_row(key, format_config_param_value(value), enabled=False)
         else:
             # 새 config: 필수 핵심 플래그 3개 선제공
             for key in ("model-file", "ctx-size", "n-gpu-layers"):
@@ -291,12 +297,14 @@ class ConfigFormScreen(ModalScreen[str | None]):
             suggester=_FLAG_SUGGESTER,
             classes="param-key",
         )
+        # Switch off → saved as a disabled comment marker (kept, not served).
         row = Horizontal(
+            Switch(value=enabled, classes="param-switch"),
             key_input,
             Input(value=value, placeholder="value (비우면 true)", classes="param-value"),
             Button("x", classes="param-remove"),
             id=row_id,
-            classes="param-row",
+            classes="param-row" if enabled else "param-row -disabled",
         )
         container.mount(row)
 
@@ -325,6 +333,12 @@ class ConfigFormScreen(ModalScreen[str | None]):
         else:
             help_widget.update("")
 
+    @on(Switch.Changed, ".param-switch")
+    def _on_switch(self, event: Switch.Changed) -> None:
+        row = event.switch.parent
+        if row is not None:
+            row.set_class(not event.value, "-disabled")
+
     @on(Button.Pressed, "#add-param-btn")
     def _on_add_param(self, event: Button.Pressed) -> None:
         event.stop()
@@ -352,26 +366,33 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 "이름은 영숫자/대시/언더스코어만 가능 ('-' 시작 금지)", severity="error"
             )
             return
-        if not self._edit_mode and name in list_config_names():
+        # File existence, not `in list_config_names()` — that helper filters
+        # out `example`, so a config named "example" passed the check and
+        # silently overwrote the tracked example.yaml.
+        if not self._edit_mode and (CONFIG_DIR / f"{name}.yaml").exists():
             self.notify(f"Config '{name}' 이미 존재", severity="error")
             return
 
         params: dict[str, Any] = {}
+        disabled_params: dict[str, Any] = {}
         seen: set[str] = set()
         for row in self.query(".param-row"):
             key = row.query_one(".param-key", Input).value.strip()
             val = row.query_one(".param-value", Input).value.strip()
+            switch = row.query_one(".param-switch", Switch)
             if not key:
                 continue
+            # Duplicate check spans active + disabled.
             if key in seen:
                 self.notify(f"중복 플래그: {key}", severity="error")
                 return
             seen.add(key)
             try:
-                params[key] = parse_config_param_value(val)
+                parsed = parse_config_param_value(val)
             except Exception as exc:
                 self.notify(f"'{key}' 값 파싱 실패: {exc}", severity="error")
                 return
+            (params if switch.value else disabled_params)[key] = parsed
 
         unknown = [k for k in params if k not in _KNOWN_FLAGS]
         if unknown:
@@ -381,7 +402,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 timeout=6,
             )
 
-        cfg = Config(name=name, params=params)
+        cfg = Config(name=name, params=params, disabled_params=disabled_params)
         save_config(cfg)
         self.notify(f"저장: {name}", severity="information")
         self._saved_name = name
