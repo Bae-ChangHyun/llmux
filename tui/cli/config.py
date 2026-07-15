@@ -16,6 +16,7 @@ import typer
 import yaml
 
 from tui.cli._runtime import BACKENDS, emit_json, emit_table
+from tui.cli.profile import _validate_gpu_mem
 from tui.common import profile_store
 
 app = typer.Typer(help="Config (YAML) CRUD.", no_args_is_help=True)
@@ -53,14 +54,18 @@ def _config_path(backend: str, name: str) -> Path:
     return _config_dir(backend) / f"{name}.yaml"
 
 
-def _backend_save_config(backend: str, name: str, data: dict) -> Path:
+def _backend_save_config(
+    backend: str, name: str, data: dict, disabled: dict | None = None
+) -> Path:
     """Route a config write through the backend's canonical serializer.
 
     The vLLM backend hoists `model` / `gpu-memory-utilization` into typed
     fields and writes them in a fixed order; the llama.cpp backend writes a
     flat flag dict. Going through these instead of a local `yaml.safe_dump`
-    keeps TUI and CLI round-trips byte-identical (Finding #4).
+    keeps TUI and CLI round-trips byte-identical (Finding #4). `disabled`
+    carries params kept as comment markers rather than active keys.
     """
+    disabled = disabled or {}
     cdir = _config_dir(backend)
     cdir.mkdir(parents=True, exist_ok=True)
     if backend == "vllm":
@@ -129,6 +134,13 @@ def _parse_set_kv(items: list[str]) -> dict:
 
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 
+# Creation rule — matches the TUI's ConfigFormScreen (lowercase only). Kept
+# separate from _NAME_RE on purpose: the *reference* paths (show/edit/delete/
+# clone-source) stay on the permissive rule so a user who already has an
+# `Uppercase.yaml` on disk — from an older build or made by hand — can still
+# inspect and remove it. Only new names are held to the strict rule.
+_NEW_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
 
 def _validate_name(name: str) -> None:
     """Reject names that could escape `_config_dir(bk)` via path traversal."""
@@ -136,6 +148,83 @@ def _validate_name(name: str) -> None:
         raise typer.BadParameter(
             f"invalid config name {name!r}: must match {_NAME_RE.pattern}",
             param_hint="NAME",
+        )
+
+
+def _reject_vllm_only_config_options(
+    backend: str, *, model_given: bool, gpu_mem_given: bool
+) -> None:
+    """Refuse `--model` / `--gpu-mem` on a llama.cpp config.
+
+    Both are vLLM-shaped: `_backend_save_config` drops them for llama.cpp
+    (`new`), or writes them through verbatim (`edit`) as `model` /
+    `gpu-memory-utilization` keys — flags llama-server does not have, so the
+    profile only breaks later, at start time.
+    """
+    if backend != "llamacpp":
+        return
+    offenders = [
+        flag
+        for flag, given in (("--model", model_given), ("--gpu-mem", gpu_mem_given))
+        if given
+    ]
+    if not offenders:
+        return
+    verb = "is" if len(offenders) == 1 else "are"
+    raise typer.BadParameter(
+        f"{', '.join(offenders)} {verb} vLLM-only and not supported by backend "
+        "'llamacpp'; use --set KEY=VALUE for llama-server flags.",
+        param_hint=offenders[0],
+    )
+
+
+def _validate_gpu_mem_in_data(backend: str, data: dict) -> None:
+    """Apply the --gpu-mem range rule to a value that arrived via --set.
+
+    vLLM only: llama.cpp's `--set` is the raw llama-server flag namespace, where
+    a key of the same spelling would just be a user-defined flag — not the vLLM
+    field this rule governs.
+    """
+    if backend != "vllm":
+        return
+    raw = data.get("gpu-memory-utilization")
+    if raw is None:
+        return
+    _validate_gpu_mem(str(raw), param_hint="--set gpu-memory-utilization")
+
+
+def _reject_creating_example(name: str, *, param_hint: str) -> None:
+    """`example.yaml` is the tracked template — recreating or overwriting it has
+    no legitimate use, so `new`/`clone` refuse even with --overwrite.
+
+    `edit`/`delete` stay available as escape hatches (someone may genuinely need
+    to fix the template) but warn instead of acting silently.
+    """
+    if name == "example":
+        raise typer.BadParameter(
+            "'example' is the tracked template config and may not be created or "
+            "overwritten; pick a different name.",
+            param_hint=param_hint,
+        )
+
+
+def _warn_touching_example(backend: str, name: str, verb: str) -> None:
+    if name == "example":
+        print(
+            f"warning: {verb} the tracked template config "
+            f"config/{backend}/example.yaml"
+        )
+
+
+def _validate_new_name(name: str, *, param_hint: str = "NAME") -> None:
+    """Name rule for configs we are about to create (TUI-equivalent)."""
+    _validate_name(name)
+    if not _NEW_NAME_RE.match(name):
+        raise typer.BadParameter(
+            f"invalid config name {name!r}: must be lowercase — match "
+            f"{_NEW_NAME_RE.pattern} (start with [a-z0-9], then lowercase "
+            "letters, digits, dashes, or underscores only).",
+            param_hint=param_hint,
         )
 
 
@@ -223,9 +312,18 @@ def new_config(
     overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite if file exists."),
 ) -> None:
     """Create a new config YAML."""
-    _validate_name(name)
+    _validate_new_name(name)
+    _reject_creating_example(name, param_hint="NAME")
     if backend not in BACKENDS:
         raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
+    # `new` has no None sentinel, so "given" = "differs from the default".
+    _reject_vllm_only_config_options(
+        backend,
+        model_given=bool(model),
+        gpu_mem_given=gpu_memory_utilization != "0.9",
+    )
+    if backend == "vllm":
+        _validate_gpu_mem(gpu_memory_utilization)
     path = _config_dir(backend) / f"{name}.yaml"
     if path.exists() and not overwrite:
         raise typer.BadParameter(f"config already exists: {path} (use --overwrite)")
@@ -235,6 +333,7 @@ def new_config(
     else:
         data = {}
     data.update(_parse_set_kv(set_kv))
+    _validate_gpu_mem_in_data(backend, data)
     saved = _backend_save_config(backend, name, data)
     print(saved)
 
@@ -279,7 +378,8 @@ def clone_config(
     without creating a profile in the same step.
     """
     bk = _resolve_backend_for_existing(backend, src)
-    _validate_name(dst)
+    _validate_new_name(dst, param_hint="DST")
+    _reject_creating_example(dst, param_hint="DST")
     dst_path = _config_dir(bk) / f"{dst}.yaml"
     if dst_path.exists() and not overwrite:
         raise typer.BadParameter(
@@ -302,6 +402,7 @@ def delete_config(
     path = _config_dir(bk) / f"{name}.yaml"
     if not path.exists():
         raise typer.BadParameter(f"config not found: {path}", param_hint="NAME")
+    _warn_touching_example(bk, name, "deleting")
     # Profiles pointing at this config would keep a dangling config_name in
     # profiles.yaml once the YAML is gone; clear them like the TUI's
     # ConfirmDeleteConfigScreen does.

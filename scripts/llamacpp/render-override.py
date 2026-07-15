@@ -16,18 +16,25 @@ render-override.py — profile + config 를 읽어 docker-compose.override.yaml 
 from __future__ import annotations
 
 import re
+import shlex
 import sys
 from pathlib import Path
 
 import yaml
 
-ROOT = Path(__file__).resolve().parents[2]
+# 이 스크립트가 사는 체크아웃 — `tui` 패키지를 import 하기 위한 sys.path 용도로만
+# 쓴다. 데이터 루트(profiles/config/.runtime)는 LLMUX_ROOT 를 볼 수 있어야 하므로
+# 아래에서 profile_store.PROJECT_ROOT 로 따로 잡는다.
+_CHECKOUT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_CHECKOUT_ROOT))
+from tui.common import profile_store  # noqa: E402
+
+# 프로필은 profile_store(LLMUX_ROOT 인식) 가 읽고, config/.runtime 은 여기서 읽고
+# 쓴다 — 둘이 서로 다른 루트를 가리키면 엉뚱한 config 로 override 를 렌더한다.
+ROOT = profile_store.PROJECT_ROOT
 CONFIG_DIR = ROOT / "config" / "llamacpp"
 COMPOSE_DIR = ROOT / "compose" / "llamacpp"
 RUNTIME_DIR = ROOT / ".runtime" / "llamacpp"
-
-sys.path.insert(0, str(ROOT))
-from tui.common import profile_store  # noqa: E402
 
 _SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
@@ -94,9 +101,22 @@ def render_command(
     cfg.pop("webui", None)
     # --metrics 는 위에서 이미 강제 주입 — config 에 남아 있으면 중복 플래그가 된다.
     cfg.pop("metrics", None)
+    # --host/--port 도 위에서 강제 주입. compose 가 컨테이너 포트를 매핑하므로
+    # config 값이 들어오면 중복 인자가 되고, 컨테이너 내부 포트를 바꾸면
+    # 포트 매핑·healthcheck 와 어긋난다.
+    cfg.pop("host", None)
+    cfg.pop("port", None)
 
+    # A scalar string is the natural way to write a single value (the flag
+    # help even shows one), so promote it instead of iterating it char by char
+    # — `-ot '.*=CPU'` was becoming `-ot .`, `-ot *`, `-ot =`, ...
     override_tensors = cfg.pop("override-tensors", None) or []
+    if isinstance(override_tensors, str):
+        override_tensors = [override_tensors]
     extra_args = cfg.pop("extra-args", None) or []
+    if isinstance(extra_args, str):
+        # extra-args is a command-line fragment; split it like a shell would.
+        extra_args = shlex.split(extra_args)
 
     # Modern llama-server requires an explicit value for --flash-attn
     # (`on` / `off` / `auto`); bare `--flash-attn` consumes the next CLI arg

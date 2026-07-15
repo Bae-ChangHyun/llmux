@@ -32,6 +32,7 @@ from tui.backends.llamacpp.backend import (
     run_command,
 )
 from tui.backends.llamacpp.backend_runtime import LLAMACPP_DEV_SPEC
+from tui.common import profile_store
 from tui.common.dev_build import list_local_dev_images
 
 
@@ -179,7 +180,14 @@ class SystemScreen(Screen):
 
     @work(exclusive=True, group="sys-containers")
     async def _refresh_containers(self) -> None:
+        """Show every llmux-managed container, across BOTH backends.
+
+        Mirrors the vLLM System screen: filtering to just this backend made the
+        panel claim 'no profile containers' while vLLM containers were running.
+        """
         known = {load_profile(n).container_name for n in list_profile_names()}
+        for stored in profile_store.list_profiles("vllm"):
+            known.add(stored.container_name or stored.name)
         rc, out = await run_command(
             "docker", "ps", "-a",
             "--format", "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}",
@@ -189,6 +197,8 @@ class SystemScreen(Screen):
         log.clear()
         if rc != 0:
             log.write("[red]docker ps 실패[/]")
+            if out.strip():
+                log.write(out)
             return
         lines = out.strip().splitlines()
         if len(lines) < 2:

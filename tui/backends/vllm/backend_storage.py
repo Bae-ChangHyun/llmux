@@ -59,7 +59,16 @@ def load_profile(name: str) -> Profile:
     stored = profile_store.load_profile(name, "vllm")
     if stored is None:
         return Profile(name=name)
-    profile_store.render_env(stored)
+    try:
+        profile_store.render_env(stored)
+    except ValueError:
+        # A value the .env renderer refuses (quote/newline/control char, e.g.
+        # from a hand-edited profiles.yaml) must not take down every read path:
+        # this same load_profile backs `ps`, the dashboard scan, and the
+        # pre-flight of *other* profiles. Skip the .env refresh and let the
+        # profile load; the start path re-renders and fails loudly for the one
+        # profile that is actually broken.
+        pass
     return _to_profile(stored)
 
 
@@ -71,6 +80,10 @@ def delete_profile(name: str, delete_config: bool = False) -> None:
     if delete_config:
         stored = profile_store.load_profile(name, "vllm")
         config_name = stored.config_name if stored else ""
+        # example.yaml is the tracked template — a cascade delete would remove
+        # it from the working tree. The profile itself still goes.
+        if config_name == "example":
+            config_name = ""
         if config_name:
             other_refs = [
                 n for n in profile_store.list_profile_names("vllm")
@@ -93,7 +106,8 @@ def load_config(name: str) -> Config:
     if not path.exists():
         return Config(name=name)
 
-    raw_data = yaml.safe_load(path.read_text())
+    text = path.read_text()
+    raw_data = yaml.safe_load(text)
     if raw_data is None:
         data: dict[str, Any] = {}
     elif isinstance(raw_data, dict):

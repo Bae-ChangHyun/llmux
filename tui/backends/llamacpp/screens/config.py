@@ -10,9 +10,10 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.suggester import SuggestFromList
-from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static
+from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static, Switch
 
 from tui.backends.llamacpp.backend import (
+    CONFIG_DIR,
     Config,
     delete_config,
     extract_llama_server_flags,
@@ -189,6 +190,10 @@ class ConfigFormScreen(ModalScreen[str | None]):
         width: 1fr;
         margin-right: 1;
     }
+    ConfigFormScreen .param-row.-disabled .param-key,
+    ConfigFormScreen .param-row.-disabled .param-value {
+        color: $text-muted;
+    }
     ConfigFormScreen .param-row .param-remove {
         min-width: 5;
         width: 5;
@@ -275,7 +280,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 inp.suggester = _FLAG_SUGGESTER
 
     def _add_param_row(
-        self, key: str = "", value: str = "", *, focus: bool = False
+        self, key: str = "", value: str = "", *, focus: bool = False, enabled: bool = True
     ) -> None:
         container = self.query_one("#params-container", Vertical)
         row_id = f"param-row-{self._param_counter}"
@@ -517,6 +522,11 @@ class ConfigListScreen(Screen):
         table.add_columns("Name", "Model File", "Ctx", "N-GPU-Layers", "Params")
         self._refresh_table()
 
+    def on_screen_resume(self) -> None:
+        # Named SCREENS entries are cached instances — on_mount fires once, so
+        # without this the list goes stale after configs change elsewhere.
+        self._refresh_table()
+
     def _refresh_table(self) -> None:
         table = self.query_one("#config-table", DataTable)
         table.clear()
@@ -572,7 +582,7 @@ class ConfigListScreen(Screen):
             if not validate_name(new_name):
                 self.notify("이름은 소문자/숫자/대시/언더스코어", severity="error")
                 return
-            if new_name in set(list_config_names()):
+            if (CONFIG_DIR / f"{new_name}.yaml").exists():
                 self.notify(f"Config '{new_name}' 이미 존재", severity="error")
                 return
             cfg = load_config(name)

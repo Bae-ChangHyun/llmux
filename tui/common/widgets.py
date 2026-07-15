@@ -92,6 +92,24 @@ class ConfirmModal(ModalScreen[bool]):
 class TextPromptModal(ModalScreen[str | None]):
     """공용 텍스트 입력 다이얼로그. 취소 시 None, 확인 시 입력 문자열."""
 
+    # Without an explicit height the generic `ModalScreen > Vertical` rule in
+    # app.tcss leaves Vertical at its default `height: 1fr`, so the dialog
+    # stretched to nearly the full terminal around three rows of content.
+    DEFAULT_CSS = """
+    TextPromptModal > Vertical {
+        width: 52;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: round $primary;
+    }
+    TextPromptModal #prompt-message {
+        text-align: center;
+        width: 100%;
+        margin-bottom: 1;
+    }
+    """
+
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=False),
     ]
@@ -114,7 +132,7 @@ class TextPromptModal(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         yield Vertical(
-            Static(self._message, id="confirm-message"),
+            Static(self._message, id="prompt-message"),
             Input(
                 value=self._default,
                 placeholder=self._placeholder,

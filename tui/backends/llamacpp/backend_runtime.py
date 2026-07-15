@@ -29,18 +29,21 @@ from tui.common.conflicts import gpu_conflict_messages as _shared_gpu_conflict_m
 from tui.common.docker import (
     run_command as _docker_run,
 )
-from tui.common.env import validate_common_env
+from tui.common.env import expand_env_values, validate_common_env
 
 from .backend import (
     COMMON_ENV,
+    CONFIG_DIR,
     PROJECT_ROOT,
     RUNTIME_DIR,
     SCRIPTS_DIR,
+    Config,
     Profile,
     _parse_env_file,
     list_profile_names,
     load_config,
     load_profile,
+    save_config,
 )
 
 COMPOSE_DIR = PROJECT_ROOT / "compose" / "llamacpp"
@@ -260,8 +263,13 @@ def _compose_files(profile: Profile) -> list[str]:
 def _compose_env(profile: Profile) -> dict[str, str]:
     """Merged env for docker compose: os.environ + .env.common + per-profile .env."""
     env = os.environ.copy()
+    # Expand $VAR/~ only in the shared .env.common path values: process env
+    # outranks --env-file in compose, so a raw `/home/$USER/...` would be
+    # bind-mounted literally. The profile .env carries user env_vars, which must
+    # stay literal — expanding them would make a deliberate `$VAR`/`~` value
+    # impossible to pass through.
     if COMMON_ENV.exists():
-        env.update(_parse_env_file(COMMON_ENV))
+        env.update(expand_env_values(_parse_env_file(COMMON_ENV)))
     if profile.path.exists():
         env.update(_parse_env_file(profile.path))
     env["PROFILE_PATH"] = str(profile.path)
@@ -342,6 +350,12 @@ async def check_port_conflict(profile: Profile) -> str | None:
                 continue
             container_name, ports = parts
             if container_name == profile.container_name:
+                # Our own container is already up — see the identical guard in
+                # vllm.check_port_conflict. The bind probe below cannot tell our
+                # own docker-proxy from a foreign listener, so it blocked a
+                # re-`up` (a compose no-op) with a bogus conflict.
+                if re.search(rf"(^|[^\d]){re.escape(port)}->", ports):
+                    return None
                 continue
             if re.search(rf"(^|[^\d]){re.escape(port)}->", ports):
                 for name in list_profile_names():
@@ -717,6 +731,37 @@ async def stream_container_up(
     for message in await _gpu_conflict_messages(profile):
         yield ("log", message)
 
+    # Auto-link / auto-create the config (parity with vllm._ensure_profile_config).
+    # Without this the Start screen's "a default config will be generated on
+    # start" promise was false on llama.cpp: an unlinked profile just failed in
+    # render-override.
+    #
+    # This runs BEFORE the image-override block on purpose: save_profile()
+    # persists `stored` to profiles.yaml, and the block below assigns the
+    # one-off resolved_image_tag onto `stored`. Saving after that would write a
+    # transient Dev Build / Custom Tag / Default Image selection into the user's
+    # saved profile.
+    if not stored.config_name:
+        stored.config_name = profile_name
+        profile.config_name = profile_name
+        try:
+            profile_store.save_profile(stored)
+        except Exception as exc:  # noqa: BLE001 — surface, don't half-start
+            yield ("log", f"✗ config 자동 링크 저장 실패: {exc}")
+            yield ("rc", 1)
+            return
+        yield ("log", f"▸ config 미링크 — '{profile_name}' 로 자동 링크")
+
+    config_path = CONFIG_DIR / f"{stored.config_name}.yaml"
+    if not config_path.exists():
+        try:
+            save_config(Config(name=stored.config_name, params={"alias": stored.config_name}))
+        except Exception as exc:  # noqa: BLE001
+            yield ("log", f"✗ 기본 config 생성 실패: {exc}")
+            yield ("rc", 1)
+            return
+        yield ("log", f"▸ 기본 config 생성: {config_path}")
+
     # Apply TUI-side image override (a Dev Build / Custom Tag / Default Image
     # selection trumps whatever's pinned on the profile). This is identical to
     # how the vllm screen passes use_dev/tag down to its stream_container_up.
@@ -731,7 +776,9 @@ async def stream_container_up(
         default_repo, default_branch = get_dev_build_defaults()
         resolved_repo = (repo_url or default_repo).strip()
         resolved_branch = (branch or default_branch).strip()
-        dev_tag = (tag or resolved_branch).strip()
+        # Same sanitizer the builder uses — it tags `llamacpp-dev:<safe_branch>`,
+        # so a raw `feat/foo` would be an invalid reference that never matches.
+        dev_tag = dev_build.sanitize_docker_tag((tag or resolved_branch).strip())
         resolved_image_tag = f"{LLAMACPP_DEV_SPEC.image_prefix}:{dev_tag}"
 
         # Build the dev image on demand if missing OR if the locally cached
@@ -740,8 +787,33 @@ async def stream_container_up(
         # ggml-org and `<prefix>:master` from a fork collide on tag name —
         # reusing blindly would silently start the wrong source.
         exists = await dev_build.image_exists_locally(LLAMACPP_DEV_SPEC, dev_tag)
-        matches = exists and await dev_build.image_matches(
-            LLAMACPP_DEV_SPEC, dev_tag, resolved_repo, resolved_branch
+
+        if tag and not exists:
+            # An explicit --tag names an image the user expects to already
+            # exist; silently building a *different* source under that name is
+            # not what they asked for. vLLM errors out here — match it.
+            yield ("log", f"Error: Image {resolved_image_tag} not found")
+            rc, out = await _docker_run(
+                "docker", "images", LLAMACPP_DEV_SPEC.image_prefix,
+                "--format", "  {{.Tag}}", timeout=20,
+            )
+            if rc == 0 and out.strip():
+                yield ("log", "Available images:")
+                for line in out.strip().splitlines():
+                    yield ("log", line)
+            yield ("rc", 1)
+            return
+
+        # An explicit --tag names an image the user already has; the label check
+        # exists only to catch a *branch-derived* tag whose cached image came
+        # from another repo/branch. Applying it to an explicit tag would rebuild
+        # over the user's own image. vLLM guards this the same way
+        # (`if not tag and not needs_build`).
+        matches = exists and (
+            bool(tag)
+            or await dev_build.image_matches(
+                LLAMACPP_DEV_SPEC, dev_tag, resolved_repo, resolved_branch
+            )
         )
         if not exists:
             yield ("log", f"▸ Dev image {resolved_image_tag} not found — building from {resolved_repo}@{resolved_branch}")
@@ -786,7 +858,7 @@ async def stream_container_up(
         if not await dev_build.image_exists_locally(LLAMACPP_DEV_SPEC, dev_tag):
             yield ("log", f"✗ Dev image {resolved_image_tag} not found locally.")
             yield ("log", "  Build it first:")
-            yield ("log", f"  uv run llmux image build-dev --backend llamacpp --branch {dev_tag}")
+            yield ("log", f"  uv run llmux image build-dev --backend llamacpp --tag {dev_tag}")
             yield ("rc", 1)
             return
         yield ("log", f"▸ Dev image: {resolved_image_tag}")
@@ -805,6 +877,20 @@ async def stream_container_up(
 
     yield ("log", f"▸ '{profile_name}' 프로필로 기동")
     env = _compose_env(profile)
+    # Pin the resolved image directly in the *process* env — which outranks
+    # --env-file in compose — so a concurrent llmux process re-rendering this
+    # profile's .env (restoring the saved pin) can't swap the image out from
+    # under a one-off Dev Build / Custom Tag / Default Image selection. Mirrors
+    # vLLM's _compose_env VLLM_IMAGE handling; both vars are set explicitly so
+    # the unused one is cleared rather than inherited stale.
+    if resolved_image_tag.startswith(f"{LLAMACPP_DEV_SPEC.image_prefix}:"):
+        env["LLAMACPP_DEV_TAG"] = resolved_image_tag.split(":", 1)[1]
+        env["LLAMACPP_IMAGE"] = ""
+    else:
+        # "" lets base compose's `${LLAMACPP_IMAGE:-<default>}` fall through to
+        # the default; a non-dev custom ref is used verbatim.
+        env["LLAMACPP_IMAGE"] = resolved_image_tag
+        env["LLAMACPP_DEV_TAG"] = ""
     # `--pull never` because the image is either:
     #   * a locally-built `llamacpp-dev:<tag>` (no remote to pull from), or
     #   * an explicitly-versioned ghcr/registry image the user already pulled

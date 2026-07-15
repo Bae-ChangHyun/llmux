@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from pathlib import Path
 
 import typer
 
@@ -212,45 +211,46 @@ def env_check(
     """Validate `.env.common` and report key paths."""
     from tui.common.profile_store import PROJECT_ROOT
     from tui.common.mem import _parse_env_file
+    from tui.common.env import validate_common_env
 
     common = PROJECT_ROOT / ".env.common"
+    # Defer the verdict to the same validator the start path gates on, instead
+    # of a second, stricter list. HF_TOKEN is optional (public repos need none)
+    # and VLLM_VERSION isn't even in .env.common.example — the runtime injects
+    # it into the compose env at start time — so requiring both here failed a
+    # perfectly good default setup.
+    ok, messages = validate_common_env(common)
     findings = {
         "project_root": str(PROJECT_ROOT),
         "env_common_path": str(common),
         "env_common_exists": common.exists(),
-        "issues": [],
+        "issues": [] if ok else list(messages),
     }
-    if not common.exists():
-        findings["issues"].append(
-            "Missing .env.common — copy from .env.common.example and fill in HF_TOKEN/HF_CACHE_PATH."
-        )
-    else:
-        env = _parse_env_file(common)
-        for key in ("HF_TOKEN", "HF_CACHE_PATH", "VLLM_VERSION"):
-            findings[key] = env.get(key, "")
-            if not env.get(key):
-                findings["issues"].append(f"{key} not set in .env.common")
-        hf_cache = env.get("HF_CACHE_PATH", "")
-        if hf_cache and not Path(hf_cache).is_absolute():
-            findings["issues"].append(f"HF_CACHE_PATH must be absolute: {hf_cache}")
+    env = _parse_env_file(common) if common.exists() else {}
+    for key in ("HF_TOKEN", "HF_CACHE_PATH"):
+        findings[key] = env.get(key, "")
 
-    findings["status"] = "ok" if not findings["issues"] else "error"
+    findings["status"] = "ok" if ok else "error"
 
     if json_out:
         emit_json(findings)
-        raise typer.Exit(code=0 if findings["status"] == "ok" else 1)
+        raise typer.Exit(code=0 if ok else 1)
 
     print(f"Project root : {findings['project_root']}")
     print(f"Env common   : {findings['env_common_path']}")
     if not findings["env_common_exists"]:
         print("Status       : MISSING .env.common")
         raise typer.Exit(code=1)
-    for k in ("HF_TOKEN", "HF_CACHE_PATH", "VLLM_VERSION"):
-        v = findings.get(k, "") or "(unset)"
-        # Mask token but reveal length so users can spot truncation issues.
-        if k == "HF_TOKEN" and v and v != "(unset)":
-            v = f"<set, {len(v)} chars>"
-        print(f"  {k:<14}: {v}")
+
+    token = findings["HF_TOKEN"]
+    # Mask token but reveal length so users can spot truncation issues.
+    print(
+        f"  {'HF_TOKEN':<14}: "
+        + (f"<set, {len(token)} chars>" if token else "(unset — optional, needed for gated models)")
+    )
+    print(f"  {'HF_CACHE_PATH':<14}: {findings['HF_CACHE_PATH'] or '(unset)'}")
+    print(f"  {'VLLM_VERSION':<14}: (injected at start time)")
+
     if findings["issues"]:
         print("\nIssues:")
         for i in findings["issues"]:
