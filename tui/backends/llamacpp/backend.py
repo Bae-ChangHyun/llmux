@@ -14,7 +14,11 @@ from typing import Any
 import yaml
 
 from tui.common import profile_store
-from tui.common.config_markers import parse_disabled_markers, render_disabled_markers
+from tui.common.config_markers import (
+    dump_active_config,
+    parse_disabled_markers,
+    render_disabled_markers,
+)
 from tui.common.env import parse_env_file as _parse_env_file  # noqa: F401 — re-exported for callers
 
 log = logging.getLogger(__name__)
@@ -345,12 +349,8 @@ def load_config(name: str) -> Config:
 
 def save_config(config: Config) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    text = yaml.dump(
-        config.params,
-        default_flow_style=False,
-        allow_unicode=True,
-        sort_keys=False,
-    )
+    existing = config.path.read_text() if config.path.exists() else None
+    text = dump_active_config(existing, config.params)
     config.path.write_text(text + render_disabled_markers(config.disabled_params))
 
 

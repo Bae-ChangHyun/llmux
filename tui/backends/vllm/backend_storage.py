@@ -7,7 +7,11 @@ from typing import Any
 import yaml
 
 from tui.common import profile_store
-from tui.common.config_markers import parse_disabled_markers, render_disabled_markers
+from tui.common.config_markers import (
+    dump_active_config,
+    parse_disabled_markers,
+    render_disabled_markers,
+)
 from tui.common.env import parse_env_file as _parse_env_file  # noqa: F401 — re-exported for callers
 
 from .backend_common import CONFIG_DIR, Config, Profile
@@ -140,7 +144,8 @@ def save_config(config: Config) -> None:
     }
     for key, value in config.extra_params.items():
         data[key] = True if value == "" else value
-    text = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    existing = config.path.read_text() if config.path.exists() else None
+    text = dump_active_config(existing, data)
     config.path.write_text(text + render_disabled_markers(config.disabled_params))
 
 
