@@ -36,6 +36,7 @@ from tui.backends.vllm.backend import (
 # Version option IDs (stable keys for logic, labels updated dynamically)
 # ---------------------------------------------------------------------------
 
+VER_PINNED = "pinned_image"
 VER_LOCAL = "local_latest"
 VER_OFFICIAL = "official"
 VER_NIGHTLY = "nightly"
@@ -175,6 +176,16 @@ class ContainerUpScreen(Screen):
                 yield Static(
                     "[yellow]No config linked. A default config will be generated on start.[/yellow]"
                 )
+            # The pinned image_tag silently beat whatever the user selected
+            # here (except an explicit tag). Surface it, and give it a real
+            # radio option so it can be selected — or deselected — knowingly.
+            pinned = self._profile.image_tag
+            if pinned:
+                yield Static(
+                    f"[cyan]Profile pinned to: {pinned}[/cyan]  "
+                    "[dim](pick another option to override for this run)[/dim]",
+                    id="pinned-label",
+                )
             with VerticalScroll(id="version-scroll"):
                 yield Label("Version", id="version-label")
                 yield Static(
@@ -182,7 +193,15 @@ class ContainerUpScreen(Screen):
                     id="version-help",
                 )
                 with RadioSet(id="version-radio"):
-                    yield RadioButton("Local Latest  (loading...)", id=VER_LOCAL, value=True)
+                    if pinned:
+                        yield RadioButton(
+                            f"Pinned Image  ({pinned})", id=VER_PINNED, value=True
+                        )
+                    yield RadioButton(
+                        "Local Latest  (loading...)",
+                        id=VER_LOCAL,
+                        value=not pinned,
+                    )
                     yield RadioButton("Official Release  (loading...)", id=VER_OFFICIAL)
                     yield RadioButton("Nightly  (loading...)", id=VER_NIGHTLY)
                     yield RadioButton("Dev Build  (vllm-dev)", id=VER_DEV)
@@ -282,7 +301,9 @@ class ContainerUpScreen(Screen):
             pass
 
         try:
-            if not self._local_tag:
+            # Don't steal the selection from a pinned profile — VER_PINNED is
+            # its default and stays valid regardless of what's on DockerHub.
+            if not self._local_tag and not self._profile.image_tag:
                 if self._release_version:
                     radio_set.query_one(f"#{VER_OFFICIAL}", RadioButton).value = True
                 else:
@@ -342,18 +363,30 @@ class ContainerUpScreen(Screen):
         # Determine version from radio selection
         radio_set = self.query_one("#version-radio", RadioSet)
         pressed = radio_set.pressed_button
-        selected_id = pressed.id if pressed else VER_LOCAL
+        default_id = VER_PINNED if self._profile.image_tag else VER_LOCAL
+        selected_id = pressed.id if pressed else default_id
 
         use_dev = False
+        use_default_image = False
         tag = ""
         pull = False
         repo_url = ""
         branch = ""
 
-        if selected_id == VER_LOCAL:
+        if selected_id == VER_PINNED:
+            # Empty tag + the profile's own image_tag → runtime's pinned branch.
+            # Same behavior as before this option existed, just now explicit.
+            pass
+        elif selected_id == VER_LOCAL:
             if not self._local_tag:
                 self.app.notify("No local vLLM image is available.", severity="error")
                 return
+            # Defeat any pinned image_tag via use_default_image rather than by
+            # passing an explicit tag: the runtime keys its pull policy off tag
+            # truthiness, and an explicit tag would flip Local Latest from
+            # `--pull never` to `--pull missing`. The user picked from images
+            # they already have, so a missing image must stay a hard error.
+            use_default_image = True
         elif selected_id == VER_OFFICIAL:
             if not self._release_version:
                 refreshed = await get_dockerhub_release_version()
@@ -417,6 +450,7 @@ class ContainerUpScreen(Screen):
         async for msg_type, data in stream_container_up(
             self.profile_name,
             use_dev=use_dev,
+            use_default_image=use_default_image,
             tag=tag,
             pull=pull,
             repo_url=repo_url,

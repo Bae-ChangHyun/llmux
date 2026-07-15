@@ -163,6 +163,291 @@ class CliSmokeTests(unittest.TestCase):
         combined = (r.stdout or "") + (r.stderr or "")
         self.assertIn("not found", combined)
 
+    # --- bad env value: isolated to the one profile, not the whole read path -
+
+    def _inject_bad_env_value(self, tmp: Path) -> None:
+        """Put a value the .env renderer refuses into profiles.yaml directly —
+        the shape a hand-edited or pre-validation file would have."""
+        data = yaml.safe_load((tmp / "profiles.yaml").read_text())
+        for p in data["profiles"]:
+            if p["name"] == "bravo":
+                p["env_vars"] = {"BAD": "it's"}
+        (tmp / "profiles.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+
+    def test_bad_env_value_does_not_break_read_paths(self):
+        tmp = _make_temp_project()
+        try:
+            self._inject_bad_env_value(tmp)
+
+            # ps must still work and still list *every* profile — the bad value
+            # used to take down the whole scan with a traceback.
+            r = _run_cli(tmp, "ps", "--json")
+            self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+            names = {row["profile"] for row in json.loads(r.stdout)}
+            self.assertIn("alpha", names)
+            self.assertIn("bravo", names)
+            self.assertIn("lcpp", names)
+
+            # profile list too.
+            pl = _run_cli(tmp, "profile", "list", "--json")
+            self.assertEqual(pl.returncode, 0, pl.stderr or pl.stdout)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_non_integer_port_does_not_break_the_whole_list(self):
+        tmp = _make_temp_project()
+        try:
+            data = yaml.safe_load((tmp / "profiles.yaml").read_text())
+            for p in data["profiles"]:
+                if p["name"] == "bravo":
+                    p["port"] = "not-a-number"
+            (tmp / "profiles.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+
+            # The bad entry is skipped, not fatal — alpha/bravo(other) still show.
+            r = _run_cli(tmp, "profile", "list", "--json")
+            self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+            names = {row["name"] for row in json.loads(r.stdout)}
+            self.assertIn("alpha", names)
+            self.assertNotIn("bravo", names)  # malformed → skipped
+
+            ps = _run_cli(tmp, "ps", "--json")
+            self.assertEqual(ps.returncode, 0, ps.stderr or ps.stdout)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_malformed_entries_are_skipped_not_fatal(self):
+        # A missing-name mapping and a bare string entry must not crash the scan
+        # of the whole file (they used to slip past the ValueError-only guard).
+        tmp = _make_temp_project()
+        try:
+            data = yaml.safe_load((tmp / "profiles.yaml").read_text())
+            data["profiles"].append({"backend": "vllm", "port": 8005})  # no name
+            data["profiles"].append("i am not a mapping")               # non-dict
+            (tmp / "profiles.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+
+            r = _run_cli(tmp, "profile", "list", "--json")
+            self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+            names = {row["name"] for row in json.loads(r.stdout)}
+            self.assertIn("alpha", names)
+            self.assertIn("bravo", names)
+
+            ps = _run_cli(tmp, "ps", "--json")
+            self.assertEqual(ps.returncode, 0, ps.stderr or ps.stdout)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_render_env_reports_the_offending_profile_cleanly(self):
+        tmp = _make_temp_project()
+        try:
+            self._inject_bad_env_value(tmp)
+
+            r = _run_cli(tmp, "render-env", "bravo")
+            self.assertNotEqual(r.returncode, 0)
+            out = r.stdout + r.stderr
+            self.assertNotIn("Traceback", out)
+            self.assertIn("single quote", out)
+
+            # A healthy profile still renders fine.
+            ok = _run_cli(tmp, "render-env", "alpha")
+            self.assertEqual(ok.returncode, 0, ok.stderr or ok.stdout)
+
+            # --unset is the documented recovery path.
+            fix = _run_cli(tmp, "profile", "edit", "bravo", "--unset", "BAD")
+            self.assertEqual(fix.returncode, 0, fix.stderr or fix.stdout)
+            after = _run_cli(tmp, "render-env", "bravo")
+            self.assertEqual(after.returncode, 0, after.stderr or after.stdout)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # --- --set must not bypass the --gpu-mem range rule ----------------------
+
+    def test_config_set_gpu_mem_is_range_checked_on_vllm(self):
+        bad = _run_cli(
+            self.tmp, "config", "new", "gmset", "--backend", "vllm",
+            "--model", "test/model", "--set", "gpu-memory-utilization=1.5",
+        )
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("gpu-memory-utilization", bad.stderr + bad.stdout)
+
+        # llama.cpp --set is the raw llama-server flag namespace — same spelling
+        # there is just a user flag and must not be policed by the vLLM rule.
+        lc = _run_cli(
+            self.tmp, "config", "new", "gmsetlc", "--backend", "llamacpp",
+            "--set", "gpu-memory-utilization=1.5",
+        )
+        self.assertEqual(lc.returncode, 0, lc.stderr or lc.stdout)
+        _run_cli(self.tmp, "config", "delete", "gmsetlc", "-y")
+
+    def test_profile_edit_rejects_unsanitized_dev_image_tag(self):
+        r = _run_cli(
+            self.tmp, "profile", "edit", "alpha", "--image-tag", "vllm-dev:feat/foo",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("vllm-dev:feat-foo", r.stderr + r.stdout)
+
+        # A sanitized dev tag and a normal ref are both accepted.
+        ok = _run_cli(
+            self.tmp, "profile", "edit", "alpha", "--image-tag", "vllm-dev:feat-foo",
+        )
+        self.assertEqual(ok.returncode, 0, ok.stderr or ok.stdout)
+        # Clear the pin so the shared alpha fixture is left as we found it.
+        _run_cli(self.tmp, "profile", "edit", "alpha", "--image-tag", "")
+
+    # --- parameter on/off (disable/enable) ----------------------------------
+
+    def test_config_disable_enable_round_trip(self):
+        _run_cli(
+            self.tmp, "config", "new", "dp1", "--backend", "vllm",
+            "--model", "m/x", "--set", "max-model-len=4096",
+            "--set", "enforce-eager=",
+        )
+        try:
+            # disable → moves to the disabled section (comment marker on disk).
+            r = _run_cli(self.tmp, "config", "edit", "dp1", "--disable", "enforce-eager")
+            self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+
+            text = (self.tmp / "config" / "vllm" / "dp1.yaml").read_text()
+            self.assertIn("# llmux:disabled enforce-eager", text)
+            # Server view (plain YAML) no longer contains it.
+            self.assertNotIn("enforce-eager", yaml.safe_load(text))
+
+            show = json.loads(
+                _run_cli(self.tmp, "config", "show", "dp1", "--json").stdout
+            )
+            self.assertIn("enforce-eager", show["disabled"])
+            self.assertNotIn("enforce-eager", show["params"])
+
+            # enable → back to active.
+            _run_cli(self.tmp, "config", "edit", "dp1", "--enable", "enforce-eager")
+            show = json.loads(
+                _run_cli(self.tmp, "config", "show", "dp1", "--json").stdout
+            )
+            self.assertIn("enforce-eager", show["params"])
+            self.assertEqual(show["disabled"], {})
+        finally:
+            _run_cli(self.tmp, "config", "delete", "dp1", "-y")
+
+    def test_config_set_reactivates_disabled_key(self):
+        _run_cli(
+            self.tmp, "config", "new", "dp2", "--backend", "vllm",
+            "--model", "m/x", "--set", "max-model-len=4096",
+        )
+        try:
+            _run_cli(self.tmp, "config", "edit", "dp2", "--disable", "max-model-len")
+            # --set on a disabled key re-activates it with the new value.
+            _run_cli(self.tmp, "config", "edit", "dp2", "--set", "max-model-len=8192")
+            show = json.loads(
+                _run_cli(self.tmp, "config", "show", "dp2", "--json").stdout
+            )
+            self.assertEqual(show["params"]["max-model-len"], 8192)
+            self.assertEqual(show["disabled"], {})
+        finally:
+            _run_cli(self.tmp, "config", "delete", "dp2", "-y")
+
+    def test_config_disable_rejects_unknown_key(self):
+        _run_cli(self.tmp, "config", "new", "dp3", "--backend", "vllm", "--model", "m/x")
+        try:
+            r = _run_cli(self.tmp, "config", "edit", "dp3", "--disable", "nope")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("cannot disable", r.stderr + r.stdout)
+        finally:
+            _run_cli(self.tmp, "config", "delete", "dp3", "-y")
+
+    def test_config_cannot_toggle_vllm_core_fields(self):
+        _run_cli(self.tmp, "config", "new", "dpc", "--backend", "vllm", "--model", "m/x")
+        try:
+            for flag in ("--disable", "--enable"):
+                for key in ("model", "gpu-memory-utilization"):
+                    r = _run_cli(self.tmp, "config", "edit", "dpc", flag, key)
+                    self.assertNotEqual(r.returncode, 0, (flag, key))
+                    self.assertIn("core vLLM field", r.stderr + r.stdout)
+        finally:
+            _run_cli(self.tmp, "config", "delete", "dpc", "-y")
+
+    def test_config_enable_of_bad_gpu_mem_is_rejected(self):
+        # Hand-craft a config with a disabled, out-of-range gpu-memory-utilization
+        # marker — enabling it must not slip past the range check.
+        (self.tmp / "config" / "vllm" / "dpe.yaml").write_text(
+            "model: m/x\ngpu-memory-utilization: '0.9'\n"
+            "# llmux:disabled gpu-memory-utilization: 9.0\n"
+        )
+        try:
+            r = _run_cli(self.tmp, "config", "edit", "dpe", "--enable", "gpu-memory-utilization")
+            self.assertNotEqual(r.returncode, 0)
+        finally:
+            (self.tmp / "config" / "vllm" / "dpe.yaml").unlink(missing_ok=True)
+
+    def test_config_clone_carries_disabled(self):
+        _run_cli(
+            self.tmp, "config", "new", "dp4", "--backend", "vllm",
+            "--model", "m/x", "--set", "quantization=fp8",
+        )
+        _run_cli(self.tmp, "config", "edit", "dp4", "--disable", "quantization")
+        try:
+            _run_cli(self.tmp, "config", "clone", "dp4", "dp4copy", "--backend", "vllm")
+            show = json.loads(
+                _run_cli(self.tmp, "config", "show", "dp4copy", "--json").stdout
+            )
+            self.assertIn("quantization", show["disabled"])
+        finally:
+            _run_cli(self.tmp, "config", "delete", "dp4", "-y")
+            _run_cli(self.tmp, "config", "delete", "dp4copy", "-y")
+
+    # --- env-check ----------------------------------------------------------
+
+    def test_env_check_passes_on_onboarding_default_env_common(self):
+        # The onboarding template leaves HF_TOKEN empty (public repos need none)
+        # and has no VLLM_VERSION at all (the runtime injects it at start time).
+        # env-check used to require all three and exit 1 on a perfectly valid
+        # default setup, while the real start-path gate (validate_common_env)
+        # passed the same file.
+        env_common = self.tmp / ".env.common"
+        env_common.write_text(
+            "HF_TOKEN=\n"
+            f"HF_CACHE_PATH={self.tmp}/hfcache\n"
+            "TZ=Asia/Seoul\n"
+        )
+        try:
+            r = _run_cli(self.tmp, "env-check")
+            self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+            self.assertIn("OK", r.stdout)
+            self.assertIn("optional", r.stdout)  # HF_TOKEN annotated, not an error
+
+            j = _run_cli(self.tmp, "env-check", "--json")
+            self.assertEqual(j.returncode, 0, j.stderr or j.stdout)
+            data = json.loads(j.stdout)
+            self.assertEqual(data["status"], "ok")
+            self.assertEqual(data["issues"], [])
+        finally:
+            env_common.unlink(missing_ok=True)
+
+    def test_env_check_still_fails_on_relative_hf_cache_path(self):
+        env_common = self.tmp / ".env.common"
+        env_common.write_text("HF_TOKEN=\nHF_CACHE_PATH=relative/path\n")
+        try:
+            r = _run_cli(self.tmp, "env-check")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("absolute", r.stdout + r.stderr)
+        finally:
+            env_common.unlink(missing_ok=True)
+
+    # --- unknown --backend must be a usage error, not a fallback/traceback ---
+
+    def test_unknown_backend_is_a_clean_usage_error(self):
+        # `ps -b foo` silently fell through to llamacpp and printed rows labelled
+        # with the bogus name; the other two died with a raw ValueError.
+        for args in (
+            ("ps", "--backend", "foo"),
+            ("profile", "list", "--backend", "foo"),
+            ("render-env", "--backend", "foo"),
+        ):
+            with self.subTest(args=args):
+                r = _run_cli(self.tmp, *args)
+                self.assertNotEqual(r.returncode, 0)
+                out = r.stderr + r.stdout
+                self.assertIn("unknown backend", out)
+                self.assertNotIn("Traceback", out)
+
     # --- config read paths -------------------------------------------------
 
     def test_config_list_includes_seeded(self):
@@ -179,6 +464,446 @@ class CliSmokeTests(unittest.TestCase):
         self.assertIn("max-model-len: 4096", r.stdout)
 
     # --- profile/config write paths (round-trip) ---------------------------
+
+    # --- port / gpu-id validation (unified CLI ⇄ TUI rule) ------------------
+
+    def test_profile_new_rejects_privileged_port(self):
+        r = _run_cli(
+            self.tmp, "profile", "new", "p80", "--backend", "llamacpp",
+            "--hf-repo", "org/x", "--port", "80",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("1024", r.stderr + r.stdout)
+
+    def test_profile_new_accepts_multi_digit_gpu_id(self):
+        # `0,10` must be valid — the old `[0-9](,[0-9])*` rule capped indices
+        # at one digit, making hosts with 10+ GPUs unaddressable.
+        r = _run_cli(
+            self.tmp, "profile", "new", "gpu10", "--backend", "llamacpp",
+            "--hf-repo", "org/x", "--port", "8099", "--gpu-id", "0,10",
+        )
+        self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+
+        show = _run_cli(self.tmp, "profile", "show", "gpu10", "--json")
+        self.assertEqual(json.loads(show.stdout)["gpu_id"], "0,10")
+
+        _run_cli(self.tmp, "profile", "delete", "gpu10", "-y")
+
+    def test_profile_new_rejects_malformed_gpu_id(self):
+        r = _run_cli(
+            self.tmp, "profile", "new", "gpubad", "--backend", "llamacpp",
+            "--hf-repo", "org/x", "--port", "8098", "--gpu-id", "0,,",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("GPU id", r.stderr + r.stdout)
+
+    def test_profile_edit_rejects_bad_port(self):
+        created = _run_cli(
+            self.tmp, "profile", "new", "editport", "--backend", "llamacpp",
+            "--hf-repo", "org/x", "--port", "8097",
+        )
+        self.assertEqual(created.returncode, 0, created.stderr or created.stdout)
+
+        r = _run_cli(self.tmp, "profile", "edit", "editport", "--port", "80")
+        self.assertNotEqual(r.returncode, 0)
+
+        _run_cli(self.tmp, "profile", "delete", "editport", "-y")
+
+    # --- --config existence (typo used to be absorbed silently) -------------
+
+    def test_profile_new_config_must_exist_unless_named_after_profile(self):
+        # A typo'd --config used to be stored verbatim; start-up would then
+        # auto-create an empty config under the wrong name.
+        bad = _run_cli(
+            self.tmp, "profile", "new", "cfgtypo", "--backend", "vllm",
+            "--port", "8096", "--config", "alfa",   # real one is "alpha"
+        )
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("config not found", bad.stderr + bad.stdout)
+
+        # Exception: a config named after the profile is auto-created at start.
+        ok = _run_cli(
+            self.tmp, "profile", "new", "cfgself", "--backend", "vllm",
+            "--port", "8095", "--config", "cfgself",
+        )
+        self.assertEqual(ok.returncode, 0, ok.stderr or ok.stdout)
+
+        _run_cli(self.tmp, "profile", "delete", "cfgself", "-y")
+
+    def test_profile_rejects_linking_the_tracked_example_config(self):
+        # example.yaml is the tracked template — the TUI filters it out of every
+        # config picker, but the CLI used to link it silently and write profile
+        # params into a git-tracked file.
+        explicit = _run_cli(
+            self.tmp, "profile", "new", "exlink", "--backend", "vllm",
+            "--port", "8090", "--config", "example",
+        )
+        self.assertNotEqual(explicit.returncode, 0)
+        self.assertIn("example", explicit.stderr + explicit.stdout)
+
+        # Also when the profile is merely *named* example and picks it up as the
+        # default link.
+        by_name = _run_cli(
+            self.tmp, "profile", "new", "example", "--backend", "vllm",
+            "--port", "8089",
+        )
+        self.assertNotEqual(by_name.returncode, 0)
+        self.assertIn("example", by_name.stderr + by_name.stdout)
+
+        # And on edit.
+        created = _run_cli(
+            self.tmp, "profile", "new", "exedit", "--backend", "vllm",
+            "--port", "8088",
+        )
+        self.assertEqual(created.returncode, 0, created.stderr or created.stdout)
+        r = _run_cli(self.tmp, "profile", "edit", "exedit", "--config", "example")
+        self.assertNotEqual(r.returncode, 0)
+
+        _run_cli(self.tmp, "profile", "delete", "exedit", "-y")
+
+    def test_config_new_and_clone_refuse_to_create_example(self):
+        # example.yaml is the tracked template — recreating/overwriting it has no
+        # legitimate use, so even --overwrite is refused.
+        r = _run_cli(
+            self.tmp, "config", "new", "example", "--backend", "vllm",
+            "--model", "test/model", "--overwrite",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("example", r.stderr + r.stdout)
+
+        c = _run_cli(
+            self.tmp, "config", "clone", "alpha", "example",
+            "--backend", "vllm", "--overwrite",
+        )
+        self.assertNotEqual(c.returncode, 0)
+        self.assertIn("example", c.stderr + c.stdout)
+
+    def test_config_edit_of_example_warns_but_proceeds(self):
+        # edit stays available as an escape hatch, but must not act silently.
+        (self.tmp / "config" / "vllm" / "example.yaml").write_text(
+            yaml.safe_dump({"model": "tpl/model"}, sort_keys=False)
+        )
+        try:
+            r = _run_cli(
+                self.tmp, "config", "edit", "example", "--backend", "vllm",
+                "--set", "max-model-len=2048",
+            )
+            self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+            self.assertIn("warning", r.stdout.lower())
+            self.assertIn("example.yaml", r.stdout)
+        finally:
+            (self.tmp / "config" / "vllm" / "example.yaml").unlink(missing_ok=True)
+
+    def test_profile_set_rejects_value_compose_cannot_parse(self):
+        # shlex.quote renders `it's` as `'it'"'"'s'` — valid shell, but docker
+        # compose's dotenv parser chokes on it and `up` fails opaquely.
+        r = _run_cli(
+            self.tmp, "profile", "new", "quoteval", "--backend", "vllm",
+            "--port", "8087", "--set", "K=it's",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("single quote", r.stderr + r.stdout)
+
+    def test_profile_set_still_accepts_spaces_and_commas(self):
+        r = _run_cli(
+            self.tmp, "profile", "new", "okval", "--backend", "vllm",
+            "--port", "8086", "--set", "K=a b", "--set", "L=0,1",
+        )
+        self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+
+        show = _run_cli(self.tmp, "profile", "show", "okval", "--json")
+        self.assertEqual(json.loads(show.stdout)["env_vars"], {"K": "a b", "L": "0,1"})
+
+        _run_cli(self.tmp, "profile", "delete", "okval", "-y")
+
+    # --- --gpu-mem range validation (CLI ⇄ TUI rule: 0.0 < x <= 1.0) ---------
+
+    def test_config_new_rejects_non_numeric_gpu_mem(self):
+        r = _run_cli(
+            self.tmp, "config", "new", "gmbad1", "--backend", "vllm",
+            "--model", "test/model", "--gpu-mem", "abc",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("gpu-memory-utilization", r.stderr + r.stdout)
+
+    def test_config_new_rejects_out_of_range_gpu_mem(self):
+        r = _run_cli(
+            self.tmp, "config", "new", "gmbad2", "--backend", "vllm",
+            "--model", "test/model", "--gpu-mem", "1.5",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        # Rich line-wraps the error box, so match a substring that can't straddle
+        # a break.
+        self.assertIn("gpu-memory-utilization", r.stderr + r.stdout)
+
+    def test_config_new_accepts_valid_gpu_mem(self):
+        r = _run_cli(
+            self.tmp, "config", "new", "gmok", "--backend", "vllm",
+            "--model", "test/model", "--gpu-mem", "0.85",
+        )
+        self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+
+        show = _run_cli(self.tmp, "config", "show", "gmok", "--json")
+        self.assertEqual(
+            json.loads(show.stdout)["params"]["gpu-memory-utilization"], "0.85"
+        )
+
+        _run_cli(self.tmp, "config", "delete", "gmok", "-y")
+
+    def test_config_edit_rejects_out_of_range_gpu_mem(self):
+        r = _run_cli(self.tmp, "config", "edit", "alpha", "--gpu-mem", "1.5")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("gpu-memory-utilization", r.stderr + r.stdout)
+
+    def test_quick_setup_rejects_out_of_range_gpu_mem(self):
+        r = _run_cli(
+            self.tmp, "profile", "quick-setup", "test/model", "--backend", "vllm",
+            "--name", "qsgm", "--gpu-mem", "1.5",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("gpu-memory-utilization", r.stderr + r.stdout)
+
+    # --- tensor-parallel (G2) -----------------------------------------------
+
+    def test_profile_edit_gpu_id_announces_derived_tensor_parallel(self):
+        created = _run_cli(
+            self.tmp, "profile", "new", "tp1", "--backend", "vllm",
+            "--port", "8094", "--gpu-id", "0", "--model", "test/model",
+        )
+        self.assertEqual(created.returncode, 0, created.stderr or created.stdout)
+
+        r = _run_cli(self.tmp, "profile", "edit", "tp1", "--gpu-id", "0,1")
+        self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+        # The re-derive used to be silent.
+        self.assertIn("tensor_parallel_size adjusted to 2", r.stdout)
+
+        show = _run_cli(self.tmp, "profile", "show", "tp1", "--json")
+        self.assertEqual(json.loads(show.stdout)["tensor_parallel_size"], 2)
+
+        _run_cli(self.tmp, "profile", "delete", "tp1", "-y")
+
+    def test_profile_edit_explicit_tensor_parallel_overrides_gpu_id(self):
+        created = _run_cli(
+            self.tmp, "profile", "new", "tp2", "--backend", "vllm",
+            "--port", "8093", "--gpu-id", "0", "--model", "test/model",
+        )
+        self.assertEqual(created.returncode, 0, created.stderr or created.stdout)
+
+        r = _run_cli(
+            self.tmp, "profile", "edit", "tp2",
+            "--gpu-id", "0,1", "--tensor-parallel", "1",
+        )
+        self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+        self.assertNotIn("adjusted", r.stdout)
+
+        show = _run_cli(self.tmp, "profile", "show", "tp2", "--json")
+        data = json.loads(show.stdout)
+        self.assertEqual(data["gpu_id"], "0,1")
+        self.assertEqual(data["tensor_parallel_size"], 1)
+
+        _run_cli(self.tmp, "profile", "delete", "tp2", "-y")
+
+    def test_profile_edit_gpu_id_stays_silent_on_llamacpp(self):
+        # TP is vLLM-only: llama.cpp never persists the field and rejects
+        # --tensor-parallel, so announcing an "adjustment" (and pointing at that
+        # flag) was both false and self-contradictory.
+        created = _run_cli(
+            self.tmp, "profile", "new", "tplc", "--backend", "llamacpp",
+            "--hf-repo", "org/x", "--port", "8091", "--gpu-id", "0",
+        )
+        self.assertEqual(created.returncode, 0, created.stderr or created.stdout)
+
+        r = _run_cli(self.tmp, "profile", "edit", "tplc", "--gpu-id", "0,1")
+        self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+        self.assertNotIn("tensor_parallel_size", r.stdout)
+        self.assertNotIn("--tensor-parallel", r.stdout)
+
+        show = _run_cli(self.tmp, "profile", "show", "tplc", "--json")
+        self.assertEqual(json.loads(show.stdout)["gpu_id"], "0,1")
+
+        _run_cli(self.tmp, "profile", "delete", "tplc", "-y")
+
+    def test_profile_new_rejects_tensor_parallel_on_llamacpp(self):
+        r = _run_cli(
+            self.tmp, "profile", "new", "tp3", "--backend", "llamacpp",
+            "--hf-repo", "org/x", "--port", "8092", "--tensor-parallel", "2",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--tensor-parallel", r.stderr + r.stdout)
+
+    # --- cross-backend option rejection (F4) --------------------------------
+
+    def test_profile_new_rejects_vllm_only_option_on_llamacpp(self):
+        # These used to be accepted and silently dropped by _profile_to_entry.
+        r = _run_cli(
+            self.tmp, "profile", "new", "xbk1", "--backend", "llamacpp",
+            "--hf-repo", "org/x", "--model", "org/some-model",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        out = r.stderr + r.stdout
+        self.assertIn("--model", out)
+        self.assertIn("vLLM-only", out)
+
+    def test_profile_new_rejects_llamacpp_only_option_on_vllm(self):
+        r = _run_cli(
+            self.tmp, "profile", "new", "xbk2", "--backend", "vllm",
+            "--model", "org/m", "--hf-repo", "org/x",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        out = r.stderr + r.stdout
+        self.assertIn("--hf-repo", out)
+        self.assertIn("llama.cpp-only", out)
+
+    def test_profile_edit_rejects_cross_backend_option(self):
+        created = _run_cli(
+            self.tmp, "profile", "new", "xbk3", "--backend", "llamacpp",
+            "--hf-repo", "org/x",
+        )
+        self.assertEqual(created.returncode, 0, created.stderr or created.stdout)
+
+        r = _run_cli(self.tmp, "profile", "edit", "xbk3", "--extra-pip", "foo")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("vLLM-only", r.stderr + r.stdout)
+
+        _run_cli(self.tmp, "profile", "delete", "xbk3", "-y")
+
+    def test_quick_setup_rejects_llamacpp_only_option_on_vllm(self):
+        r = _run_cli(
+            self.tmp, "profile", "quick-setup", "org/m", "--backend", "vllm",
+            "--ctx-size", "4096",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        out = r.stderr + r.stdout
+        self.assertIn("--ctx-size", out)
+        self.assertIn("llama.cpp-only", out)
+
+    def test_quick_setup_rejects_vllm_only_option_on_llamacpp(self):
+        r = _run_cli(
+            self.tmp, "profile", "quick-setup", "--backend", "llamacpp",
+            "--hf-repo", "org/x", "--hf-file", "m.gguf", "--gpu-mem", "0.5",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        out = r.stderr + r.stdout
+        self.assertIn("--gpu-mem", out)
+        self.assertIn("vLLM-only", out)
+
+    def test_profile_new_rejects_invalid_container_name(self):
+        r = _run_cli(
+            self.tmp, "profile", "new", "ctr1", "--backend", "llamacpp",
+            "--hf-repo", "org/x", "--container", "Bad_Name",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--container", r.stderr + r.stdout)
+
+    def test_config_new_rejects_uppercase_name(self):
+        # Creation follows the TUI's lowercase rule...
+        r = _run_cli(self.tmp, "config", "new", "BadName", "--backend", "vllm")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("lowercase", r.stderr + r.stdout)
+
+        # ...but an existing odd-named file stays manageable (permissive rule
+        # on the reference paths).
+        (self.tmp / "config" / "vllm" / "Legacy.yaml").write_text("model: x\n")
+        r = _run_cli(self.tmp, "config", "show", "Legacy", "--backend", "vllm")
+        self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+        r = _run_cli(self.tmp, "config", "delete", "Legacy", "--backend", "vllm", "-y")
+        self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+
+    def test_quick_setup_rejects_missing_copy_from(self):
+        # load_config() falls back to an empty Config for a missing file, so a
+        # typo'd --copy-from used to silently produce a config with no params.
+        r = _run_cli(
+            self.tmp, "profile", "quick-setup", "org/m", "--backend", "vllm",
+            "--copy-from", "does-not-exist",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        out = r.stderr + r.stdout
+        self.assertIn("--copy-from", out)
+        self.assertIn("not found", out)
+
+    def test_config_new_rejects_vllm_only_options_on_llamacpp(self):
+        r = _run_cli(
+            self.tmp, "config", "new", "lcfg", "--backend", "llamacpp",
+            "--model", "org/m",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        out = r.stderr + r.stdout
+        self.assertIn("--model", out)
+        self.assertIn("vLLM-only", out)
+        self.assertIn("--set", out)  # points at the right alternative
+
+    def test_config_edit_rejects_vllm_only_options_on_llamacpp(self):
+        created = _run_cli(
+            self.tmp, "config", "new", "lcfg2", "--backend", "llamacpp",
+            "--set", "ctx-size=4096",
+        )
+        self.assertEqual(created.returncode, 0, created.stderr or created.stdout)
+
+        r = _run_cli(
+            self.tmp, "config", "edit", "lcfg2", "--backend", "llamacpp",
+            "--gpu-mem", "0.8",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("vLLM-only", r.stderr + r.stdout)
+
+        # vLLM configs still accept them.
+        r = _run_cli(
+            self.tmp, "config", "new", "vcfg", "--backend", "vllm",
+            "--model", "org/m", "--gpu-mem", "0.8",
+        )
+        self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+
+    def test_up_rejects_tag_with_default_image(self):
+        r = _run_cli(self.tmp, "up", "nonexistent", "--tag", "x", "--default-image")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("mutually exclusive", r.stderr + r.stdout)
+
+    def test_port_zero_sentinel_honors_user_defaults_override(self):
+        # profiles.yaml `defaults:` must beat the hardcoded DEFAULTS when the
+        # `--port 0` sentinel is resolved — the loader already honors it.
+        tmp = _make_temp_project()
+        try:
+            data = yaml.safe_load((tmp / "profiles.yaml").read_text())
+            data["defaults"]["llamacpp"]["port"] = 9000
+            (tmp / "profiles.yaml").write_text(yaml.safe_dump(data))
+
+            r = _run_cli(
+                tmp, "profile", "new", "userdef", "--backend", "llamacpp",
+                "--hf-repo", "org/x", "--port", "0",
+            )
+            self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+            show = _run_cli(tmp, "profile", "show", "userdef", "--json")
+            self.assertEqual(json.loads(show.stdout)["port"], 9000)
+
+            # ...and the same for `edit --port 0`.
+            r = _run_cli(
+                tmp, "profile", "edit", "userdef", "--port", "8123",
+            )
+            self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+            r = _run_cli(tmp, "profile", "edit", "userdef", "--port", "0")
+            self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+            show = _run_cli(tmp, "profile", "show", "userdef", "--json")
+            self.assertEqual(json.loads(show.stdout)["port"], 9000)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_profile_edit_port_zero_resets_to_backend_default(self):
+        # `--port 0` is the same "use the backend default" sentinel `new`
+        # accepts; it must be resolved eagerly, never stored as a literal 0
+        # (which would render `LLAMA_PORT=0` into the runtime .env).
+        created = _run_cli(
+            self.tmp, "profile", "new", "portzero", "--backend", "llamacpp",
+            "--hf-repo", "org/x", "--port", "8096",
+        )
+        self.assertEqual(created.returncode, 0, created.stderr or created.stdout)
+
+        r = _run_cli(self.tmp, "profile", "edit", "portzero", "--port", "0")
+        self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+
+        show = _run_cli(self.tmp, "profile", "show", "portzero", "--json")
+        self.assertEqual(json.loads(show.stdout)["port"], 8080)
+
+        _run_cli(self.tmp, "profile", "delete", "portzero", "-y")
 
     def test_profile_new_then_edit_then_delete(self):
         r = _run_cli(
@@ -220,10 +945,11 @@ class CliSmokeTests(unittest.TestCase):
 
         r = _run_cli(self.tmp, "config", "show", "tmpcfg", "--json")
         self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
-        data = json.loads(r.stdout)
-        self.assertEqual(data["model"], "test/m")
-        self.assertEqual(data["max-model-len"], 8192)
-        self.assertIs(data["enable-prefix-caching"], True)
+        # show --json is now {"params": {...}, "disabled": {...}}.
+        params = json.loads(r.stdout)["params"]
+        self.assertEqual(params["model"], "test/m")
+        self.assertEqual(params["max-model-len"], 8192)
+        self.assertIs(params["enable-prefix-caching"], True)
 
         r = _run_cli(self.tmp, "config", "new", "tmpcfg", "--model", "x/y")
         self.assertNotEqual(r.returncode, 0)

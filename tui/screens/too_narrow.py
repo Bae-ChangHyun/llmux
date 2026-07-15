@@ -77,3 +77,19 @@ class TooNarrowScreen(Screen):
             self.query_one("#status", Static).update(self._status_line())
         except Exception:
             pass
+
+    def on_screen_resume(self) -> None:
+        """Self-dismiss if the terminal was widened while another screen sat
+        on top of this guard.
+
+        `_enforce_width` can only pop the guard when it is the top screen. If
+        a screen was pushed above it and the user then widened the terminal,
+        the guard would otherwise stay buried and resurface — on a terminal
+        that is now wide enough — as soon as that screen closed.
+        """
+        if self.app.size.width < self._min_width:
+            self.update_width(self.app.size.width)
+            return
+        release = getattr(self.app, "_release_width_guard", None)
+        if release is not None:
+            release(self)

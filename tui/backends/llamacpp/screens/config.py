@@ -10,9 +10,10 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.suggester import SuggestFromList
-from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static
+from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static, Switch
 
 from tui.backends.llamacpp.backend import (
+    CONFIG_DIR,
     Config,
     delete_config,
     extract_llama_server_flags,
@@ -25,6 +26,7 @@ from tui.backends.llamacpp.backend import (
     save_config,
     validate_name,
 )
+from tui.common.widgets import TextPromptModal
 
 
 # ---------------------------------------------------------------------------
@@ -173,9 +175,16 @@ class ConfigFormScreen(ModalScreen[str | None]):
         width: auto;
         min-width: 20;
     }
+    ConfigFormScreen #params-container {
+        height: auto;
+    }
     ConfigFormScreen .param-row {
         height: auto;
         margin-bottom: 0;
+    }
+    ConfigFormScreen .param-row .param-switch {
+        width: 8;
+        margin-right: 1;
     }
     ConfigFormScreen .param-row .param-key {
         width: 28;
@@ -184,6 +193,10 @@ class ConfigFormScreen(ModalScreen[str | None]):
     ConfigFormScreen .param-row .param-value {
         width: 1fr;
         margin-right: 1;
+    }
+    ConfigFormScreen .param-row.-disabled .param-key,
+    ConfigFormScreen .param-row.-disabled .param-value {
+        color: $text-muted;
     }
     ConfigFormScreen .param-row .param-remove {
         min-width: 5;
@@ -251,6 +264,8 @@ class ConfigFormScreen(ModalScreen[str | None]):
         if self._edit_mode and self._initial_config:
             for key, value in self._initial_config.params.items():
                 self._add_param_row(key, format_config_param_value(value))
+            for key, value in self._initial_config.disabled_params.items():
+                self._add_param_row(key, format_config_param_value(value), enabled=False)
         else:
             # 새 config: 필수 핵심 플래그 3개 선제공
             for key in ("model-file", "ctx-size", "n-gpu-layers"):
@@ -271,7 +286,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 inp.suggester = _FLAG_SUGGESTER
 
     def _add_param_row(
-        self, key: str = "", value: str = "", *, focus: bool = False
+        self, key: str = "", value: str = "", *, focus: bool = False, enabled: bool = True
     ) -> None:
         container = self.query_one("#params-container", Vertical)
         row_id = f"param-row-{self._param_counter}"
@@ -282,12 +297,14 @@ class ConfigFormScreen(ModalScreen[str | None]):
             suggester=_FLAG_SUGGESTER,
             classes="param-key",
         )
+        # Switch off → saved as a disabled comment marker (kept, not served).
         row = Horizontal(
+            Switch(value=enabled, classes="param-switch"),
             key_input,
             Input(value=value, placeholder="value (비우면 true)", classes="param-value"),
             Button("x", classes="param-remove"),
             id=row_id,
-            classes="param-row",
+            classes="param-row" if enabled else "param-row -disabled",
         )
         container.mount(row)
 
@@ -316,6 +333,12 @@ class ConfigFormScreen(ModalScreen[str | None]):
         else:
             help_widget.update("")
 
+    @on(Switch.Changed, ".param-switch")
+    def _on_switch(self, event: Switch.Changed) -> None:
+        row = event.switch.parent
+        if row is not None:
+            row.set_class(not event.value, "-disabled")
+
     @on(Button.Pressed, "#add-param-btn")
     def _on_add_param(self, event: Button.Pressed) -> None:
         event.stop()
@@ -343,26 +366,33 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 "이름은 영숫자/대시/언더스코어만 가능 ('-' 시작 금지)", severity="error"
             )
             return
-        if not self._edit_mode and name in list_config_names():
+        # File existence, not `in list_config_names()` — that helper filters
+        # out `example`, so a config named "example" passed the check and
+        # silently overwrote the tracked example.yaml.
+        if not self._edit_mode and (CONFIG_DIR / f"{name}.yaml").exists():
             self.notify(f"Config '{name}' 이미 존재", severity="error")
             return
 
         params: dict[str, Any] = {}
+        disabled_params: dict[str, Any] = {}
         seen: set[str] = set()
         for row in self.query(".param-row"):
             key = row.query_one(".param-key", Input).value.strip()
             val = row.query_one(".param-value", Input).value.strip()
+            switch = row.query_one(".param-switch", Switch)
             if not key:
                 continue
+            # Duplicate check spans active + disabled.
             if key in seen:
                 self.notify(f"중복 플래그: {key}", severity="error")
                 return
             seen.add(key)
             try:
-                params[key] = parse_config_param_value(val)
+                parsed = parse_config_param_value(val)
             except Exception as exc:
                 self.notify(f"'{key}' 값 파싱 실패: {exc}", severity="error")
                 return
+            (params if switch.value else disabled_params)[key] = parsed
 
         unknown = [k for k in params if k not in _KNOWN_FLAGS]
         if unknown:
@@ -372,7 +402,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 timeout=6,
             )
 
-        cfg = Config(name=name, params=params)
+        cfg = Config(name=name, params=params, disabled_params=disabled_params)
         save_config(cfg)
         self.notify(f"저장: {name}", severity="information")
         self._saved_name = name
@@ -496,6 +526,7 @@ class ConfigListScreen(Screen):
     BINDINGS = [
         Binding("n", "new_config", "New"),
         Binding("e,enter", "edit_config", "Edit"),
+        Binding("c", "clone_config", "Clone"),
         Binding("delete,x", "delete_config", "Delete"),
         Binding("escape,backspace", "go_back", "Back"),
         Binding("r", "refresh", "Refresh"),
@@ -510,6 +541,11 @@ class ConfigListScreen(Screen):
     def on_mount(self) -> None:
         table = self.query_one("#config-table", DataTable)
         table.add_columns("Name", "Model File", "Ctx", "N-GPU-Layers", "Params")
+        self._refresh_table()
+
+    def on_screen_resume(self) -> None:
+        # Named SCREENS entries are cached instances — on_mount fires once, so
+        # without this the list goes stale after configs change elsewhere.
         self._refresh_table()
 
     def _refresh_table(self) -> None:
@@ -547,6 +583,38 @@ class ConfigListScreen(Screen):
             self.notify("선택된 config 없음", severity="warning")
             return
         self.app.push_screen(ConfigFormScreen(name), self._on_form_closed)
+
+    def action_clone_config(self) -> None:
+        name = self._get_selected()
+        if not name:
+            self.notify("선택된 config 없음", severity="warning")
+            return
+
+        existing = set(list_config_names())
+        default = f"{name}-copy"
+        suffix = 2
+        while default in existing:
+            default = f"{name}-copy-{suffix}"
+            suffix += 1
+
+        def after(new_name: str | None) -> None:
+            if not new_name:
+                return
+            if not validate_name(new_name):
+                self.notify("이름은 소문자/숫자/대시/언더스코어", severity="error")
+                return
+            if (CONFIG_DIR / f"{new_name}.yaml").exists():
+                self.notify(f"Config '{new_name}' 이미 존재", severity="error")
+                return
+            cfg = load_config(name)
+            cfg.name = new_name
+            save_config(cfg)
+            self._refresh_table()
+            self.notify(f"복제: '{name}' → '{new_name}'")
+
+        self.app.push_screen(
+            TextPromptModal(f"Clone config '{name}' as:", default=default), after
+        )
 
     def action_delete_config(self) -> None:
         name = self._get_selected()

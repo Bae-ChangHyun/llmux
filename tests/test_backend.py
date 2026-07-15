@@ -1,6 +1,12 @@
+import json
+import os
+import subprocess
+import sys
 import tempfile
 import importlib.util
 import unittest
+
+import yaml
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -122,6 +128,11 @@ class ConfigParamValueTests(unittest.TestCase):
     def test_parse_list(self) -> None:
         self.assertEqual(backend.parse_config_param_value("[a, b, c]"), ["a", "b", "c"])
 
+    def test_parse_invalid_yaml_returns_raw(self) -> None:
+        # Unbalanced flow syntax isn't valid YAML — keep the raw string instead
+        # of raising (parity with the llama.cpp parser).
+        self.assertEqual(backend.parse_config_param_value("{unbalanced"), "{unbalanced")
+
     def test_format_true_becomes_empty(self) -> None:
         self.assertEqual(backend.format_config_param_value(True), "")
 
@@ -193,6 +204,40 @@ class ParseEnvFileTests(unittest.TestCase):
         self.assertEqual(
             backend._parse_env_file(path),
             {"KEY": "quoted", "OTHER": "double"},
+        )
+
+    def test_double_quoted_value_drops_trailing_comment(self) -> None:
+        # compose reads `a b`; the old shlex parser kept the quotes + comment.
+        path = self._write('KEY="a b" # comment\n')
+        self.assertEqual(backend._parse_env_file(path), {"KEY": "a b"})
+
+    def test_unquoted_backslash_is_literal(self) -> None:
+        # compose keeps `a\b`; the old shlex(posix) parser swallowed the `\`.
+        path = self._write("KEY=a\\b\n")
+        self.assertEqual(backend._parse_env_file(path), {"KEY": "a\\b"})
+
+    def test_single_quoted_is_literal(self) -> None:
+        path = self._write("KEY='a\\b'\n")
+        self.assertEqual(backend._parse_env_file(path), {"KEY": "a\\b"})
+
+    def test_double_quote_escapes_interpreted(self) -> None:
+        path = self._write('KEY="a\\nb"\n')
+        self.assertEqual(backend._parse_env_file(path), {"KEY": "a\nb"})
+
+    def test_our_renderer_single_quote_output_round_trips(self) -> None:
+        # `_env_line` emits `FOO='a b'` via shlex.quote — must still read back.
+        path = self._write("FOO='a b'\nBAR=0,1\n")
+        self.assertEqual(
+            backend._parse_env_file(path), {"FOO": "a b", "BAR": "0,1"}
+        )
+
+    def test_export_keyword_is_stripped(self) -> None:
+        # dotenv/godotenv drop a leading `export`; without it the key became
+        # `export HF_TOKEN` and the real var was silently lost.
+        path = self._write("export HF_TOKEN=secret\nexport\tK2=v2\nK3=v3\n")
+        self.assertEqual(
+            backend._parse_env_file(path),
+            {"HF_TOKEN": "secret", "K2": "v2", "K3": "v3"},
         )
 
 
@@ -319,6 +364,88 @@ class ProfileStoreYamlTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     profile_store.render_env(profile)
 
+    def test_effective_defaults_applies_user_overrides(self) -> None:
+        # The `--port 0` sentinel resolves through effective_defaults(); reading
+        # the hardcoded DEFAULTS instead would return 8080 and silently ignore
+        # the user's profiles.yaml `defaults:` block (which the loader honors).
+        with tempfile.TemporaryDirectory() as tmp:
+            profiles_yaml = Path(tmp) / "profiles.yaml"
+            profiles_yaml.write_text(
+                "version: 1\n"
+                "defaults:\n"
+                "  llamacpp:\n"
+                "    port: 9000\n"
+                "profiles: []\n"
+            )
+
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml):
+                defaults = profile_store.effective_defaults("llamacpp")
+                vllm_defaults = profile_store.effective_defaults("vllm")
+
+            self.assertEqual(defaults["port"], 9000)
+            self.assertEqual(defaults["gpu_id"], "0")  # untouched key still present
+            # A backend with no user override falls back to the built-in value.
+            self.assertEqual(vllm_defaults["port"], 8000)
+
+    def test_sanitize_docker_tag_maps_branch_names_to_valid_tags(self) -> None:
+        from tui.common.dev_build import sanitize_docker_tag
+
+        self.assertEqual(sanitize_docker_tag("feat/foo"), "feat-foo")
+        self.assertEqual(sanitize_docker_tag("releases/v0.21.0"), "releases-v0.21.0")
+        self.assertEqual(sanitize_docker_tag("main"), "main")
+        # Tags may not start with `.` or `-`.
+        self.assertEqual(sanitize_docker_tag("/leading"), "leading")
+        self.assertEqual(sanitize_docker_tag("///"), "branch")
+
+    def test_llamacpp_env_vars_round_trip_through_yaml(self) -> None:
+        # env_vars used to be persisted only on the vllm branch, so a llamacpp
+        # profile silently dropped them between save and load.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = root / "profiles.yaml"
+            profiles_yaml.write_text("version: 1\ndefaults: {}\nprofiles: []\n")
+            profile = profile_store.StoredProfile(
+                name="p",
+                backend="llamacpp",
+                hf_repo="org/Model-GGUF",
+                env_vars={"MY_VAR": "hello"},
+            )
+
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
+            ):
+                profile_store.save_profile(profile)
+                loaded = profile_store.load_profile("p", "llamacpp")
+
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            self.assertEqual(loaded.env_vars, {"MY_VAR": "hello"})
+
+    def test_llamacpp_render_env_includes_env_vars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = profile_store.StoredProfile(
+                name="p",
+                backend="llamacpp",
+                env_vars={"MY_VAR": "hello"},
+            )
+
+            with patch("tui.common.profile_store.RUNTIME_DIR", Path(tmp) / ".runtime"):
+                path = profile_store.render_env(profile)
+
+            self.assertIn("MY_VAR=hello", path.read_text())
+
+    def test_llamacpp_render_env_rejects_reserved_env_var(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = profile_store.StoredProfile(
+                name="p",
+                backend="llamacpp",
+                env_vars={"GPU_ID": "9"},
+            )
+
+            with patch("tui.common.profile_store.RUNTIME_DIR", Path(tmp) / ".runtime"):
+                with self.assertRaises(ValueError):
+                    profile_store.render_env(profile)
+
     def test_save_profile_does_not_write_yaml_when_env_render_validation_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -340,7 +467,12 @@ class ProfileStoreYamlTests(unittest.TestCase):
                 profiles_yaml.read_text(), "version: 1\ndefaults: {}\nprofiles: []\n"
             )
 
-    def test_vllm_env_parser_round_trips_single_quote_values(self) -> None:
+    def test_render_env_rejects_single_quote_values(self) -> None:
+        # This used to assert the value round-tripped through _parse_env_file —
+        # it does, because that parser is shlex-based. docker compose's dotenv
+        # parser is not: shlex.quote emits `'O'"'"'Reilly model'` and compose
+        # fails to parse the whole file, so `up` broke long after the save
+        # "succeeded". render_env now refuses the value instead.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             profile = profile_store.StoredProfile(
@@ -350,10 +482,10 @@ class ProfileStoreYamlTests(unittest.TestCase):
             )
 
             with patch("tui.common.profile_store.RUNTIME_DIR", root / ".runtime"):
-                env_path = profile_store.render_env(profile)
+                with self.assertRaises(ValueError) as ctx:
+                    profile_store.render_env(profile)
 
-            parsed = backend._parse_env_file(env_path)
-            self.assertEqual(parsed["MODEL_ID"], "O'Reilly model")
+            self.assertIn("single quote", str(ctx.exception))
 
     def test_invalid_backend_raises_value_error(self) -> None:
         with self.assertRaises(ValueError):
@@ -819,6 +951,105 @@ class CheckPortConflictTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(conflict)
 
+    async def test_own_running_container_on_the_port_is_not_a_conflict(self) -> None:
+        # A re-`up` of an already-running container is a compose no-op — and is
+        # exactly what _post_start_validation tells the user to do. The bind
+        # probe cannot distinguish our own docker-proxy from a foreign listener,
+        # so it used to report "another local process" and block the start.
+        #
+        # Bind a REAL listener on the port: if the guard is missing, the probe
+        # is reached and fails, so this test genuinely exercises the fix.
+        import socket as socket_mod
+
+        listener = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_STREAM)
+        listener.setsockopt(socket_mod.SOL_SOCKET, socket_mod.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = str(listener.getsockname()[1])
+
+        try:
+            profile = backend.Profile(name="current", container_name="current", port=port)
+
+            async def fake_run_command(*args, **kwargs):
+                return 0, f"current\t127.0.0.1:{port}->8000/tcp\n"
+
+            with patch.dict(
+                backend.check_port_conflict.__globals__,
+                {
+                    "run_command": fake_run_command,
+                    "list_profile_names": lambda: ["current"],
+                    "load_profile": lambda n: profile,
+                },
+            ):
+                conflict = await backend.check_port_conflict(profile)
+
+            self.assertIsNone(conflict)
+        finally:
+            listener.close()
+
+    async def test_own_container_running_on_a_different_port_still_probes(self) -> None:
+        # The guard must stay narrow: our container being up on some *other*
+        # port says nothing about whether this port is free.
+        import socket as socket_mod
+
+        listener = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_STREAM)
+        listener.setsockopt(socket_mod.SOL_SOCKET, socket_mod.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = str(listener.getsockname()[1])
+
+        try:
+            profile = backend.Profile(name="current", container_name="current", port=port)
+
+            async def fake_run_command(*args, **kwargs):
+                # Same container, but published on an unrelated host port.
+                return 0, "current\t127.0.0.1:19999->8000/tcp\n"
+
+            with patch.dict(
+                backend.check_port_conflict.__globals__,
+                {
+                    "run_command": fake_run_command,
+                    "list_profile_names": lambda: ["current"],
+                    "load_profile": lambda n: profile,
+                },
+            ):
+                conflict = await backend.check_port_conflict(profile)
+
+            self.assertIsNotNone(conflict)
+            self.assertIn("another local process", conflict)
+        finally:
+            listener.close()
+
+    async def test_llamacpp_own_running_container_on_the_port_is_not_a_conflict(self) -> None:
+        # Parity: the llama.cpp runtime carries the identical guard.
+        import socket as socket_mod
+
+        listener = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_STREAM)
+        listener.setsockopt(socket_mod.SOL_SOCKET, socket_mod.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+
+        try:
+            profile = lbackend.Profile(name="current", container_name="current", port=port)
+
+            async def fake_docker_run(*args, **kwargs):
+                return 0, f"current\t127.0.0.1:{port}->8080/tcp\n"
+
+            with patch.dict(
+                lbackend_rt.check_port_conflict.__globals__,
+                {
+                    "_docker_run": fake_docker_run,
+                    "list_profile_names": lambda: ["current"],
+                    "load_profile": lambda n: profile,
+                },
+            ):
+                conflict = await lbackend_rt.check_port_conflict(profile)
+
+            self.assertIsNone(conflict)
+        finally:
+            listener.close()
+
     async def test_check_port_conflict_sets_so_reuseaddr(self) -> None:
         """Regression: the fallback bind() check must set SO_REUSEADDR.
 
@@ -878,6 +1109,104 @@ class CheckPortConflictTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(str(bound_port), conflict)
 
 
+class _ExistingStore:
+    """profile_store stand-in for stream_container_up tests: the profile exists
+    (so the "profile not found" guard passes) and rendering is a no-op."""
+
+    @staticmethod
+    def load_profile(name, backend_name):
+        return profile_store.StoredProfile(name=name, backend=backend_name)
+
+    @staticmethod
+    def render_env(_sp):
+        return None
+
+
+class R18RoundTests(unittest.IsolatedAsyncioTestCase):
+    """D1 (container_down probe failure), D3 (async GPU conflict empty guard),
+    D4 (llama.cpp downloaded needs hf_repo), D5 (vLLM profile-not-found)."""
+
+    async def test_container_exists_returns_none_when_probe_fails(self) -> None:
+        from tui.backends.vllm import backend_runtime as rt
+
+        async def failing_ps(*_a, **_k):
+            return 1, ""  # docker ps failed / timed out
+
+        with patch.object(rt, "run_command", failing_ps):
+            self.assertIsNone(await rt._container_exists("c"))
+
+    async def test_container_down_does_not_report_success_on_probe_failure(self) -> None:
+        from tui.backends.vllm import backend_runtime as rt
+
+        profile = backend.Profile(name="p", container_name="p", port="8000")
+
+        async def failing_ps(*_a, **_k):
+            return 1, ""
+
+        with patch.object(rt, "load_profile", lambda _n: profile), \
+             patch.object(rt, "run_command", failing_ps):
+            rc, msg = await rt.container_down("p")
+
+        self.assertNotEqual(rc, 0)
+        self.assertIn("could not determine", msg)
+
+    async def test_async_gpu_conflict_empty_gpu_set_is_silent(self) -> None:
+        from tui.common import conflicts
+
+        # An empty GPU set against a wildcard-GPU running container used to
+        # produce a false "all GPUs" warning.
+        running = backend.Profile(  # not used directly; we stub list_profiles
+            name="other", container_name="other", port="8001",
+        )
+
+        async def fake_ps(*_a, **_k):
+            return 0, "other\n"
+
+        with patch.object(conflicts, "run_command", fake_ps), \
+             patch("tui.common.profile_store.list_profiles",
+                   lambda bk: [running] if bk == "vllm" else []):
+            msgs = await conflicts.gpu_conflict_messages(
+                profile_name="me", container_name="me",
+                profile_gpu_id="", backend="vllm",
+            )
+        self.assertEqual(msgs, [])
+
+    async def test_vllm_stream_up_rejects_unknown_profile(self) -> None:
+        from tui.backends.vllm import backend_runtime as rt
+
+        class _EmptyStore:
+            @staticmethod
+            def load_profile(_n, _b):
+                return None
+
+        with patch.object(rt, "profile_store", _EmptyStore):
+            events = [e async for e in rt.stream_container_up("ghost")]
+
+        self.assertIn(("rc", 1), events)
+        self.assertTrue(any("프로필 없음" in d for k, d in events if k == "log"), events)
+
+
+class LlamacppDownloadedProbeTests(unittest.TestCase):
+    def test_model_file_only_without_hf_repo_is_not_downloaded(self) -> None:
+        # A model_file-only profile can't start (no hf_repo → render-override
+        # fails, MODEL_DIR isn't mounted), so it must not read as ready even if
+        # a matching file sits in ./models.
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "m.gguf").write_bytes(b"x" * 10)
+            stored = profile_store.StoredProfile(
+                name="lp", backend="llamacpp", port=8080, model_file="m.gguf",
+            )  # no hf_repo
+            with patch.object(lbackend, "_get_model_dir", lambda: model_dir), \
+                 patch.object(lbackend, "list_profile_names", lambda: ["lp"]), \
+                 patch.object(lbackend, "load_profile", lambda _n: lbackend._to_profile(stored)), \
+                 patch.object(lbackend, "read_current_profile", lambda: None), \
+                 patch.object(lbackend, "find_cached_gguf", lambda *_a: None):
+                profiles = lbackend.list_profiles(running=set())
+        self.assertEqual(len(profiles), 1)
+        self.assertFalse(profiles[0].downloaded)
+
+
 class StreamContainerUpPortConflictTests(unittest.IsolatedAsyncioTestCase):
     async def test_port_conflict_stops_before_preflight(self) -> None:
         profile = backend.Profile(name="p", container_name="p", port="8000")
@@ -891,6 +1220,7 @@ class StreamContainerUpPortConflictTests(unittest.IsolatedAsyncioTestCase):
             {
                 "load_profile": lambda _: profile,
                 "check_port_conflict": fake_check_port_conflict,
+                "profile_store": _ExistingStore,
             },
         ):
             events = [event async for event in backend.stream_container_up("p")]
@@ -911,11 +1241,241 @@ class StreamContainerUpPortConflictTests(unittest.IsolatedAsyncioTestCase):
                 "load_profile": lambda _: profile,
                 "check_port_conflict": fake_check_port_conflict,
                 "_ensure_common_env": lambda _profile: (False, ["common env missing"]),
+                "profile_store": _ExistingStore,
             },
         ):
             events = [event async for event in backend.stream_container_up("p")]
 
         self.assertEqual(events, [("log", "common env missing"), ("rc", 1)])
+
+    async def test_dev_tag_is_sanitized_to_match_the_built_image(self) -> None:
+        # The builder tags `vllm-dev:<safe_branch>`; the runtime used the raw
+        # branch, so `feat/foo` looked up `vllm-dev:feat/foo` — an invalid
+        # docker reference that never matches, forcing a rebuild every run and
+        # then failing to start.
+        profile = backend.Profile(name="p", container_name="p", port="8000")
+        inspected: list[str] = []
+
+        async def no_conflict(_p):
+            return None
+
+        async def fake_run_command(*args, **_kw):
+            inspected.append(" ".join(args))
+            return (0, "")  # image "exists" → no build attempted
+
+        async def fake_matches(image_tag, _repo, _branch):
+            inspected.append(f"matches:{image_tag}")
+            return True
+
+        async def fake_gpu_conflicts(_p):
+            return []
+
+        async def fake_stream_command(cmd, **_kw):
+            # Halt at the compose call — the image decision is already made.
+            inspected.append("compose:" + " ".join(cmd))
+            yield ("rc", 1)
+
+        globals_dict = backend.stream_container_up.__globals__
+        with patch.dict(
+            globals_dict,
+            {
+                "load_profile": lambda _: profile,
+                "check_port_conflict": no_conflict,
+                "run_command": fake_run_command,
+                "_dev_image_matches": fake_matches,
+                "get_dev_build_defaults": lambda: ("https://x/y.git", "feat/foo"),
+                "_ensure_common_env": lambda _p: (True, []),
+                "_ensure_profile_config": lambda _p: (True, []),
+                "_gpu_conflict_messages": fake_gpu_conflicts,
+                "_compose_env": lambda *_a, **_k: {},
+                "stream_command": fake_stream_command,
+                "profile_store": _ExistingStore,
+            },
+        ):
+            events = [
+                event
+                async for event in backend.stream_container_up("p", use_dev=True)
+            ]
+
+        logs = [d for k, d in events if k == "log"]
+        # The sanitized tag — never the raw branch with a slash.
+        self.assertTrue(
+            any("vllm-dev:feat-foo" in line for line in inspected + logs),
+            (inspected, logs),
+        )
+        self.assertFalse(
+            any("vllm-dev:feat/foo" in line for line in inspected + logs),
+            (inspected, logs),
+        )
+
+    async def test_unrenderable_env_value_fails_this_profile_loudly(self) -> None:
+        # load_profile() now swallows the render error so one bad profile can't
+        # break `ps`/the dashboard — so the start path must re-render and fail
+        # loudly for the profile actually being started, naming the cause.
+        profile = backend.Profile(name="p", container_name="p", port="8000")
+        bad = profile_store.StoredProfile(
+            name="p", backend="vllm", env_vars={"BAD": "it's"}
+        )
+
+        async def fake_check_port_conflict(_profile):
+            return None
+
+        class _FakeStore:
+            StoredProfile = profile_store.StoredProfile
+
+            @staticmethod
+            def load_profile(_name, _bk):
+                return bad
+
+            @staticmethod
+            def render_env(_sp):
+                return profile_store.render_env(bad)  # raises ValueError
+
+        globals_dict = backend.stream_container_up.__globals__
+        with patch.dict(
+            globals_dict,
+            {
+                "load_profile": lambda _: profile,
+                "check_port_conflict": fake_check_port_conflict,
+                "_ensure_common_env": lambda _p: (True, []),
+                "_ensure_profile_config": lambda _p: (True, []),
+                "profile_store": _FakeStore,
+            },
+        ):
+            events = [
+                event async for event in backend.stream_container_up("p")
+            ]
+
+        logs = [d for k, d in events if k == "log"]
+        self.assertTrue(any("single quote" in line for line in logs), logs)
+        self.assertIn(("rc", 1), events)
+
+    async def test_use_default_image_drops_pinned_image_tag(self) -> None:
+        # A pinned image_tag used to win regardless of --default-image: the CLI
+        # cleared VLLM_IMAGE from the .env, but load_profile() re-renders that
+        # file from profiles.yaml on every start, restoring the pin — and the
+        # image branch reads profile.image_tag, not the .env.
+        profile = backend.Profile(
+            name="p", container_name="p", port="8000", image_tag="vllm-dev:pinned"
+        )
+
+        async def fake_check_port_conflict(_profile):
+            return None
+
+        async def fake_gpu_conflicts(_p):
+            return []
+
+        async def fake_stream_command(cmd, **_kw):
+            yield ("rc", 1)  # halt at compose; the image decision is already made
+
+        globals_dict = backend.stream_container_up.__globals__
+        with patch.dict(
+            globals_dict,
+            {
+                "load_profile": lambda _: profile,
+                "check_port_conflict": fake_check_port_conflict,
+                "_ensure_common_env": lambda _p: (True, []),
+                "_ensure_profile_config": lambda _p: (True, []),
+                "_gpu_conflict_messages": fake_gpu_conflicts,
+                "_compose_env": lambda *_a, **_k: {},
+                "get_local_latest_tag": AsyncMock(return_value="v0.11.0"),
+                "profile_store": _ExistingStore,
+                "stream_command": fake_stream_command,
+            },
+        ):
+            events = [
+                event
+                async for event in backend.stream_container_up(
+                    "p", use_default_image=True
+                )
+            ]
+
+        logs = [data for kind, data in events if kind == "log"]
+        self.assertTrue(any("Default Image" in line for line in logs), logs)
+        # The pinned-image branch must not have been taken.
+        self.assertFalse(
+            any("Using image: vllm-dev:pinned" in line for line in logs), logs
+        )
+        self.assertEqual(profile.image_tag, "")
+
+    async def test_use_default_image_does_not_persist_the_cleared_pin(self) -> None:
+        # _ensure_profile_config() calls save_profile() when it auto-links a
+        # config. Clearing image_tag before that ran wrote image_tag="" into
+        # profiles.yaml — a one-off override permanently destroying the pin.
+        profile = backend.Profile(
+            name="p",
+            container_name="p",
+            port="8000",
+            config_name="",  # forces the auto-link save path
+            image_tag="vllm-dev:pinned",
+        )
+        seen_tags: list[str] = []
+
+        def fake_ensure_profile_config(p):
+            # Stand in for the real helper's save_profile() call.
+            seen_tags.append(p.image_tag)
+            return (True, [])
+
+        async def fake_check_port_conflict(_profile):
+            return None
+
+        async def fake_gpu_conflicts(_p):
+            return []
+
+        async def fake_stream_command(cmd, **_kw):
+            yield ("rc", 1)
+
+        globals_dict = backend.stream_container_up.__globals__
+        with patch.dict(
+            globals_dict,
+            {
+                "load_profile": lambda _: profile,
+                "check_port_conflict": fake_check_port_conflict,
+                "_ensure_common_env": lambda _p: (True, []),
+                "_ensure_profile_config": fake_ensure_profile_config,
+                "_gpu_conflict_messages": fake_gpu_conflicts,
+                "_compose_env": lambda *_a, **_k: {},
+                "get_local_latest_tag": AsyncMock(return_value="v0.11.0"),
+                "profile_store": _ExistingStore,
+                "stream_command": fake_stream_command,
+            },
+        ):
+            _ = [
+                event
+                async for event in backend.stream_container_up(
+                    "p", use_default_image=True
+                )
+            ]
+
+        # Whatever gets persisted must still carry the user's pin.
+        self.assertEqual(seen_tags, ["vllm-dev:pinned"])
+        # ...and the in-memory clear still happened for the image decision.
+        self.assertEqual(profile.image_tag, "")
+
+    async def test_pinned_image_tag_is_honored_without_default_image(self) -> None:
+        # Guard the other direction: absent --default-image the pin still wins.
+        profile = backend.Profile(
+            name="p", container_name="p", port="8000", image_tag="vllm-dev:pinned"
+        )
+
+        async def fake_check_port_conflict(_profile):
+            return None
+
+        globals_dict = backend.stream_container_up.__globals__
+        with patch.dict(
+            globals_dict,
+            {
+                "load_profile": lambda _: profile,
+                "check_port_conflict": fake_check_port_conflict,
+                "_ensure_common_env": lambda _profile: (False, ["stop here"]),
+                "profile_store": _ExistingStore,
+            },
+        ):
+            events = [event async for event in backend.stream_container_up("p")]
+
+        logs = [data for kind, data in events if kind == "log"]
+        self.assertFalse(any("Default Image" in line for line in logs), logs)
+        self.assertEqual(profile.image_tag, "vllm-dev:pinned")
 
 
 async def _drain_validation(gen):
@@ -1283,6 +1843,146 @@ class LlamacppCheckPortConflictTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(str(bound_port), conflict)
 
 
+class LlamacppStreamContainerUpTests(unittest.IsolatedAsyncioTestCase):
+    """Dev-tag rebuild policy (F1) and config auto-generation (F5)."""
+
+    def _fakes(self, tmp: Path, *, config_name: str, exists: bool, matches: bool):
+        from tui.common import profile_store as ps
+
+        stored = ps.StoredProfile(
+            name="p", backend="llamacpp", container_name="p", port=8080,
+            config_name=config_name, hf_repo="o/r", hf_file="m.gguf",
+        )
+        profile = lbackend.Profile(
+            name="p", container_name="p", port=8080,
+            config_name=config_name, hf_repo="o/r", hf_file="m.gguf",
+        )
+        state = {"builds": [], "saved": [], "stored": stored, "profile": profile}
+
+        class FakeDevBuild:
+            @staticmethod
+            def sanitize_docker_tag(s):
+                return s
+
+            @staticmethod
+            async def image_exists_locally(_spec, _tag):
+                return exists
+
+            @staticmethod
+            async def image_matches(_spec, _tag, _repo, _branch):
+                return matches
+
+        class FakePS:
+            @staticmethod
+            def load_profile(_name, _backend):
+                return stored
+
+            @staticmethod
+            def render_env(_s):
+                return None
+
+            @staticmethod
+            def save_profile(s):
+                # Snapshot image_tag at save time — a transient override must
+                # never be persisted (same class of bug as vLLM's F2).
+                state["saved"].append(s.image_tag)
+
+        async def fake_build(*a, **kw):
+            state["builds"].append((a, kw))
+            yield ("rc", 0)
+
+        async def fake_render_override(_name):
+            return (1, "<halt before compose>")
+
+        async def no_conflict(_p):
+            return None
+
+        async def no_gpu(_p):
+            return []
+
+        state["patch"] = {
+            "validate_common_env": lambda _p: (True, []),
+            "load_profile": lambda _: profile,
+            "check_port_conflict": no_conflict,
+            "_gpu_conflict_messages": no_gpu,
+            "dev_build": FakeDevBuild,
+            "profile_store": FakePS,
+            "_stream_build_dev_image": fake_build,
+            "_render_override": fake_render_override,
+            "CONFIG_DIR": tmp,
+        }
+        return state
+
+    async def test_explicit_dev_tag_with_existing_image_is_not_rebuilt(self) -> None:
+        # The label check exists to catch a *branch-derived* tag whose cached
+        # image came from another repo/branch. Applying it to an explicit --tag
+        # rebuilt over (and clobbered) the user's own image.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "c.yaml").write_text("alias: c\n")
+            state = self._fakes(tmp, config_name="c", exists=True, matches=False)
+
+            g = lbackend_rt.stream_container_up.__globals__
+            with patch.dict(g, state["patch"]), patch.object(
+                lbackend, "CONFIG_DIR", tmp
+            ):
+                _ = [
+                    e
+                    async for e in lbackend_rt.stream_container_up(
+                        "p", use_dev=True, tag="mytag"
+                    )
+                ]
+
+            self.assertEqual(
+                state["builds"], [],
+                "explicit --tag on an existing image must not trigger a rebuild",
+            )
+
+    async def test_branch_derived_tag_still_rebuilds_on_label_mismatch(self) -> None:
+        # The other direction: no explicit tag → the label check still guards
+        # against reusing a same-named image built from a different source.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "c.yaml").write_text("alias: c\n")
+            state = self._fakes(tmp, config_name="c", exists=True, matches=False)
+
+            g = lbackend_rt.stream_container_up.__globals__
+            with patch.dict(g, state["patch"]), patch.object(
+                lbackend, "CONFIG_DIR", tmp
+            ):
+                _ = [
+                    e
+                    async for e in lbackend_rt.stream_container_up(
+                        "p", use_dev=True, branch="main"
+                    )
+                ]
+
+            self.assertEqual(len(state["builds"]), 1)
+
+    async def test_missing_config_is_auto_linked_and_created(self) -> None:
+        # The Start screen promises "a default config will be generated on
+        # start" — on llama.cpp that was a lie; render-override just failed.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            state = self._fakes(tmp, config_name="", exists=True, matches=True)
+
+            g = lbackend_rt.stream_container_up.__globals__
+            with patch.dict(g, state["patch"]), patch.object(
+                lbackend, "CONFIG_DIR", tmp
+            ):
+                events = [
+                    e async for e in lbackend_rt.stream_container_up("p")
+                ]
+
+            logs = [d for k, d in events if k == "log"]
+            self.assertTrue(any("자동 링크" in line for line in logs), logs)
+            self.assertTrue(any("기본 config 생성" in line for line in logs), logs)
+            self.assertTrue((tmp / "p.yaml").exists(), list(tmp.iterdir()))
+            self.assertEqual(state["stored"].config_name, "p")
+            # The auto-link save must not carry a transient image override.
+            self.assertEqual(state["saved"], [""])
+
+
 class LlamacppRenderOverrideTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -1330,6 +2030,31 @@ class LlamacppRenderOverrideTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.module.render_command({"ctx-size": 2048}, hf_file="model.gguf")
 
+    def test_scalar_override_tensors_is_one_flag_not_per_char(self) -> None:
+        # A string value used to be iterated char by char → `-ot .`, `-ot *`, …
+        command = self.module.render_command(
+            {"override-tensors": ".*=CPU"},
+            hf_repo="org/repo", hf_file="m.gguf",
+        )
+        idx = [i for i, a in enumerate(command) if a == "-ot"]
+        self.assertEqual(len(idx), 1)
+        self.assertEqual(command[idx[0] + 1], ".*=CPU")
+
+    def test_scalar_extra_args_is_shlex_split(self) -> None:
+        command = self.module.render_command(
+            {"extra-args": "--foo bar --baz"},
+            hf_repo="org/repo", hf_file="m.gguf",
+        )
+        # Split into shell words appended in order, not char-exploded.
+        self.assertEqual(command[-3:], ["--foo", "bar", "--baz"])
+
+    def test_list_override_tensors_still_expands_per_item(self) -> None:
+        command = self.module.render_command(
+            {"override-tensors": ["a=CPU", "b=GPU"]},
+            hf_repo="org/repo", hf_file="m.gguf",
+        )
+        self.assertEqual(command.count("-ot"), 2)
+
     def test_flash_attn_true_renders_with_on_value(self) -> None:
         """Regression: modern llama-server requires --flash-attn on/off/auto,
         not a bare --flash-attn (it would consume the next arg as its value)."""
@@ -1360,12 +2085,49 @@ class LlamacppRenderOverrideTests(unittest.TestCase):
         idx = command.index("--flash-attn")
         self.assertEqual(command[idx + 1], "auto")
 
+    def test_dirs_derive_from_profile_store_root(self) -> None:
+        # The script reads config/ and writes .runtime/ while profile_store
+        # supplies the profile — both must resolve against the same root, or a
+        # LLMUX_ROOT run renders an override from the wrong checkout's config.
+        root = profile_store.PROJECT_ROOT
+        self.assertEqual(self.module.ROOT, root)
+        self.assertEqual(self.module.CONFIG_DIR, root / "config" / "llamacpp")
+        self.assertEqual(self.module.RUNTIME_DIR, root / ".runtime" / "llamacpp")
+
+    def test_llmux_root_env_moves_dirs_but_not_import_path(self) -> None:
+        # Fresh interpreter: PROJECT_ROOT is resolved at profile_store import,
+        # so LLMUX_ROOT has to be set before the script loads.
+        script = Path(__file__).resolve().parents[1] / "scripts" / "llamacpp" / "render-override.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = (
+                "import importlib.util\n"
+                f"spec = importlib.util.spec_from_file_location('ro', {str(script)!r})\n"
+                "m = importlib.util.module_from_spec(spec)\n"
+                "spec.loader.exec_module(m)\n"
+                "print(m.ROOT)\nprint(m.CONFIG_DIR)\n"
+            )
+            out = subprocess.run(
+                [sys.executable, "-c", probe],
+                cwd=str(Path(__file__).resolve().parents[1]),
+                env={**os.environ, "LLMUX_ROOT": tmp},
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(out.returncode, 0, out.stderr)
+            lines = out.stdout.strip().splitlines()
+            # Data dirs follow LLMUX_ROOT ...
+            self.assertEqual(lines[0], str(Path(tmp).resolve()))
+            self.assertEqual(lines[1], str(Path(tmp).resolve() / "config" / "llamacpp"))
+        # ... while `tui` still imported from the real checkout (exec_module
+        # would have raised ImportError otherwise, since tmp has no tui/).
+
     def test_other_bool_keys_remain_bare_flags(self) -> None:
         """The flash-attn special-case must NOT apply to other bool keys —
-        --jinja, --cont-batching, --metrics, --mlock etc. take no value and
+        --jinja, --cont-batching, --mlock etc. take no value and
         adding one would break startup. Whitelist must stay narrow."""
         command = self.module.render_command(
-            {"jinja": True, "cont-batching": True, "metrics": False},
+            {"jinja": True, "cont-batching": True, "mlock": False},
             hf_repo="org/repo",
             hf_file="model.gguf",
         )
@@ -1377,8 +2139,42 @@ class LlamacppRenderOverrideTests(unittest.TestCase):
             idx = command.index(flag)
             next_token = command[idx + 1] if idx + 1 < len(command) else ""
             self.assertNotIn(next_token, {"on", "off", "true", "false", "True", "False"})
-        # False-valued bare bools (metrics) are simply omitted.
-        self.assertNotIn("--metrics", command)
+        # False-valued bare bools are simply omitted.
+        self.assertNotIn("--mlock", command)
+
+    def test_host_and_port_from_config_are_dropped(self) -> None:
+        # --host/--port are force-injected; a config that also sets them would
+        # emit duplicate args, and a different container port would desync the
+        # compose port mapping and healthcheck.
+        command = self.module.render_command(
+            {"host": "127.0.0.1", "port": 9999},
+            hf_repo="org/repo",
+            hf_file="model.gguf",
+        )
+        self.assertEqual(command.count("--host"), 1)
+        self.assertEqual(command.count("--port"), 1)
+        self.assertEqual(command[command.index("--host") + 1], "0.0.0.0")
+        self.assertEqual(command[command.index("--port") + 1], "8080")
+        self.assertNotIn("127.0.0.1", command)
+        self.assertNotIn("9999", command)
+
+    def test_metrics_is_forced_on_and_never_duplicated(self) -> None:
+        """`--metrics` is force-injected so the dashboard's live tok/s poll has
+        a /metrics endpoint; a config that also sets it must not double it."""
+        forced = self.module.render_command(
+            {}, hf_repo="org/repo", hf_file="model.gguf"
+        )
+        self.assertEqual(forced.count("--metrics"), 1)
+
+        # config sets it too (either polarity) — still exactly one bare flag.
+        for value in (True, False):
+            command = self.module.render_command(
+                {"metrics": value}, hf_repo="org/repo", hf_file="model.gguf"
+            )
+            self.assertEqual(command.count("--metrics"), 1)
+            idx = command.index("--metrics")
+            next_token = command[idx + 1] if idx + 1 < len(command) else ""
+            self.assertNotIn(next_token, {"on", "off", "true", "false", "True", "False"})
 
 
 class QuickSetupSuffixLogicTests(unittest.TestCase):
@@ -1606,6 +2402,634 @@ class VersionCheckTests(unittest.TestCase):
 
         with patch.object(vc, "_is_git_checkout", side_effect=RuntimeError("boom")):
             vc.check_for_update()  # any non-SystemExit error must not escape
+
+
+class FindCachedGgufTests(unittest.TestCase):
+    """llama-server `-hf` downloads land in the HF hub cache, not MODEL_DIR."""
+
+    def _make_hub(self, tmp: Path, repo: str, rev: str, filename: str) -> Path:
+        org, _, name = repo.partition("/")
+        snap = tmp / "hub" / f"models--{org}--{name}" / "snapshots" / rev
+        snap.mkdir(parents=True)
+        gguf = snap / filename
+        gguf.write_bytes(b"\0" * 2048)
+        return gguf
+
+    def test_finds_gguf_in_hub_snapshot_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            expected = self._make_hub(
+                tmp, "unsloth/Qwen3-8B-GGUF", "abc123", "Qwen3-8B-Q4_K_M.gguf"
+            )
+
+            with patch.object(lbackend, "_get_hf_cache_dir", return_value=tmp):
+                found = lbackend.find_cached_gguf(
+                    "unsloth/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K_M.gguf"
+                )
+
+            self.assertEqual(found, expected)
+
+    def test_returns_none_when_repo_or_file_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            self._make_hub(tmp, "unsloth/Qwen3-8B-GGUF", "abc123", "a.gguf")
+
+            with patch.object(lbackend, "_get_hf_cache_dir", return_value=tmp):
+                # unknown repo
+                self.assertIsNone(lbackend.find_cached_gguf("other/Repo", "a.gguf"))
+                # known repo, unknown file
+                self.assertIsNone(
+                    lbackend.find_cached_gguf("unsloth/Qwen3-8B-GGUF", "nope.gguf")
+                )
+                # empty inputs must not glob the whole cache
+                self.assertIsNone(lbackend.find_cached_gguf("", "a.gguf"))
+                self.assertIsNone(lbackend.find_cached_gguf("unsloth/x", ""))
+
+    def test_list_cached_gguf_reports_repo_and_size(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            self._make_hub(tmp, "unsloth/Qwen3-8B-GGUF", "abc123", "q4.gguf")
+
+            with patch.object(lbackend, "_get_hf_cache_dir", return_value=tmp):
+                cached = lbackend.list_cached_gguf()
+
+            self.assertEqual(len(cached), 1)
+            self.assertEqual(cached[0]["repo"], "unsloth/Qwen3-8B-GGUF")
+            self.assertEqual(cached[0]["name"], "q4.gguf")
+            self.assertEqual(cached[0]["size_bytes"], 2048)
+
+
+class TokenMetricsTests(unittest.TestCase):
+    def test_parses_vllm_labelled_counters_and_sums_label_sets(self) -> None:
+        from tui.common.metrics import parse_token_counters
+
+        text = (
+            "# HELP vllm:prompt_tokens_total Number of prefill tokens.\n"
+            "# TYPE vllm:prompt_tokens_total counter\n"
+            'vllm:prompt_tokens_total{model_name="a"} 10.0\n'
+            'vllm:prompt_tokens_total{model_name="b"} 5.0\n'
+            'vllm:generation_tokens_total{model_name="a"} 100.0\n'
+            'vllm:generation_tokens_total{model_name="b"} 20.0\n'
+        )
+
+        self.assertEqual(parse_token_counters(text), (15.0, 120.0))
+
+    def test_parses_llamacpp_counter_names(self) -> None:
+        from tui.common.metrics import parse_token_counters
+
+        text = (
+            "# TYPE llamacpp:prompt_tokens_total counter\n"
+            "llamacpp:prompt_tokens_total 7\n"
+            "llamacpp:tokens_predicted_total 42\n"
+        )
+
+        self.assertEqual(parse_token_counters(text), (7.0, 42.0))
+
+    def test_returns_none_when_no_token_counters_present(self) -> None:
+        from tui.common.metrics import parse_token_counters
+
+        self.assertIsNone(parse_token_counters(""))
+        self.assertIsNone(parse_token_counters("# only comments\nother_metric 1.0\n"))
+
+    def test_tracker_first_sample_has_no_rate_then_deltas(self) -> None:
+        from tui.common.metrics import ThroughputTracker
+
+        t = ThroughputTracker()
+        self.assertIsNone(t.update("p", (0.0, 0.0), now=0.0))
+
+        rate = t.update("p", (10.0, 200.0), now=2.0)
+        self.assertIsNotNone(rate)
+        assert rate is not None
+        self.assertAlmostEqual(rate[0], 5.0)     # 10 prompt tokens / 2s
+        self.assertAlmostEqual(rate[1], 100.0)   # 200 gen tokens / 2s
+
+    def test_tracker_resets_on_counter_decrease(self) -> None:
+        from tui.common.metrics import ThroughputTracker
+
+        t = ThroughputTracker()
+        t.update("p", (100.0, 500.0), now=0.0)
+        # Server restarted → counters reset to 0. Diffing across that would
+        # emit a large negative rate; the tracker must re-baseline instead.
+        self.assertIsNone(t.update("p", (0.0, 0.0), now=2.0))
+        # Next sample diffs against the fresh baseline.
+        rate = t.update("p", (4.0, 20.0), now=4.0)
+        assert rate is not None
+        self.assertAlmostEqual(rate[1], 10.0)
+
+
+def _docker_available() -> bool:
+    try:
+        r = subprocess.run(
+            ["docker", "image", "ls", "-q"], capture_output=True, timeout=15
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
+
+
+def _any_local_image() -> str:
+    r = subprocess.run(
+        ["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"],
+        capture_output=True, text=True, timeout=15,
+    )
+    for line in r.stdout.splitlines():
+        if line.strip() and "<none>" not in line:
+            return line.strip()
+    return ""
+
+
+@unittest.skipUnless(_docker_available(), "docker not available")
+class GetImageLabelDockerIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    """Unmocked: the previous `--format={{index .Config.Labels 'k'}}` used single
+    quotes, which Go templates read as a rune literal — docker exited rc=64 for
+    every lookup, so image_matches() was always False and `--dev` rebuilt every
+    time. Mocked tests could not catch it; this one shells out for real."""
+
+    async def test_missing_label_returns_empty_without_a_parse_error(self) -> None:
+        from tui.common import dev_build
+
+        image = _any_local_image()
+        if not image:
+            self.skipTest("no local docker images to inspect")
+
+        # rc must be 0 (template parsed) even though the label is absent — the
+        # buggy format returned rc=64 here, indistinguishable from "no label".
+        rc, _ = await dev_build._run(
+            "docker", "inspect", image,
+            '--format={{index .Config.Labels "llmux.test.absent"}}',
+            timeout=20,
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            await dev_build.get_image_label(image, "llmux.test.absent"), ""
+        )
+
+    async def test_present_label_round_trips(self) -> None:
+        from tui.common import dev_build
+
+        image = _any_local_image()
+        if not image:
+            self.skipTest("no local docker images to inspect")
+
+        keys = subprocess.run(
+            ["docker", "image", "inspect", image,
+             "--format", '{{range $k, $v := .Config.Labels}}{{$k}}\n{{end}}'],
+            capture_output=True, text=True, timeout=20,
+        ).stdout.split()
+        if not keys:
+            self.skipTest(f"{image} carries no labels")
+
+        key = keys[0]
+        expected = subprocess.run(
+            ["docker", "image", "inspect", image,
+             "--format", '{{index .Config.Labels "' + key + '"}}'],
+            capture_output=True, text=True, timeout=20,
+        ).stdout.strip()
+
+        self.assertEqual(await dev_build.get_image_label(image, key), expected)
+
+
+class ImageTagValidationTests(unittest.TestCase):
+    def test_empty_is_allowed(self) -> None:
+        from tui.common.dev_build import image_tag_error
+        self.assertEqual(image_tag_error(""), "")
+        self.assertEqual(image_tag_error("   "), "")
+
+    def test_dev_tag_must_already_be_sanitized(self) -> None:
+        from tui.common.dev_build import image_tag_error
+        # A slash can't survive as a docker tag — must be rejected with a hint.
+        err = image_tag_error("vllm-dev:feat/foo")
+        self.assertTrue(err)
+        self.assertIn("vllm-dev:feat-foo", err)
+        # Already-sanitized dev tag passes.
+        self.assertEqual(image_tag_error("llamacpp-dev:feat-foo"), "")
+
+    def test_generic_reference_tag_is_validated(self) -> None:
+        from tui.common.dev_build import image_tag_error
+        self.assertEqual(image_tag_error("ghcr.io/foo/bar:v1"), "")
+        # host:port with no tag is fine (the colon is the registry port).
+        self.assertEqual(image_tag_error("localhost:5000/foo"), "")
+        # An illegal tag after the last colon is rejected.
+        self.assertTrue(image_tag_error("ghcr.io/foo/bar:bad tag"))
+
+
+class VllmContainerStatusImageTests(unittest.IsolatedAsyncioTestCase):
+    """The vLLM/llama.cpp ContainerStatus is a field-for-field mirror; the vLLM
+    side was leaving `image` empty."""
+
+    async def test_image_field_is_populated_from_profile(self) -> None:
+        from tui.backends.vllm import backend_runtime as rt
+
+        profile = backend.Profile(
+            name="p", container_name="p", port="8000", image_tag="vllm-dev:mine",
+            config_name="",
+        )
+
+        async def fake_run_command(*_a, **_k):
+            return 1, ""  # no docker → stopped, but image must still be filled
+
+        with patch.dict(
+            rt.get_container_statuses.__globals__,
+            {
+                "list_profile_names": lambda: ["p"],
+                "load_profile": lambda _n: profile,
+                "run_command": fake_run_command,
+            },
+        ):
+            statuses = await rt.get_container_statuses()
+
+        self.assertEqual(len(statuses), 1)
+        self.assertEqual(statuses[0].image, "vllm-dev:mine")
+
+
+class DevBuildCustomTagTests(unittest.IsolatedAsyncioTestCase):
+    """The runtime sanitizes `--tag feat/foo` to `feat-foo` before looking the
+    image up, so the builder has to sanitize too — otherwise it builds under a
+    name the start path never resolves (or fails on an invalid reference)."""
+
+    async def test_custom_tag_is_sanitized(self) -> None:
+        from tui.common import dev_build
+
+        spec = dev_build.DevBuildSpec(
+            backend="vllm",
+            image_prefix="vllm-dev",
+            src_dir=Path("/tmp/does-not-matter"),
+            default_repo_url="https://example.invalid/repo.git",
+        )
+        tag_line = ""
+        # Stop at the Tag line — everything after it clones and shells out.
+        async for kind, payload in dev_build.stream_build(
+            spec, "main", custom_tag="feat/foo"
+        ):
+            if kind == "log" and payload.startswith("Tag: "):
+                tag_line = payload
+                break
+
+        self.assertEqual(tag_line, "Tag: vllm-dev:feat-foo")
+
+
+class ComposeEnvExpansionTests(unittest.TestCase):
+    """compose expands $VAR/~ when it reads --env-file, but we also merge those
+    values into the process env — which *outranks* --env-file. Unexpanded, the
+    template's default `HF_CACHE_PATH=/home/$USER/.cache/huggingface` got
+    bind-mounted as a literal `/home/$USER` directory."""
+
+    def test_expand_env_values_expands_vars_and_tilde(self) -> None:
+        from tui.common.env import expand_env_values
+
+        with patch.dict(os.environ, {"USER": "alice"}, clear=False):
+            out = expand_env_values({
+                "HF_CACHE_PATH": "/home/$USER/.cache/huggingface",
+                "MODEL_DIR": "~/models",
+                "PLAIN": "/abs/path",
+            })
+
+        self.assertEqual(out["HF_CACHE_PATH"], "/home/alice/.cache/huggingface")
+        self.assertEqual(out["MODEL_DIR"], str(Path("~/models").expanduser()))
+        self.assertEqual(out["PLAIN"], "/abs/path")
+
+    def test_vllm_compose_env_expands_common_but_not_profile(self) -> None:
+        from tui.backends.vllm import backend_runtime as vrt
+
+        profile = backend.Profile(name="p", config_name="p", port=8000)
+        # Common env → expanded; profile .env (user env_vars) → literal.
+        with patch.dict(os.environ, {"USER": "alice"}, clear=False), \
+             patch.object(vrt, "_common_env",
+                          lambda: {"HF_CACHE_PATH": "/home/$USER/.cache/huggingface"}), \
+             patch.object(vrt, "_parse_env_file", lambda _p: {"MY_VAR": "$HOME/x"}):
+            env = vrt._compose_env(profile, use_dev=False, version_tag="v1")
+
+        self.assertEqual(env["HF_CACHE_PATH"], "/home/alice/.cache/huggingface")
+        self.assertEqual(env["MY_VAR"], "$HOME/x")  # literal, not expanded
+
+    def test_llamacpp_compose_env_expands_common_but_not_profile(self) -> None:
+        from tui.backends.llamacpp import backend_runtime as lrt
+
+        profile = lbackend.Profile(name="p", config_name="p", port=8080)
+        calls = {"n": 0}
+
+        def fake_parse(_p):
+            # First call is COMMON_ENV, second is the profile .env.
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"HF_CACHE_PATH": "/home/$USER/.cache/huggingface"}
+            return {"MY_VAR": "$HOME/x"}
+
+        with patch.dict(os.environ, {"USER": "alice"}, clear=False), \
+             patch.object(type(lrt.COMMON_ENV), "exists", lambda _s: True), \
+             patch.object(type(profile.path), "exists", lambda _s: True), \
+             patch.object(lrt, "_parse_env_file", fake_parse):
+            env = lrt._compose_env(profile)
+
+        self.assertEqual(env["HF_CACHE_PATH"], "/home/alice/.cache/huggingface")
+        self.assertEqual(env["MY_VAR"], "$HOME/x")  # literal, not expanded
+
+
+class LlamacppEnvVarsRoundTripTests(unittest.TestCase):
+    """The llama.cpp Profile had no env_vars field, so the TUI's load→save cycle
+    silently dropped anything the CLI had put there with --set."""
+
+    def test_env_vars_survive_load_save_round_trip(self) -> None:
+        stored = profile_store.StoredProfile(
+            name="lcpp_env",
+            backend="llamacpp",
+            port=8080,
+            gpu_id="0",
+            hf_repo="org/x",
+            hf_file="m.gguf",
+            env_vars={"LLAMA_ARG_THREADS": "8"},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config" / "llamacpp").mkdir(parents=True)
+            with patch("tui.common.profile_store.PROFILES_YAML", root / "profiles.yaml"), \
+                 patch("tui.common.profile_store.RUNTIME_DIR", root / ".runtime"):
+                profile_store.save_profile(stored)
+
+                # The TUI edit path: backend.load_profile -> backend.save_profile.
+                loaded = lbackend.load_profile("lcpp_env")
+                self.assertEqual(loaded.env_vars, {"LLAMA_ARG_THREADS": "8"})
+
+                lbackend.save_profile(loaded)
+
+                again = profile_store.load_profile("lcpp_env", "llamacpp")
+                assert again is not None
+                self.assertEqual(again.env_vars, {"LLAMA_ARG_THREADS": "8"})
+
+
+class DisabledParamsTests(unittest.TestCase):
+    """Disabled config params round-trip via comment markers, and — critically —
+    stay invisible to the YAML/flag parser the server itself uses."""
+
+    def _tmp_config_dir(self, backend_mod):
+        # Patch the module's CONFIG_DIR to an isolated temp dir.
+        return tempfile.TemporaryDirectory()
+
+    def test_vllm_round_trip_and_server_safety(self) -> None:
+        from tui.backends.vllm import backend_storage as vs
+        from tui.backends.vllm import backend_common as vc
+        from tui.backends.vllm.backend_common import Config as VC
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # save_config's mkdir uses backend_storage.CONFIG_DIR; Config.path
+            # uses backend_common.CONFIG_DIR — patch both.
+            with patch.object(vs, "CONFIG_DIR", Path(tmp)), \
+                 patch.object(vc, "CONFIG_DIR", Path(tmp)):
+                cfg = VC(
+                    name="c", model="m/x", gpu_memory_utilization="0.85",
+                    extra_params={"max-model-len": 4096},
+                    disabled_params={"enforce-eager": True, "quantization": "fp8"},
+                )
+                vs.save_config(cfg)
+
+                text = (Path(tmp) / "c.yaml").read_text()
+                # The server reads YAML — disabled params must not be visible.
+                server_view = yaml.safe_load(text)
+                self.assertNotIn("enforce-eager", server_view)
+                self.assertNotIn("quantization", server_view)
+                self.assertIn("max-model-len", server_view)
+
+                loaded = vs.load_config("c")
+                self.assertEqual(loaded.extra_params, {"max-model-len": 4096})
+                self.assertEqual(
+                    loaded.disabled_params,
+                    {"enforce-eager": True, "quantization": "fp8"},
+                )
+
+    def test_llamacpp_round_trip_and_server_safety(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(lbackend, "CONFIG_DIR", Path(tmp)):
+                cfg = lbackend.Config(
+                    name="c", params={"ctx-size": 2048, "alias": "a"},
+                    disabled_params={"override-tensors": ".*=CPU"},
+                )
+                lbackend.save_config(cfg)
+
+                text = (Path(tmp) / "c.yaml").read_text()
+                server_view = yaml.safe_load(text)
+                self.assertNotIn("override-tensors", server_view)
+                self.assertEqual(server_view, {"ctx-size": 2048, "alias": "a"})
+
+                loaded = lbackend.load_config("c")
+                self.assertEqual(loaded.disabled_params, {"override-tensors": ".*=CPU"})
+
+    def test_long_and_structured_values_survive_disable_enable(self) -> None:
+        # C1: yaml's default width=80 used to wrap long markers; taking the
+        # first physical line then truncated strings and corrupted list/dict
+        # types on re-enable.
+        from tui.common.config_markers import (
+            render_disabled_markers,
+            parse_disabled_markers,
+        )
+
+        cases = {
+            "longstr": "x" * 85,
+            "biglist": list(range(40)),
+            "bigdict": {f"k{i}": i for i in range(20)},
+            "pattern": ".*=CPU",
+            "scalar": 0.85,
+        }
+        text = render_disabled_markers(cases)
+        # Every marker is exactly one line.
+        marker_lines = [ln for ln in text.splitlines() if ln.strip()]
+        self.assertEqual(len(marker_lines), len(cases))
+        for ln in marker_lines:
+            self.assertTrue(ln.startswith("# llmux:disabled "))
+
+        back = parse_disabled_markers(text)
+        for k, v in cases.items():
+            self.assertEqual(back[k], v)
+            self.assertIs(type(back[k]), type(v))
+
+    def test_active_key_wins_over_a_stale_marker(self) -> None:
+        from tui.common.config_markers import parse_disabled_markers
+        from tui.backends.llamacpp import backend as lb
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(lb, "CONFIG_DIR", Path(tmp)):
+                # Hand-craft a file where the same key is both active and marked.
+                (Path(tmp) / "c.yaml").write_text(
+                    "ctx-size: 2048\n# llmux:disabled ctx-size: 999\n"
+                )
+                # Sanity: the marker parser does see it...
+                self.assertIn("ctx-size", parse_disabled_markers(
+                    (Path(tmp) / "c.yaml").read_text()
+                ))
+                # ...but load_config drops it because the active key wins.
+                loaded = lb.load_config("c")
+                self.assertEqual(loaded.params["ctx-size"], 2048)
+                self.assertNotIn("ctx-size", loaded.disabled_params)
+
+    def test_vllm_save_preserves_user_comments(self) -> None:
+        # Editing a config used to erase every hand-written `#` note (PyYAML
+        # can't round-trip comments). A header, an inline comment, and a
+        # trailing block must all survive an edit that changes one value.
+        from tui.backends.vllm import backend_storage as vs
+        from tui.backends.vllm import backend_common as vc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(vs, "CONFIG_DIR", Path(tmp)), \
+                 patch.object(vc, "CONFIG_DIR", Path(tmp)):
+                (Path(tmp) / "c.yaml").write_text(
+                    "# header note\n"
+                    "model: org/m  # inline note\n"
+                    "max-model-len: 8192\n"
+                    "# OFF-only trailing explanation.\n"
+                )
+                cfg = vs.load_config("c")
+                cfg.extra_params["max-model-len"] = 4096  # a TUI/CLI edit
+                vs.save_config(cfg)
+
+                text = (Path(tmp) / "c.yaml").read_text()
+                self.assertIn("# header note", text)
+                self.assertIn("# inline note", text)
+                self.assertIn("# OFF-only trailing explanation.", text)
+                self.assertIn("max-model-len: 4096", text)
+                # The server view is still valid YAML with the new value.
+                self.assertEqual(yaml.safe_load(text)["max-model-len"], 4096)
+
+    def test_llamacpp_save_preserves_user_comments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(lbackend, "CONFIG_DIR", Path(tmp)):
+                (Path(tmp) / "c.yaml").write_text(
+                    "# llama config\nctx-size: 32768  # context length\nn-gpu-layers: 99\n"
+                )
+                cfg = lbackend.load_config("c")
+                cfg.params["ctx-size"] = 16384
+                lbackend.save_config(cfg)
+
+                text = (Path(tmp) / "c.yaml").read_text()
+                self.assertIn("# llama config", text)
+                self.assertIn("# context length", text)
+                self.assertIn("ctx-size: 16384", text)
+
+    def test_comment_free_config_stays_byte_identical(self) -> None:
+        # The comment-preserving path must not touch comment-less files — their
+        # plain PyYAML output has to stay exactly as before.
+        from tui.backends.vllm import backend_storage as vs
+        from tui.backends.vllm import backend_common as vc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(vs, "CONFIG_DIR", Path(tmp)), \
+                 patch.object(vc, "CONFIG_DIR", Path(tmp)):
+                data = {
+                    "model": "org/m",
+                    "gpu-memory-utilization": "0.9",
+                    "max-model-len": 2048,
+                }
+                plain = yaml.dump(
+                    data, default_flow_style=False, allow_unicode=True, sort_keys=False
+                )
+                (Path(tmp) / "c.yaml").write_text(plain)
+                vs.save_config(vs.load_config("c"))  # no-op re-save
+                self.assertEqual((Path(tmp) / "c.yaml").read_text(), plain)
+
+
+class EnvLineQuotingTests(unittest.TestCase):
+    """docker compose reads the rendered .env with a dotenv parser, not a shell.
+
+    shlex.quote turns `it's` into `'it'"'"'s'`, which that parser rejects — the
+    profile saved fine and `up` then died with an opaque error.
+    """
+
+    def test_single_quote_in_value_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            profile_store._env_line("K", "it's")
+        self.assertIn("single quote", str(ctx.exception))
+
+    def test_double_quote_in_value_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            profile_store._env_line("K", 'say "hi"')
+
+    def test_newline_in_value_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            profile_store._env_line("K", "a\nb")
+
+    def test_control_character_in_value_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            profile_store._env_line("K", "a\x07b")
+
+    def test_plain_and_spaced_values_still_render(self) -> None:
+        # Values compose *can* read must keep working — including spaces and
+        # commas, which shlex quotes but dotenv handles.
+        self.assertEqual(profile_store._env_line("K", "v"), "K=v")
+        self.assertEqual(profile_store._env_line("K", "a b"), "K='a b'")
+        self.assertEqual(profile_store._env_line("K", "0,1"), "K=0,1")
+        self.assertEqual(profile_store._env_line("K", 8000), "K=8000")
+
+    def test_env_value_rejection_reports_the_offending_class(self) -> None:
+        self.assertEqual(profile_store.env_value_rejection("ok"), "")
+        self.assertIn("single quote", profile_store.env_value_rejection("it's"))
+        self.assertIn("newline", profile_store.env_value_rejection("a\nb"))
+
+
+class ListHfRepoFilesTests(unittest.IsolatedAsyncioTestCase):
+    """The tree API is non-recursive and paginated by default — a repo that
+    keeps its GGUFs in per-quant subfolders (the standard layout for large
+    sharded models) would otherwise look empty."""
+
+    class _FakeResponse:
+        def __init__(self, payload: list[dict], link: str = "") -> None:
+            self._payload = payload
+            self.headers = {"Link": link} if link else {}
+
+        def read(self) -> bytes:
+            return json.dumps(self._payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc) -> bool:
+            return False
+
+    def _patch_urlopen(self, pages: dict[str, "ListHfRepoFilesTests._FakeResponse"]):
+        requested: list[str] = []
+
+        def fake_urlopen(req, timeout=0):
+            requested.append(req.full_url)
+            return pages[req.full_url]
+
+        return requested, patch("urllib.request.urlopen", fake_urlopen)
+
+    async def test_recursive_flag_and_subfolder_paths_preserved(self) -> None:
+        base = "https://huggingface.co/api/models/org/repo/tree/main?recursive=true"
+        pages = {
+            base: self._FakeResponse(
+                [
+                    {"type": "directory", "path": "Q4_K_M"},
+                    {"type": "file", "path": "Q4_K_M/model-00001-of-00002.gguf"},
+                ]
+            )
+        }
+        requested, patcher = self._patch_urlopen(pages)
+        with patcher:
+            files = await lbackend.list_hf_repo_files("org/repo")
+
+        self.assertEqual(requested, [base])
+        self.assertEqual(
+            [f["path"] for f in files if f["type"] == "file"],
+            ["Q4_K_M/model-00001-of-00002.gguf"],
+        )
+
+    async def test_follows_link_next_and_merges_pages(self) -> None:
+        base = "https://huggingface.co/api/models/org/repo/tree/main?recursive=true"
+        page2 = f"{base}&cursor=abc"
+        pages = {
+            base: self._FakeResponse(
+                [{"type": "file", "path": "Q4_K_M/a.gguf"}],
+                link=f'<{page2}>; rel="next"',
+            ),
+            page2: self._FakeResponse([{"type": "file", "path": "Q8_0/b.gguf"}]),
+        }
+        requested, patcher = self._patch_urlopen(pages)
+        with patcher:
+            files = await lbackend.list_hf_repo_files("org/repo")
+
+        self.assertEqual(requested, [base, page2])
+        self.assertEqual(
+            [f["path"] for f in files],
+            ["Q4_K_M/a.gguf", "Q8_0/b.gguf"],
+        )
 
 
 if __name__ == "__main__":

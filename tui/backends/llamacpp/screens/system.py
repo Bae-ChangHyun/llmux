@@ -21,15 +21,18 @@ from textual.widgets import (
 from tui.backends.llamacpp.backend import (
     GpuInfo,
     ROOT,
+    _get_hf_cache_dir,
     _get_model_dir,
     get_disk_usage,
     get_docker_images,
     get_gpu_info,
+    list_cached_gguf,
     list_profile_names,
     load_profile,
     run_command,
 )
 from tui.backends.llamacpp.backend_runtime import LLAMACPP_DEV_SPEC
+from tui.common import profile_store
 from tui.common.dev_build import list_local_dev_images
 
 
@@ -177,7 +180,14 @@ class SystemScreen(Screen):
 
     @work(exclusive=True, group="sys-containers")
     async def _refresh_containers(self) -> None:
+        """Show every llmux-managed container, across BOTH backends.
+
+        Mirrors the vLLM System screen: filtering to just this backend made the
+        panel claim 'no profile containers' while vLLM containers were running.
+        """
         known = {load_profile(n).container_name for n in list_profile_names()}
+        for stored in profile_store.list_profiles("vllm"):
+            known.add(stored.container_name or stored.name)
         rc, out = await run_command(
             "docker", "ps", "-a",
             "--format", "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}",
@@ -187,6 +197,8 @@ class SystemScreen(Screen):
         log.clear()
         if rc != 0:
             log.write("[red]docker ps 실패[/]")
+            if out.strip():
+                log.write(out)
             return
         lines = out.strip().splitlines()
         if len(lines) < 2:
@@ -230,6 +242,20 @@ class SystemScreen(Screen):
         else:
             log.write(f"[yellow]모델 디렉토리 존재하지 않음: {model_dir}[/]")
             log.write("")
+
+        # HF hub 캐시 — llama-server 가 `-hf` 로 받는 실제 저장 위치
+        cached = list_cached_gguf()
+        log.write(f"[b]HF cache GGUF ({len(cached)} 개)[/b]  [dim]{_get_hf_cache_dir()}[/dim]")
+        if cached:
+            for c in cached:
+                log.write(
+                    f"  {c['repo']}/{c['name']}  [dim]{c['size_gb']:.1f} GB[/dim]"
+                )
+            total_gb = sum(c["size_bytes"] for c in cached) / 1024**3
+            log.write(f"  [dim]합계: {total_gb:.1f} GB[/dim]")
+        else:
+            log.write("  [dim](HF 캐시에 받아둔 GGUF 없음)[/dim]")
+        log.write("")
 
         # df -h
         used, avail, pct = await get_disk_usage(str(model_dir if model_dir.exists() else ROOT))

@@ -6,7 +6,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, OptionList, Static
+from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 
@@ -87,3 +87,80 @@ class ConfirmModal(ModalScreen[bool]):
 
     def action_cancel(self) -> None:
         self.dismiss(False)
+
+
+class TextPromptModal(ModalScreen[str | None]):
+    """공용 텍스트 입력 다이얼로그. 취소 시 None, 확인 시 입력 문자열."""
+
+    # Without an explicit height the generic `ModalScreen > Vertical` rule in
+    # app.tcss leaves Vertical at its default `height: 1fr`, so the dialog
+    # stretched to nearly the full terminal around three rows of content.
+    DEFAULT_CSS = """
+    TextPromptModal > Vertical {
+        width: 52;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: round $primary;
+    }
+    TextPromptModal #prompt-message {
+        text-align: center;
+        width: 100%;
+        margin-bottom: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        default: str = "",
+        placeholder: str = "",
+        confirm_label: str = "OK",
+        cancel_label: str = "Cancel",
+    ) -> None:
+        super().__init__()
+        self._message = message
+        self._default = default
+        self._placeholder = placeholder
+        self._confirm_label = confirm_label
+        self._cancel_label = cancel_label
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Static(self._message, id="prompt-message"),
+            Input(
+                value=self._default,
+                placeholder=self._placeholder,
+                id="prompt-input",
+            ),
+            Horizontal(
+                Button(self._confirm_label, id="prompt-ok", variant="primary"),
+                Button(self._cancel_label, id="prompt-cancel", variant="default"),
+                classes="form-buttons",
+            ),
+        )
+
+    def on_mount(self) -> None:
+        self.query_one("#prompt-input", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "prompt-ok":
+            self._submit()
+        else:
+            self.dismiss(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self._submit()
+
+    def _submit(self) -> None:
+        value = self.query_one("#prompt-input", Input).value.strip()
+        self.dismiss(value or None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)

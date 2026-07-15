@@ -16,6 +16,7 @@ services:
   llama-server:
     image: ${LLAMACPP_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda}
     container_name: ${CONTAINER_NAME}
+    runtime: nvidia
     restart: unless-stopped
     ports:
       - "${LLAMA_PORT:-8080}:8080"
@@ -25,13 +26,13 @@ services:
     environment:
       - TZ=${TZ:-UTC}
       - HF_TOKEN=${HF_TOKEN}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ['${GPU_ID:-0}']
-              capabilities: [gpu]
+      # vllm 과 동일 포맷. 이전의 `deploy.resources.reservations.devices.device_ids`
+      # 는 comma-separated GPU_ID (예: `0,1`) 를 단일 id 로 취급해서 multi-GPU
+      # (split-mode / tensor-split) 구성이 깨졌다.
+      - NVIDIA_VISIBLE_DEVICES=${GPU_ID:-0}
+    env_file:
+      - path: ${PROFILE_PATH}
+        required: false
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s

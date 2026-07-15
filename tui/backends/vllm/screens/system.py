@@ -31,7 +31,7 @@ from tui.backends.vllm.backend import (
 )
 from tui.common import profile_store
 from tui.common.docker import get_disk_usage
-from tui.common.env import parse_env_file
+from tui.common.env import host_expand, parse_env_file
 
 
 class SystemScreen(Screen):
@@ -255,6 +255,9 @@ class SystemScreen(Screen):
         if not hf_cache:
             log.write("[yellow]HF_CACHE_PATH is not set in .env.common[/]")
             return
+        # The template default is `/home/$USER/...`; df needs the expanded path
+        # or it always reports "Could not stat" (parity with the CLI/llama.cpp).
+        hf_cache = host_expand(hf_cache)
         log.write(f"[b]HF cache path:[/b] {hf_cache}")
         log.write("")
         used, avail, pct = await get_disk_usage(hf_cache)

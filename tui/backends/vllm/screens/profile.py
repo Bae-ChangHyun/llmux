@@ -27,6 +27,13 @@ from tui.backends.vllm.backend import (
 # ---------------------------------------------------------------------------
 
 
+def _default_port() -> str:
+    """Backend default port, honoring a `defaults:` override in profiles.yaml."""
+    from tui.common import profile_store
+
+    return str(profile_store.effective_defaults("vllm")["port"])
+
+
 class ProfileFormScreen(ModalScreen[str | None]):
     """Modal form for creating or editing a profile.
 
@@ -115,6 +122,13 @@ class ProfileFormScreen(ModalScreen[str | None]):
         configs = list_config_names()
         config_options: list[tuple[str, str]] = [(name, name) for name in configs]
 
+        # A dangling link (config YAML deleted out from under the profile) has
+        # no matching option, so the Select would fall back to BLANK and saving
+        # would silently rewrite config_name to "". Surface it instead.
+        if p and p.config_name and p.config_name not in configs:
+            config_options.insert(0, (f"{p.config_name} (missing)", p.config_name))
+            configs = [*configs, p.config_name]
+
         with Vertical():
             yield Static(f"[b]{title}[/b]", id="form-title")
 
@@ -140,7 +154,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
                     yield Label("Port")
                     yield Input(
                         value=p.port if p else "",
-                        placeholder="8000",
+                        placeholder=_default_port(),
                         id="port-input",
                     )
 
@@ -225,7 +239,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             return
         if not _validate_name(name):
             self.notify(
-                "Name must start with a letter/digit, and contain only letters, digits, dashes, or underscores.",
+                "Name must be lowercase: start with [a-z0-9], then lowercase letters, digits, dashes, or underscores only.",
                 severity="error",
             )
             return
@@ -234,9 +248,18 @@ class ProfileFormScreen(ModalScreen[str | None]):
             self.notify(f"Profile '{name}' already exists.", severity="error")
             return
 
+        if not self._edit_mode and name == "example":
+            # The config link defaults to the profile name, so an 'example'
+            # profile would write its params into the tracked example.yaml.
+            self.notify(
+                "'example' is the tracked template config name — pick another.",
+                severity="error",
+            )
+            return
+
         if container and not _validate_name(container):
             self.notify(
-                "Container name must contain only letters, digits, dashes, or underscores.",
+                "Container name must be lowercase: start with [a-z0-9], then lowercase letters, digits, dashes, or underscores only.",
                 severity="error",
             )
             return
@@ -250,7 +273,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 self.notify("Port must be a number between 1024 and 65535.", severity="error")
                 return
 
-        if gpu_id and not re.match(r"^[\d,]+$", gpu_id):
+        if gpu_id and not re.match(r"^[0-9]+(,[0-9]+)*$", gpu_id):
             self.notify("GPU ID must contain only digits and commas.", severity="error")
             return
 
@@ -265,12 +288,18 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
         extra_pip = self.query_one("#extra-pip-input", Input).value.strip()
         image_tag = self.query_one("#image-tag-input", Input).value.strip()
+        from tui.common.dev_build import image_tag_error
+
+        tag_err = image_tag_error(image_tag)
+        if tag_err:
+            self.notify(tag_err, severity="error")
+            return
 
         # --- Build and save ---
         if self._edit_mode and self._profile is not None:
             profile = self._profile
             profile.container_name = container or name
-            profile.port = port or "8000"
+            profile.port = port or _default_port()
             profile.gpu_id = gpu_id or "0"
             profile.tensor_parallel = tp or "1"
             profile.config_name = config_name
@@ -282,7 +311,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             profile = Profile(
                 name=name,
                 container_name=container or name,
-                port=port or "8000",
+                port=port or _default_port(),
                 gpu_id=gpu_id or "0",
                 tensor_parallel=tp or "1",
                 config_name=config_name,
@@ -363,6 +392,9 @@ class ProfileDeleteScreen(ModalScreen[bool]):
         self._profile_name = profile_name
         self._profile = load_profile(profile_name)
         self._config_shared = self._has_other_config_refs()
+        # delete_profile() skips the tracked template — say so instead of
+        # promising a deletion that will not happen.
+        self._config_is_template = self._profile.config_name == "example"
 
     def _has_other_config_refs(self) -> bool:
         config_name = self._profile.config_name
@@ -378,11 +410,12 @@ class ProfileDeleteScreen(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical():
             if self._profile.config_name:
-                detail = (
-                    f"(profile only; config is shared: {self._profile.config_name})"
-                    if self._config_shared
-                    else f"(profile + config: {self._profile.config_name})"
-                )
+                if self._config_shared:
+                    detail = f"(profile only; config is shared: {self._profile.config_name})"
+                elif self._config_is_template:
+                    detail = "(profile only; config 'example' is the tracked template — kept)"
+                else:
+                    detail = f"(profile + config: {self._profile.config_name})"
                 yield Static(
                     f"Delete [b]{self._profile_name}[/b]?\n{detail}",
                     id="delete-message",
@@ -400,12 +433,16 @@ class ProfileDeleteScreen(ModalScreen[bool]):
     def _on_delete(self, event: Button.Pressed) -> None:
         has_config = bool(self._profile.config_name)
         delete_profile(self._profile_name, delete_config=has_config)
-        if has_config and not self._config_shared:
-            self.app.notify(f"Deleted: {self._profile_name} + config: {self._profile.config_name}")
-        elif has_config:
+        if has_config and self._config_shared:
             self.app.notify(
                 f"Deleted profile: {self._profile_name}; shared config kept: {self._profile.config_name}"
             )
+        elif has_config and self._config_is_template:
+            self.app.notify(
+                f"Deleted profile: {self._profile_name}; tracked template config kept: example"
+            )
+        elif has_config:
+            self.app.notify(f"Deleted: {self._profile_name} + config: {self._profile.config_name}")
         else:
             self.app.notify(f"Deleted profile: {self._profile_name}")
         self.dismiss(True)

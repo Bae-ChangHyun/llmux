@@ -6,7 +6,7 @@ from typing import Any
 
 from textual.app import ComposeResult
 from textual.screen import Screen, ModalScreen
-from textual.widgets import Button, Static, Label, Input, DataTable, Footer, Header
+from textual.widgets import Button, Static, Label, Input, DataTable, Footer, Header, Switch
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.binding import Binding
 from textual.suggester import SuggestFromList
@@ -14,6 +14,7 @@ from textual import on
 
 from textual import work
 
+from tui.backends.vllm.backend_common import CONFIG_DIR
 from tui.backends.vllm.backend import (
     Config,
     load_config,
@@ -27,6 +28,7 @@ from tui.backends.vllm.backend import (
     format_config_param_value,
     parse_config_param_value,
 )
+from tui.common.widgets import TextPromptModal
 
 
 # Fallback params used when dynamic extraction fails
@@ -131,9 +133,16 @@ class ConfigFormScreen(ModalScreen[str | None]):
         color: $text-muted;
         margin-bottom: 1;
     }
+    ConfigFormScreen #params-container {
+        height: auto;
+    }
     ConfigFormScreen .param-row {
         height: auto;
         margin-bottom: 0;
+    }
+    ConfigFormScreen .param-row .param-switch {
+        width: 8;
+        margin-right: 1;
     }
     ConfigFormScreen .param-row .param-key {
         width: 28;
@@ -142,6 +151,10 @@ class ConfigFormScreen(ModalScreen[str | None]):
     ConfigFormScreen .param-row .param-value {
         width: 1fr;
         margin-right: 1;
+    }
+    ConfigFormScreen .param-row.-disabled .param-key,
+    ConfigFormScreen .param-row.-disabled .param-value {
+        color: $text-muted;
     }
     ConfigFormScreen .param-row .param-remove {
         min-width: 5;
@@ -226,6 +239,8 @@ class ConfigFormScreen(ModalScreen[str | None]):
         if self._edit_mode and self._initial_config:
             for key, value in self._initial_config.extra_params.items():
                 self._add_param_row(key, format_config_param_value(value))
+            for key, value in self._initial_config.disabled_params.items():
+                self._add_param_row(key, format_config_param_value(value), enabled=False)
         self._load_vllm_params()
 
     @work(exclusive=False)
@@ -239,11 +254,14 @@ class ConfigFormScreen(ModalScreen[str | None]):
             for inp in self.query(".param-key"):
                 inp.suggester = _PARAM_SUGGESTER
 
-    def _add_param_row(self, key: str = "", value: str = "") -> None:
+    def _add_param_row(self, key: str = "", value: str = "", enabled: bool = True) -> None:
         container = self.query_one("#params-container")
         row_id = f"param-row-{self._param_counter}"
         self._param_counter += 1
+        # A row's Switch decides active (params) vs disabled (comment marker) at
+        # save time; a disabled row is dimmed via the `-disabled` class.
         row = Horizontal(
+            Switch(value=enabled, classes="param-switch"),
             Input(
                 value=key,
                 placeholder="param-name (Tab: autocomplete)",
@@ -253,11 +271,17 @@ class ConfigFormScreen(ModalScreen[str | None]):
             Input(value=value, placeholder="value", classes="param-value"),
             Button("x", classes="param-remove"),
             id=row_id,
-            classes="param-row",
+            classes="param-row" if enabled else "param-row -disabled",
         )
         container.mount(row)
         # Scroll to show newly added row
         self.call_after_refresh(self._scroll_to_bottom)
+
+    @on(Switch.Changed, ".param-switch")
+    def _on_switch(self, event: Switch.Changed) -> None:
+        row = event.switch.parent
+        if row is not None:
+            row.set_class(not event.value, "-disabled")
 
     def _scroll_to_bottom(self) -> None:
         try:
@@ -291,11 +315,14 @@ class ConfigFormScreen(ModalScreen[str | None]):
             return
         if not _validate_name(name):
             self.notify(
-                "Name must contain only letters, digits, dashes, or underscores.",
+                "Name must be lowercase: start with [a-z0-9], then lowercase letters, digits, dashes, or underscores only.",
                 severity="error",
             )
             return
-        if not self._edit_mode and name in list_config_names():
+        # File existence, not `in list_config_names()` — that helper filters
+        # out `example`, so a config named "example" passed the check and
+        # silently overwrote the tracked example.yaml.
+        if not self._edit_mode and (CONFIG_DIR / f"{name}.yaml").exists():
             self.notify(f"Config '{name}' already exists.", severity="error")
             return
         if gpu_mem:
@@ -310,24 +337,29 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 )
                 return
 
-        # --- Collect extra params ---
+        # --- Collect params (Switch on → active, off → disabled) ---
         extra_params: dict[str, Any] = {}
+        disabled_params: dict[str, Any] = {}
         seen_keys: set[str] = set()
         for row in self.query(".param-row"):
             key_input = row.query_one(".param-key", Input)
             value_input = row.query_one(".param-value", Input)
+            switch = row.query_one(".param-switch", Switch)
             k = key_input.value.strip()
             v = value_input.value.strip()
             if k:
+                # Duplicate check spans active + disabled — the same key can't
+                # exist in both, and 'disabled' wins nothing at save time.
                 if k in seen_keys:
                     self.notify(f"Duplicate parameter: {k}", severity="error")
                     return
                 seen_keys.add(k)
                 try:
-                    extra_params[k] = parse_config_param_value(v)
+                    parsed = parse_config_param_value(v)
                 except Exception as exc:
                     self.notify(f"Invalid value for {k}: {exc}", severity="error")
                     return
+                (extra_params if switch.value else disabled_params)[k] = parsed
 
         # --- Warn about unknown params ---
         unknown = [k for k in extra_params if k not in KNOWN_VLLM_PARAMS]
@@ -344,6 +376,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
             model=model,
             gpu_memory_utilization=gpu_mem or "0.9",
             extra_params=extra_params,
+            disabled_params=disabled_params,
         )
 
         save_config(cfg)
@@ -480,7 +513,9 @@ class ConfigListScreen(Screen):
     BINDINGS = [
         Binding("n", "new_config", "New", show=True),
         Binding("e", "edit_config", "Edit", show=True),
-        Binding("delete", "delete_config", "Delete", show=True),
+        Binding("c", "clone_config", "Clone", show=True),
+        Binding("delete,x", "delete_config", "Delete", show=True),
+        Binding("r", "refresh", "Refresh", show=True),
         Binding("escape", "go_back", "Back", show=True),
     ]
 
@@ -494,6 +529,15 @@ class ConfigListScreen(Screen):
         table = self.query_one("#config-table", DataTable)
         table.add_columns("Name", "Model", "GPU Mem", "Params")
         self._refresh_table()
+
+    def on_screen_resume(self) -> None:
+        # Named SCREENS entries are cached instances — on_mount fires once, so
+        # without this the list goes stale after configs change elsewhere.
+        self._refresh_table()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        event.stop()
+        self.action_edit_config()
 
     def _refresh_table(self) -> None:
         table = self.query_one("#config-table", DataTable)
@@ -526,6 +570,43 @@ class ConfigListScreen(Screen):
             return
         self.app.push_screen(ConfigFormScreen(config_name=name), callback=self._on_form_closed)
 
+    def action_clone_config(self) -> None:
+        name = self._get_selected_config()
+        if name is None:
+            self.notify("No config selected.", severity="warning")
+            return
+
+        existing = set(list_config_names())
+        default = f"{name}-copy"
+        suffix = 2
+        while default in existing:
+            default = f"{name}-copy-{suffix}"
+            suffix += 1
+
+        def after(new_name: str | None) -> None:
+            if not new_name:
+                return
+            if not _validate_name(new_name):
+                self.notify(
+                    "Name must be lowercase: start with [a-z0-9], then lowercase "
+                    "letters, digits, dashes, or underscores only.",
+                    severity="error",
+                )
+                return
+            if (CONFIG_DIR / f"{new_name}.yaml").exists():
+                self.notify(f"Config '{new_name}' already exists.", severity="error")
+                return
+            cfg = load_config(name)
+            cfg.name = new_name
+            save_config(cfg)
+            self._refresh_table()
+            self.notify(f"Cloned '{name}' → '{new_name}'")
+
+        self.app.push_screen(
+            TextPromptModal(f"Clone config '{name}' as:", default=default),
+            callback=after,
+        )
+
     def action_delete_config(self) -> None:
         name = self._get_selected_config()
         if name is None:
@@ -545,8 +626,13 @@ class ConfigListScreen(Screen):
         if result:
             self._refresh_table()
 
+    def action_refresh(self) -> None:
+        self._refresh_table()
+
     def action_go_back(self) -> None:
-        self.app.switch_screen("dashboard")
+        # pop, not switch_screen("dashboard") — this screen is pushed on top of
+        # the dashboard, so switching would stack a *second* dashboard instance.
+        self.app.pop_screen()
 
     def _on_form_closed(self, result: str | None = None) -> None:
         self._refresh_table()
