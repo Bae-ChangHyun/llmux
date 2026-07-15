@@ -7,6 +7,7 @@ from typing import Any
 import yaml
 
 from tui.common import profile_store
+from tui.common.config_markers import parse_disabled_markers, render_disabled_markers
 from tui.common.env import parse_env_file as _parse_env_file  # noqa: F401 — re-exported for callers
 
 from .backend_common import CONFIG_DIR, Config, Profile
@@ -118,7 +119,17 @@ def load_config(name: str) -> Config:
     model = str(data.pop("model", ""))
     gpu_mem = str(data.pop("gpu-memory-utilization", "0.9"))
     extra = {str(key): value for key, value in data.items()}
-    return Config(name=name, model=model, gpu_memory_utilization=gpu_mem, extra_params=extra)
+    # A disabled marker whose key is also an active key is ignored — active wins.
+    disabled = {
+        k: v for k, v in parse_disabled_markers(text).items() if k not in extra
+    }
+    return Config(
+        name=name,
+        model=model,
+        gpu_memory_utilization=gpu_mem,
+        extra_params=extra,
+        disabled_params=disabled,
+    )
 
 
 def save_config(config: Config) -> None:
@@ -129,15 +140,19 @@ def save_config(config: Config) -> None:
     }
     for key, value in config.extra_params.items():
         data[key] = True if value == "" else value
-    config.path.write_text(
-        yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
-    )
+    text = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    config.path.write_text(text + render_disabled_markers(config.disabled_params))
 
 
 def parse_config_param_value(raw_value: str) -> Any:
     if raw_value == "":
         return True
-    return yaml.safe_load(raw_value)
+    # A value that isn't valid YAML (e.g. an unbalanced `{`) is kept as the raw
+    # string rather than raising — parity with the llama.cpp parser.
+    try:
+        return yaml.safe_load(raw_value)
+    except yaml.YAMLError:
+        return raw_value
 
 
 def format_config_param_value(value: Any) -> str:

@@ -753,9 +753,14 @@ def _quick_setup_vllm(
         final_name = f"{name}-{suffix}"
 
     extra_params: dict = {}
+    disabled_params: dict = {}
     if copy_config_from:
+        # load_config() returns an empty Config for a missing file, so without
+        # this check a typo'd --copy-from silently produced an empty config.
+        _require_config_exists("vllm", copy_config_from)
         src = load_config(copy_config_from)
         extra_params = dict(src.extra_params)
+        disabled_params = dict(src.disabled_params)
 
     save_config(
         Config(
@@ -763,6 +768,7 @@ def _quick_setup_vllm(
             model=model,
             gpu_memory_utilization=gpu_memory_utilization,
             extra_params=extra_params,
+            disabled_params=disabled_params,
         )
     )
 
@@ -869,9 +875,13 @@ def _quick_setup_llamacpp(
 
     # --- Build llama.cpp config params (mirrors QuickSetupScreen.on_create) ---
     params: dict = {}
+    disabled_params: dict = {}
     if copy_config_from:
+        # See _quick_setup_vllm — load_config() falls back to an empty Config.
+        _require_config_exists("llamacpp", copy_config_from)
         src = l_load_config(copy_config_from)
         params.update(src.params)
+        disabled_params = dict(src.disabled_params)
     params["model-file"] = hf_file
     params.setdefault("alias", final_name)
 
@@ -908,7 +918,7 @@ def _quick_setup_llamacpp(
     else:
         params.pop("override-tensors", None)
 
-    l_save_config(LcppConfig(name=final_name, params=params))
+    l_save_config(LcppConfig(name=final_name, params=params, disabled_params=disabled_params))
 
     profile_store.save_profile(
         profile_store.StoredProfile(
