@@ -20,6 +20,7 @@ from tui.backends.llamacpp.backend import (
     save_profile,
     validate_name,
 )
+from tui.common import profile_store
 from tui.common.i18n import t
 
 
@@ -241,9 +242,19 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 severity="error",
             )
             return
-        if not self._edit_mode and name in list_profile_names():
-            self.notify(t(f"Profile '{name}' already exists", f"Profile '{name}' 이미 존재"), severity="error")
-            return
+        # Profile names must be globally unique across both backends (see
+        # profile_store.find_name_owner) — container_name defaults to the name.
+        if not self._edit_mode:
+            owner = profile_store.find_name_owner(name)
+            if owner is not None:
+                self.notify(
+                    t(
+                        f"Profile '{name}' already exists (backend {owner})",
+                        f"Profile '{name}' 이미 존재 (backend {owner})",
+                    ),
+                    severity="error",
+                )
+                return
 
         if not self._edit_mode and name == "example":
             # config 링크 기본값이 프로필 이름이라, 'example' 프로필은 tracked

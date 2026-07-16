@@ -362,9 +362,12 @@ def new_profile(
         _validate_gpu_id(gpu_id)
     if tensor_parallel:
         _validate_tensor_parallel(tensor_parallel)
-    if profile_store.load_profile(name, backend) is not None:
+    owner = profile_store.find_name_owner(name)
+    if owner is not None:
         raise typer.BadParameter(
-            f"profile '{name}' already exists in backend '{backend}'", param_hint="NAME"
+            f"profile '{name}' already exists (backend '{owner}'). Profile names "
+            "must be unique across both backends.",
+            param_hint="NAME",
         )
     _reject_example_config(config_name or name, from_profile_name=not config_name)
     if config_name:
@@ -425,6 +428,16 @@ def edit_profile(
     """Edit fields of an existing profile (only specified options change)."""
     bk = detect_backend(name, override=backend)
     _validate_profile_name(name, bk)
+    # Global name uniqueness (see profile_store.find_name_owner). `edit` can't
+    # rename, so this only fires when a hand edit created the same name in the
+    # other backend — surface that conflict loudly instead of editing into it.
+    owner = profile_store.find_name_owner(name, exclude=(bk, name))
+    if owner is not None:
+        raise typer.BadParameter(
+            f"profile '{name}' also exists in backend '{owner}'. Profile names "
+            "must be unique across both backends — remove the duplicate first.",
+            param_hint="NAME",
+        )
     _reject_cross_backend_options(
         bk,
         vllm_only={
@@ -735,16 +748,20 @@ def _quick_setup_vllm(
         raise typer.BadParameter("derived name has invalid characters; pass --name explicitly")
 
     from tui.backends.vllm.backend_storage import (
-        list_profile_names as v_list,
         list_config_names as v_clist,
         load_config,
         save_config,
     )
     from tui.backends.vllm.backend_common import Config
 
-    # `example` is added explicitly — v_clist() filters it out, so without it a
-    # profile named "example" would overwrite the tracked example.yaml.
-    existing_profiles = v_list()
+    # Profile names must be globally unique across both backends, so the
+    # collision set spans both — the suffix loop resolves to a name free in
+    # either. `example` is added explicitly — v_clist() filters it out, so
+    # without it a profile named "example" would overwrite the tracked
+    # example.yaml.
+    existing_profiles = set(profile_store.list_profile_names("vllm")) | set(
+        profile_store.list_profile_names("llamacpp")
+    )
     existing_configs = set(v_clist()) | {"example"}
     final_name = name
     suffix = 0
@@ -864,9 +881,16 @@ def _quick_setup_llamacpp(
             param_hint="--name",
         )
 
-    # `example` is added explicitly — l_clist() filters it out, so without it a
-    # profile named "example" would overwrite the tracked example.yaml.
-    existing = set(l_list()) | set(l_clist()) | {"example"}
+    # Profile names must be globally unique across both backends — include the
+    # vLLM profile names too so the suffix loop resolves to a globally-free
+    # name. `example` is added explicitly — l_clist() filters it out, so without
+    # it a profile named "example" would overwrite the tracked example.yaml.
+    existing = (
+        set(l_list())
+        | set(profile_store.list_profile_names("vllm"))
+        | set(l_clist())
+        | {"example"}
+    )
     final_name = name
     suffix = 0
     while final_name in existing:
@@ -885,17 +909,23 @@ def _quick_setup_llamacpp(
     params["model-file"] = hf_file
     params.setdefault("alias", final_name)
 
-    def _set_int(key: str, raw: str) -> None:
+    def _set_int(key: str, raw: str, *, param_hint: str) -> None:
         if not raw:
             params.pop(key, None)
             return
         try:
             params[key] = int(raw)
         except ValueError:
-            params[key] = raw
+            # Fail loudly here rather than storing a non-numeric string that
+            # only breaks at llama-server start — port/gpu-id in this same
+            # command validate eagerly, so these should too.
+            raise typer.BadParameter(
+                f"{param_hint} must be an integer, got {raw!r}",
+                param_hint=param_hint,
+            ) from None
 
-    _set_int("ctx-size", ctx_size)
-    _set_int("n-gpu-layers", n_gpu_layers)
+    _set_int("ctx-size", ctx_size, param_hint="--ctx-size")
+    _set_int("n-gpu-layers", n_gpu_layers, param_hint="--n-gpu-layers")
     if cache_type_k:
         params["cache-type-k"] = cache_type_k
     else:

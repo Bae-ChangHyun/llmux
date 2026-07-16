@@ -496,6 +496,97 @@ class ProfileStoreYamlTests(unittest.TestCase):
             self.assertEqual(profile_store._cli(), 2)
 
 
+class AuditFindingsProfileStoreTests(unittest.TestCase):
+    """Regressions for the profiles.yaml write-path / dedup / global-uniqueness
+    audit fixes (findings #1, #2, #4)."""
+
+    @staticmethod
+    def _write_yaml(root: Path, body: str) -> Path:
+        p = root / "profiles.yaml"
+        p.write_text(body)
+        return p
+
+    def test_save_profile_survives_non_mapping_entry(self) -> None:
+        # A hand-edited scalar entry (`- foo`) has no .get — save_profile used
+        # to crash with AttributeError in the match loop.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = self._write_yaml(
+                root,
+                "version: 1\nprofiles:\n  - foo\n  - name: keep\n    backend: vllm\n",
+            )
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
+            ):
+                profile_store.save_profile(
+                    profile_store.StoredProfile(name="added", backend="vllm")
+                )
+                names = profile_store.list_profile_names("vllm")
+            self.assertIn("added", names)
+            self.assertIn("keep", names)
+            self.assertIn("- foo", profiles_yaml.read_text())  # scalar preserved
+
+    def test_delete_profile_keeps_non_mapping_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = self._write_yaml(
+                root,
+                "version: 1\nprofiles:\n  - foo\n  - name: gone\n    backend: vllm\n",
+            )
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
+            ):
+                removed = profile_store.delete_profile("gone", "vllm")
+                names = profile_store.list_profile_names("vllm")
+            self.assertTrue(removed)
+            self.assertNotIn("gone", names)
+            self.assertIn("- foo", profiles_yaml.read_text())  # scalar untouched
+
+    def test_list_profiles_deduplicates_same_name(self) -> None:
+        # Two entries with the same name+backend used to crash the TUI dashboard
+        # (Textual DuplicateKey). list_profiles now keeps the first and warns.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = self._write_yaml(
+                root,
+                "version: 1\nprofiles:\n"
+                "  - name: dup\n    backend: vllm\n    port: 8001\n"
+                "  - name: dup\n    backend: vllm\n    port: 8002\n",
+            )
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml):
+                profiles = profile_store.list_profiles("vllm")
+            self.assertEqual([p.name for p in profiles], ["dup"])
+            self.assertEqual(profiles[0].port, 8001)  # first entry wins
+
+    def test_find_name_owner_spans_both_backends(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = self._write_yaml(
+                root,
+                "version: 1\nprofiles:\n  - name: shared\n    backend: llamacpp\n",
+            )
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml):
+                self.assertEqual(profile_store.find_name_owner("shared"), "llamacpp")
+                self.assertIsNone(profile_store.find_name_owner("free"))
+                # The profile being edited excludes itself.
+                self.assertIsNone(
+                    profile_store.find_name_owner(
+                        "shared", exclude=("llamacpp", "shared")
+                    )
+                )
+
+
+class DeriveConfigNameTests(unittest.TestCase):
+    def test_dotted_model_id_drops_dots_to_match_new_name_rule(self) -> None:
+        # `config from-recipe <dotted id>` with no --name derived a dotted name
+        # that _NEW_NAME_RE (no dots) then rejected — now dots collapse to `-`.
+        from tui.cli.config import _NEW_NAME_RE, _derive_config_name
+
+        name = _derive_config_name("Qwen/Qwen2.5-7B-Instruct")
+        self.assertEqual(name, "qwen2-5-7b-instruct")
+        self.assertTrue(_NEW_NAME_RE.match(name))
+
+
 class DeleteProfileTests(unittest.TestCase):
     def setUp(self) -> None:
         self._profile_name = "__test_del_profile__"
@@ -2607,10 +2698,21 @@ class ImageTagValidationTests(unittest.TestCase):
     def test_generic_reference_tag_is_validated(self) -> None:
         from tui.common.dev_build import image_tag_error
         self.assertEqual(image_tag_error("ghcr.io/foo/bar:v1"), "")
-        # host:port with no tag is fine (the colon is the registry port).
-        self.assertEqual(image_tag_error("localhost:5000/foo"), "")
+        # A host:port registry ref with a real tag passes (the first colon is
+        # the port, the last is the tag).
+        self.assertEqual(image_tag_error("localhost:5000/foo:v1"), "")
         # An illegal tag after the last colon is rejected.
         self.assertTrue(image_tag_error("ghcr.io/foo/bar:bad tag"))
+
+    def test_untagged_and_latest_refs_are_rejected(self) -> None:
+        # A pinned image_tag must name a specific version — an untagged ref (or a
+        # `:latest` alias) resolves to `:latest`, the same ambiguous alias the
+        # Custom Tag field hard-rejects.
+        from tui.common.dev_build import image_tag_error
+        self.assertTrue(image_tag_error("vllm/vllm-openai"))          # untagged
+        self.assertTrue(image_tag_error("localhost:5000/foo"))       # host:port, no tag
+        self.assertTrue(image_tag_error("vllm/vllm-openai:latest"))  # explicit latest
+        self.assertIn("latest", image_tag_error("vllm/vllm-openai:latest"))
 
 
 class VllmContainerStatusImageTests(unittest.IsolatedAsyncioTestCase):

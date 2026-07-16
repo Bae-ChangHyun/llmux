@@ -284,6 +284,7 @@ def list_profiles(backend: str) -> list[StoredProfile]:
     data = _load_yaml()
     defaults = _backend_defaults(data, backend)
     out: list[StoredProfile] = []
+    seen: set[str] = set()
     for p in data.get("profiles", []):
         # A non-dict list item (e.g. a stray string from a hand edit) has no
         # .get — guard before touching it so it can't crash the whole scan.
@@ -296,7 +297,7 @@ def list_profiles(backend: str) -> list[StoredProfile]:
         if p.get("backend") != backend:
             continue
         try:
-            out.append(_to_profile(p, defaults))
+            profile = _to_profile(p, defaults)
         except (ValueError, KeyError, AttributeError, TypeError) as exc:
             # One malformed entry (missing name, non-integer port, wrong types
             # from a hand edit) must not blank out the whole list — skip it, but
@@ -305,7 +306,42 @@ def list_profiles(backend: str) -> list[StoredProfile]:
                 "skipping malformed profile in profiles.yaml: %s — fix the value "
                 "or remove the entry.", exc,
             )
+            continue
+        # A second entry with the same name+backend (merge artifact or hand
+        # edit) would make the dashboard add two rows under one Textual row key
+        # (DuplicateKey → the reload worker crashes). Keep the first and warn.
+        if profile.name in seen:
+            log.warning(
+                "skipping duplicate profile %r in backend %r — keep a single "
+                "entry per name; remove the extra in profiles.yaml.",
+                profile.name, backend,
+            )
+            continue
+        seen.add(profile.name)
+        out.append(profile)
     return out
+
+
+def find_name_owner(
+    name: str, *, exclude: tuple[str, str] | None = None
+) -> str | None:
+    """Return the backend that already owns a profile named `name`, or None.
+
+    Profile names must be globally unique across BOTH backends: container_name
+    defaults to the profile name, so a `vllm/<name>` and a `llamacpp/<name>`
+    would share one docker object — and `container_down`'s `docker rm -f <name>`
+    fallback matches globally by name, so stopping one backend could tear down
+    the other's running container. `exclude` is the (backend, name) of the
+    profile currently being edited, so the check doesn't match it against
+    itself.
+    """
+    for backend in DEFAULTS:
+        for p in list_profiles(backend):
+            if exclude is not None and exclude == (backend, p.name):
+                continue
+            if p.name == name:
+                return backend
+    return None
 
 
 def list_profile_names(backend: str) -> list[str]:
@@ -333,6 +369,11 @@ def save_profile(profile: StoredProfile) -> None:
     profiles = data.get("profiles", [])
     entry = _profile_to_entry(profile, _backend_defaults(data, profile.backend))
     for idx, existing in enumerate(profiles):
+        # A hand-edited scalar entry (e.g. `- foo`) has no .get — skip it in
+        # the match loop (list_profiles already warns about it) rather than
+        # crashing the write with AttributeError.
+        if not isinstance(existing, dict):
+            continue
         if (
             existing.get("name") == profile.name
             and existing.get("backend") == profile.backend
@@ -370,7 +411,13 @@ def delete_profile(name: str, backend: str) -> bool:
     profiles = data.get("profiles", [])
     remaining = [
         p for p in profiles
-        if not (p.get("name") == name and p.get("backend") == backend)
+        # A non-dict entry (hand-edited scalar) has no .get — leave it untouched
+        # rather than crashing on `.get()`; only mapping entries can match.
+        if not (
+            isinstance(p, dict)
+            and p.get("name") == name
+            and p.get("backend") == backend
+        )
     ]
     if len(remaining) == len(profiles):
         return False

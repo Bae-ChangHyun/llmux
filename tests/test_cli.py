@@ -497,6 +497,18 @@ class CliSmokeTests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("GPU id", r.stderr + r.stdout)
 
+    def test_profile_new_rejects_name_used_by_other_backend(self):
+        # Global name uniqueness (finding #1): `lcpp` already exists as a
+        # llamacpp profile, so a vLLM profile of the same name must be rejected —
+        # container_name defaults to the profile name and would collide.
+        r = _run_cli(
+            self.tmp, "profile", "new", "lcpp", "--backend", "vllm", "--port", "8055",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        out = r.stderr + r.stdout
+        self.assertIn("already exists", out)
+        self.assertIn("llamacpp", out)
+
     def test_profile_edit_rejects_bad_port(self):
         created = _run_cli(
             self.tmp, "profile", "new", "editport", "--backend", "llamacpp",
@@ -1100,6 +1112,29 @@ class CliSmokeTests(unittest.TestCase):
         self.assertNotIn("jinja", cfg)
         # Cleanup.
         _run_cli(self.tmp, "profile", "delete", "lc-smoke", "-y")
+
+    def test_quick_setup_llamacpp_rejects_non_integer_ctx_size(self):
+        # Finding #8: --ctx-size / --n-gpu-layers must validate as ints up front
+        # (like --port / --gpu-id), not silently store a string that only breaks
+        # at llama-server start.
+        r = _run_cli_stubbed_hf(
+            self.tmp,
+            ["model-Q4_K_M.gguf"],
+            "profile", "quick-setup",
+            "--backend", "llamacpp",
+            "--hf-repo", "fake/Model-GGUF",
+            "--hf-file", "model-Q4_K_M.gguf",
+            "--name", "lc-badctx",
+            "--port", "8089",
+            "--ctx-size", "notanumber",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        out = r.stderr + r.stdout
+        self.assertIn("--ctx-size", out)
+        self.assertIn("integer", out)
+        # Nothing should have been persisted.
+        show = _run_cli(self.tmp, "profile", "show", "lc-badctx", "--json")
+        self.assertNotEqual(show.returncode, 0)
 
     def test_quick_setup_llamacpp_warns_on_positional_model(self):
         """Positional MODEL has no meaning for --backend llamacpp (GGUF profiles

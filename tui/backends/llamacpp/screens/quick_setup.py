@@ -427,9 +427,16 @@ class QuickSetupScreen(ModalScreen[str]):
             self.notify(t("GPU ID must be digits/commas (e.g. 0 or 0,1)", "GPU ID 는 숫자/콤마 (예: 0 또는 0,1)"), severity="error")
             return
 
-        # 충돌 시 suffix. list_config_names() 가 example 을 걸러내므로 명시 추가 —
-        # 없으면 "example" 이름이 tracked example.yaml 을 덮어쓴다.
-        existing = set(list_profile_names()) | set(list_config_names()) | {"example"}
+        # 충돌 시 suffix. Profile 이름은 두 백엔드에 걸쳐 전역 유일해야 하므로
+        # vLLM 프로필 이름도 포함한다. list_config_names() 가 example 을
+        # 걸러내므로 명시 추가 — 없으면 "example" 이름이 tracked example.yaml 을
+        # 덮어쓴다.
+        existing = (
+            set(list_profile_names())
+            | set(profile_store.list_profile_names("vllm"))
+            | set(list_config_names())
+            | {"example"}
+        )
         final_name = name_raw
         i = 0
         while final_name in existing:
@@ -438,27 +445,39 @@ class QuickSetupScreen(ModalScreen[str]):
 
         # --- 추가 파라미터 복사 (베이스) ---
         params: dict[str, Any] = {}
+        disabled_params: dict[str, Any] = {}
         copy_sel = self.query_one("#copy-config-select", Select)
         if copy_sel.value and copy_sel.value != Select.BLANK:
             src = load_config(str(copy_sel.value))
             params.update(src.params)
+            disabled_params = dict(src.disabled_params)
 
         # --- 핵심 플래그 강제 설정 ---
         params["model-file"] = gguf_file
         params.setdefault("alias", final_name)
 
         # --- 선택 파라미터: 빈값이면 저장하지 않음 ---
-        def _set_int(key: str, raw: str) -> None:
+        def _set_int(key: str, raw: str, label: str) -> bool:
             if not raw:
                 params.pop(key, None)
-                return
+                return True
             try:
                 params[key] = int(raw)
             except ValueError:
-                params[key] = raw
+                # Reject up front rather than storing a non-numeric string that
+                # only blows up at llama-server start — port/GPU already validate
+                # eagerly in this same form.
+                self.notify(
+                    t(f"{label} must be an integer", f"{label} 은(는) 정수여야 합니다"),
+                    severity="error",
+                )
+                return False
+            return True
 
-        _set_int("ctx-size", ctx)
-        _set_int("n-gpu-layers", ngl)
+        if not _set_int("ctx-size", ctx, "Ctx size"):
+            return
+        if not _set_int("n-gpu-layers", ngl, "N-GPU-Layers"):
+            return
         if ctk:
             params["cache-type-k"] = ctk
         else:
@@ -468,7 +487,8 @@ class QuickSetupScreen(ModalScreen[str]):
         else:
             params.pop("cache-type-v", None)
         if batch:
-            _set_int("batch-size", batch)
+            if not _set_int("batch-size", batch, "Batch size"):
+                return
         else:
             params.pop("batch-size", None)
 
@@ -488,7 +508,7 @@ class QuickSetupScreen(ModalScreen[str]):
         else:
             params.pop("override-tensors", None)
 
-        save_config(Config(name=final_name, params=params))
+        save_config(Config(name=final_name, params=params, disabled_params=disabled_params))
 
         save_profile(
             Profile(
