@@ -210,8 +210,7 @@ def env_check(
 ) -> None:
     """Validate `.env.common` and report key paths."""
     from tui.common.profile_store import PROJECT_ROOT
-    from tui.common.mem import _parse_env_file
-    from tui.common.env import validate_common_env
+    from tui.common.env import parse_env_file, validate_common_env
 
     common = PROJECT_ROOT / ".env.common"
     # Defer the verdict to the same validator the start path gates on, instead
@@ -226,7 +225,7 @@ def env_check(
         "env_common_exists": common.exists(),
         "issues": [] if ok else list(messages),
     }
-    env = _parse_env_file(common) if common.exists() else {}
+    env = parse_env_file(common) if common.exists() else {}
     for key in ("HF_TOKEN", "HF_CACHE_PATH"):
         findings[key] = env.get(key, "")
 

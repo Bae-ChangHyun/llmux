@@ -567,8 +567,12 @@ def _pick_recipe_variant(recipe, variant_name: str):
 
 
 def _derive_config_name(model_id: str) -> str:
+    # Drop `.` from the allowed set so the result matches `_NEW_NAME_RE` (which
+    # forbids dots): a dotted model id like `Qwen/Qwen2.5-7B-Instruct` used to
+    # derive `qwen2.5-7b-instruct` and then fail --name validation. Mirrors the
+    # quick-setup derivation, which also collapses dots to dashes.
     tail = model_id.rsplit("/", 1)[-1]
-    return re.sub(r"[^a-z0-9._-]+", "-", tail.lower()).strip("-") or "recipe-config"
+    return re.sub(r"[^a-z0-9_-]+", "-", tail.lower()).strip("-") or "recipe-config"
 
 
 @app.command("delete")
