@@ -20,6 +20,7 @@ from tui.backends.vllm.backend import (
     list_profile_names,
     validate_name as _validate_name,
 )
+from tui.common import profile_store
 from tui.common.i18n import t
 
 
@@ -261,10 +262,19 @@ class ProfileFormScreen(ModalScreen[str | None]):
             )
             return
 
-        if not self._edit_mode and name in list_profile_names():
-            self.notify(t(f"Profile '{name}' already exists.", f"프로필 '{name}' 이(가) 이미 존재합니다."),
-                        severity="error")
-            return
+        # Profile names must be globally unique across both backends (see
+        # profile_store.find_name_owner) — container_name defaults to the name.
+        if not self._edit_mode:
+            owner = profile_store.find_name_owner(name)
+            if owner is not None:
+                self.notify(
+                    t(
+                        f"Profile '{name}' already exists (backend {owner}).",
+                        f"프로필 '{name}' 이(가) 이미 존재합니다 (backend {owner}).",
+                    ),
+                    severity="error",
+                )
+                return
 
         if not self._edit_mode and name == "example":
             # The config link defaults to the profile name, so an 'example'
