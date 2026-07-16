@@ -856,6 +856,18 @@ async def stream_container_up(
         # profile's image_tag over the version-tag default. version_tag stays
         # empty so the shared block below skips version verification.
         version_tag = ""
+        # Mirror llama.cpp: a pinned dev image (vllm-dev:<tag>) that hasn't been
+        # built yet would fail compose with an opaque "image not found" error.
+        # Pre-check it exists locally and point the user at build-dev. (Non-dev
+        # references are pulled/verified by compose itself.)
+        if profile.image_tag.startswith(f"{VLLM_DEV_SPEC.image_prefix}:"):
+            dev_tag = profile.image_tag.split(":", 1)[1]
+            if not await dev_build.image_exists_locally(VLLM_DEV_SPEC, dev_tag):
+                yield ("log", f"Error: Dev image {profile.image_tag} not found locally.")
+                yield ("log", "  Build it first:")
+                yield ("log", f"  uv run llmux image build-dev --backend vllm --tag {dev_tag}")
+                yield ("rc", 1)
+                return
         yield ("log", f"Using image: {profile.image_tag}")
         env = _compose_env(profile, use_dev=False, vllm_image=profile.image_tag)
         compose_cmd = [

@@ -3,21 +3,8 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
-
-def _parse_env_file(path: Path) -> dict[str, str]:
-    env: dict[str, str] = {}
-    if not path.exists():
-        return env
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        v = v.strip().strip('"').strip("'")
-        env[k.strip()] = v
-    return env
+from tui.common.env import parse_env_file
 
 
 async def estimate_model_memory(model_id: str, hf_token: str | None = None) -> str:
@@ -30,7 +17,7 @@ async def estimate_model_memory(model_id: str, hf_token: str | None = None) -> s
             # instead of hardcoding the installed package's location.
             from tui.common.profile_store import PROJECT_ROOT
 
-            common_env = _parse_env_file(PROJECT_ROOT / ".env.common")
+            common_env = parse_env_file(PROJECT_ROOT / ".env.common")
             hf_token = common_env.get("HF_TOKEN", "") or os.environ.get("HF_TOKEN", "")
 
         kwargs: dict = {"model_id": model_id, "experimental": True}

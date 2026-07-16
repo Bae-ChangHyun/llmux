@@ -80,7 +80,8 @@ def run_onboarding() -> bool:
             console=console,
         )
         model_dir = Prompt.ask(
-            "llama.cpp GGUF model directory",
+            "llama.cpp GGUF model directory (legacy detection / disk view only — "
+            "no longer mounted into the container)",
             default=str(PROJECT_ROOT / "models"),
             console=console,
         )

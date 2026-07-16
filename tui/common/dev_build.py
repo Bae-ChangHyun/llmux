@@ -100,15 +100,27 @@ def image_tag_error(value: str) -> str:
                     f"'/' or other specials — did you mean {prefix}{safe}?"
                 )
             return ""
-    # Generic reference: take the tag as the segment after the last ':' *unless*
-    # that colon belongs to a registry host:port (i.e. sits before the last '/').
-    if ":" in value and value.rfind(":") > value.rfind("/"):
-        tag = value.rsplit(":", 1)[1]
-        if not _TAG_PART_RE.match(tag):
-            return (
-                f"invalid image tag {tag!r}; must match {_TAG_PART_RE.pattern} "
-                "(start with a letter/digit/underscore, then letters/digits/._-)"
-            )
+    # Generic reference: the tag is the segment after the last ':' *unless* that
+    # colon belongs to a registry host:port (i.e. sits before the last '/').
+    has_tag = ":" in value and value.rfind(":") > value.rfind("/")
+    if not has_tag:
+        # An untagged ref resolves to `:latest` at pull time — same ambiguous
+        # alias the Custom Tag field hard-rejects, so refuse it here too.
+        return (
+            f"image reference {value!r} has no tag and would resolve to "
+            "`:latest`; pin a specific version tag."
+        )
+    tag = value.rsplit(":", 1)[1]
+    if tag == "latest":
+        return (
+            "`:latest` is an ambiguous alias and is not allowed; pin a specific "
+            "version tag."
+        )
+    if not _TAG_PART_RE.match(tag):
+        return (
+            f"invalid image tag {tag!r}; must match {_TAG_PART_RE.pattern} "
+            "(start with a letter/digit/underscore, then letters/digits/._-)"
+        )
     return ""
 
 

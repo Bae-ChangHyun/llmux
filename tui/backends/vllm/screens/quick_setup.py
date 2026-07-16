@@ -236,15 +236,24 @@ class QuickSetupScreen(ModalScreen[str]):
         from tui.backends.vllm.backend import load_config
 
         extra_params: dict[str, Any] = {}
+        disabled_params: dict[str, Any] = {}
         copy_select = self.query_one("#copy-config-select", Select)
         if copy_select.value and copy_select.value != Select.BLANK:
-            extra_params = dict(load_config(str(copy_select.value)).extra_params)
-        self._persist(model, extra_params)
+            src = load_config(str(copy_select.value))
+            extra_params = dict(src.extra_params)
+            disabled_params = dict(src.disabled_params)
+        self._persist(model, extra_params, disabled_params)
 
-    def _persist(self, model: str, extra_params: dict[str, Any]) -> None:
+    def _persist(
+        self,
+        model: str,
+        extra_params: dict[str, Any],
+        disabled_params: dict[str, Any] | None = None,
+    ) -> None:
         """Validate the form fields and create profile + config for `model`,
         seeding the config with `extra_params` (copy-from config, or a fetched
-        recipe's flags). Shared by manual create and the recipe importer."""
+        recipe's flags) and `disabled_params` (copy-from only; recipes have
+        none). Shared by manual create and the recipe importer."""
         gpu = self.query_one("#gpu-input", Input).value.strip()
         port = self.query_one("#port-input", Input).value.strip()
         gpu_mem = self.query_one("#gpu-mem-input", Input).value.strip()
@@ -294,10 +303,14 @@ class QuickSetupScreen(ModalScreen[str]):
             list_profile_names, list_config_names,
         )
 
-        # Auto-resolve name collision by appending suffix. `example` is added
-        # explicitly because list_config_names() filters it out — without it a
-        # model named "example" would overwrite the tracked example.yaml.
-        existing_profiles = list_profile_names()
+        # Auto-resolve name collision by appending suffix. Profile names must be
+        # globally unique across both backends, so include llama.cpp names too.
+        # `example` is added explicitly because list_config_names() filters it
+        # out — without it a model named "example" would overwrite the tracked
+        # example.yaml.
+        existing_profiles = set(list_profile_names()) | set(
+            profile_store.list_profile_names("llamacpp")
+        )
         existing_configs = set(list_config_names()) | {"example"}
         original_name = safe_name
         suffix = 0
@@ -311,6 +324,7 @@ class QuickSetupScreen(ModalScreen[str]):
             model=model,
             gpu_memory_utilization=gpu_mem or "0.9",
             extra_params=extra_params,
+            disabled_params=dict(disabled_params or {}),
         )
         save_config(config)
 

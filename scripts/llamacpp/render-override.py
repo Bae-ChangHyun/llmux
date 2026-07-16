@@ -48,21 +48,6 @@ def _validate_name(name: str, kind: str) -> str:
     return name
 
 
-def parse_env_file(path: Path) -> dict[str, str]:
-    env: dict[str, str] = {}
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        # 따옴표 제거
-        value = value.strip().strip('"').strip("'")
-        env[key.strip()] = value
-    return env
-
-
 def render_command(
     cfg: dict,
     *,
