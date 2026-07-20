@@ -72,6 +72,7 @@ class ProfileActionScreen(ModalScreen[str]):
         options.append(Option(t("✎ Edit Profile", "✎ 프로필 편집"), id="edit_profile"))
         options.append(Option(t("⚙ Edit Config", "⚙ Config 편집"), id="edit_config"))
         if not self._profile_running:
+            options.append(Option(t("⇄ Rename Profile", "⇄ 프로필 이름변경"), id="rename_profile"))
             options.append(Option(t("✗ Delete Profile", "✗ 프로필 삭제"), id="delete"))
 
         with Vertical():

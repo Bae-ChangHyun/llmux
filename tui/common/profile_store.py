@@ -406,6 +406,77 @@ def save_profile(profile: StoredProfile) -> None:
     os.replace(yaml_tmp, PROFILES_YAML)
 
 
+def rename_profile(old: str, new: str, backend: str) -> StoredProfile:
+    """Rename a profile in place, returning the renamed record.
+
+    Callers must refuse this while the profile's container is running: the
+    container is named after `container_name or name`, so renaming under a live
+    container would orphan it from every lookup path. This function stays
+    docker-free — the running check belongs to the CLI/TUI.
+
+    `container_name` and `config_name` both fall back to the profile name when
+    unset, and `_to_profile` fills that fallback in before callers ever see it,
+    so the raw yaml entry is the only place that still distinguishes "unset"
+    from "happens to equal the old name". An unset container_name follows the
+    new name; an unset config_name is pinned to the old one so the profile
+    keeps resolving to the config file it was already using.
+    """
+    if old == new:
+        raise ValueError(f"profile is already named {new!r}")
+    profile = load_profile(old, backend)
+    if profile is None:
+        raise ValueError(f"profile {old!r} not found in backend {backend!r}")
+    owner = find_name_owner(new)
+    if owner is not None:
+        raise ValueError(
+            f"profile {new!r} already exists in backend {owner!r}; profile names "
+            "must be unique across both backends"
+        )
+
+    data = _load_yaml()
+    profiles = data.get("profiles", [])
+    for idx, existing in enumerate(profiles):
+        if not isinstance(existing, dict):
+            continue
+        if existing.get("name") == old and existing.get("backend") == backend:
+            break
+    else:
+        raise ValueError(f"profile {old!r} not found in profiles.yaml")
+
+    if not existing.get("container_name"):
+        profile.container_name = new
+    if not existing.get("config_name"):
+        profile.config_name = old
+    profile.name = new
+    profiles[idx] = _profile_to_entry(profile, _backend_defaults(data, backend))
+    data["profiles"] = profiles
+
+    new_env = runtime_env_path(new, backend)
+    new_env.parent.mkdir(parents=True, exist_ok=True)
+    env_text = "\n".join(_render_env_lines(profile))
+    yaml_text = _dump_yaml(data)
+
+    env_tmp = new_env.with_suffix(new_env.suffix + ".tmp")
+    yaml_tmp = PROFILES_YAML.with_suffix(PROFILES_YAML.suffix + ".tmp")
+    try:
+        env_tmp.write_text(env_text)
+        yaml_tmp.write_text(yaml_text)
+    except OSError:
+        for stale in (env_tmp, yaml_tmp):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        raise
+    os.replace(env_tmp, new_env)
+    os.replace(yaml_tmp, PROFILES_YAML)
+
+    old_env = runtime_env_path(old, backend)
+    if old_env.exists():
+        old_env.unlink()
+    return profile
+
+
 def delete_profile(name: str, backend: str) -> bool:
     data = _load_yaml()
     profiles = data.get("profiles", [])
