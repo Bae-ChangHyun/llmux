@@ -13,8 +13,8 @@ mirrors every TUI capability and is the only interface usable headlessly.
 Start from `llmux --help`. Top-level shortcuts and sub-apps:
 
 - Container lifecycle: `llmux up <profile>`, `down`, `logs`, `ps`, `bench`, `render-env`
-- Profiles: `llmux profile {list,show,new,edit,delete,quick-setup}`
-- Configs: `llmux config {list,show,new,edit,clone,delete}`
+- Profiles: `llmux profile {list,show,new,edit,rename,clone,delete,quick-setup}`
+- Configs: `llmux config {list,show,new,edit,clone,rename,delete}`
 - Images: `llmux image {list,pull,remove,build-dev}`
 - System: `llmux system {gpu,mem-estimate,disk,env-check}` (`gpu` / `env-check` also available top-level)
 

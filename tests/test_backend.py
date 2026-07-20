@@ -587,6 +587,207 @@ class DeriveConfigNameTests(unittest.TestCase):
         self.assertTrue(_NEW_NAME_RE.match(name))
 
 
+class RenameProfileTests(unittest.TestCase):
+    """profile_store.rename_profile — name/env/config-link bookkeeping."""
+
+    def _seed(self, root: Path, entry: str) -> Path:
+        profiles_yaml = root / "profiles.yaml"
+        profiles_yaml.write_text(
+            "version: 1\ndefaults: {}\nprofiles:\n" + entry
+        )
+        return profiles_yaml
+
+    def test_rename_moves_entry_and_env_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = self._seed(
+                root, "- name: old\n  backend: vllm\n  port: 8001\n"
+            )
+            runtime = root / ".runtime"
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", runtime
+            ):
+                old_env = profile_store.render_env(
+                    profile_store.load_profile("old", "vllm")
+                )
+                self.assertTrue(old_env.exists())
+                profile_store.rename_profile("old", "new", "vllm")
+
+                self.assertIsNone(profile_store.load_profile("old", "vllm"))
+                renamed = profile_store.load_profile("new", "vllm")
+                self.assertIsNotNone(renamed)
+                assert renamed is not None
+                self.assertEqual(renamed.port, 8001)
+                self.assertFalse(old_env.exists())
+                self.assertTrue((runtime / "vllm" / "new.env").exists())
+
+    def test_rename_pins_implicit_config_to_old_name(self) -> None:
+        # No config_name key means "resolve to the profile name"; renaming
+        # without pinning would silently repoint the profile at a config that
+        # does not exist.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = self._seed(root, "- name: old\n  backend: vllm\n")
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
+            ):
+                renamed = profile_store.rename_profile("old", "new", "vllm")
+                self.assertEqual(renamed.config_name, "old")
+                self.assertEqual(
+                    profile_store.load_profile("new", "vllm").config_name, "old"
+                )
+
+    def test_rename_keeps_explicit_config_link(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = self._seed(
+                root, "- name: old\n  backend: vllm\n  config_name: shared\n"
+            )
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
+            ):
+                renamed = profile_store.rename_profile("old", "new", "vllm")
+                self.assertEqual(renamed.config_name, "shared")
+
+    def test_rename_lets_implicit_container_follow_new_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = self._seed(root, "- name: old\n  backend: vllm\n")
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
+            ):
+                renamed = profile_store.rename_profile("old", "new", "vllm")
+                self.assertEqual(renamed.container_name, "new")
+
+    def test_rename_keeps_explicit_container_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = self._seed(
+                root, "- name: old\n  backend: vllm\n  container_name: pinned\n"
+            )
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
+            ):
+                renamed = profile_store.rename_profile("old", "new", "vllm")
+                self.assertEqual(renamed.container_name, "pinned")
+
+    def test_rename_rejects_name_taken_in_other_backend(self) -> None:
+        # Names are global: a vllm/x and llamacpp/x would share one container.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = self._seed(
+                root,
+                "- name: old\n  backend: vllm\n- name: taken\n  backend: llamacpp\n",
+            )
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
+            ):
+                with self.assertRaises(ValueError):
+                    profile_store.rename_profile("old", "taken", "vllm")
+                self.assertIsNotNone(profile_store.load_profile("old", "vllm"))
+
+    def test_rename_rejects_unknown_and_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = self._seed(root, "- name: old\n  backend: vllm\n")
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
+            ):
+                with self.assertRaises(ValueError):
+                    profile_store.rename_profile("old", "old", "vllm")
+                with self.assertRaises(ValueError):
+                    profile_store.rename_profile("ghost", "new", "vllm")
+
+
+class RenameConfigTests(unittest.TestCase):
+    """config_store.rename_config — file move + profile reference repair."""
+
+    def _setup(self, root: Path, profiles: str) -> tuple[Path, Path]:
+        profiles_yaml = root / "profiles.yaml"
+        profiles_yaml.write_text("version: 1\ndefaults: {}\nprofiles:\n" + profiles)
+        config_dir = root / "config" / "vllm"
+        config_dir.mkdir(parents=True)
+        (config_dir / "cfg.yaml").write_text("model: org/M\n")
+        return profiles_yaml, config_dir
+
+    def test_rename_moves_file_and_repoints_explicit_reference(self) -> None:
+        from tui.common import config_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml, config_dir = self._setup(
+                root, "- name: p\n  backend: vllm\n  config_name: cfg\n"
+            )
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
+            ), patch("tui.common.config_store.config_dir", lambda b: config_dir):
+                updated = config_store.rename_config("vllm", "cfg", "cfg2")
+
+                self.assertEqual(updated, ["p"])
+                self.assertFalse((config_dir / "cfg.yaml").exists())
+                self.assertTrue((config_dir / "cfg2.yaml").exists())
+                self.assertEqual(
+                    profile_store.load_profile("p", "vllm").config_name, "cfg2"
+                )
+
+    def test_rename_repoints_profile_that_referenced_config_implicitly(self) -> None:
+        # A profile named `cfg` with no config_name resolves to config `cfg`;
+        # renaming the file must carry that profile along too.
+        from tui.common import config_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml, config_dir = self._setup(
+                root, "- name: cfg\n  backend: vllm\n"
+            )
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
+            ), patch("tui.common.config_store.config_dir", lambda b: config_dir):
+                updated = config_store.rename_config("vllm", "cfg", "cfg2")
+
+                self.assertEqual(updated, ["cfg"])
+                self.assertEqual(
+                    profile_store.load_profile("cfg", "vllm").config_name, "cfg2"
+                )
+
+    def test_rename_rejects_collision_and_leaves_files_intact(self) -> None:
+        from tui.common import config_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml, config_dir = self._setup(root, "- name: p\n  backend: vllm\n")
+            (config_dir / "taken.yaml").write_text("model: org/Other\n")
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.config_store.config_dir", lambda b: config_dir
+            ):
+                with self.assertRaises(ValueError):
+                    config_store.rename_config("vllm", "cfg", "taken")
+                self.assertTrue((config_dir / "cfg.yaml").exists())
+                self.assertEqual(
+                    (config_dir / "taken.yaml").read_text(), "model: org/Other\n"
+                )
+
+    def test_rename_rejects_example_template_and_bad_names(self) -> None:
+        from tui.common import config_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml, config_dir = self._setup(root, "- name: p\n  backend: vllm\n")
+            (config_dir / "example.yaml").write_text("model: org/E\n")
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.config_store.config_dir", lambda b: config_dir
+            ):
+                with self.assertRaises(ValueError):
+                    config_store.rename_config("vllm", "example", "other")
+                with self.assertRaises(ValueError):
+                    config_store.rename_config("vllm", "cfg", "example")
+                with self.assertRaises(ValueError):
+                    config_store.rename_config("vllm", "cfg", "../escape")
+                with self.assertRaises(ValueError):
+                    config_store.rename_config("vllm", "cfg", "UPPER")
+                self.assertTrue((config_dir / "cfg.yaml").exists())
+
+
 class DeleteProfileTests(unittest.TestCase):
     def setUp(self) -> None:
         self._profile_name = "__test_del_profile__"
