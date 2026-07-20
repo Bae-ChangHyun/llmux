@@ -211,6 +211,23 @@ profiles:
     env_vars:
       VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8: "1"</code></pre>
 
+    <h2 id="thinking-token-budget">Capping reasoning length</h2>
+    <p>Reasoning models can be told to stop thinking after N tokens via the per-request <code>thinking_token_budget</code> parameter. Three things have to line up, and two of them are easy to miss:</p>
+    <ol>
+      <li><strong>Run the V1 model runner.</strong> Set <code>VLLM_USE_V2_MODEL_RUNNER=0</code> in <code>.env.common</code> &mdash; the default V2 runner rejects the parameter with <code>400 … not yet supported by the V2 model runner</code>. See <a href="../reference/env-common.html#vllm-use-v2-model-runner">the variable reference</a>.</li>
+      <li><strong>Turn off speculative decoding.</strong> With <code>speculative-config</code> (MTP) enabled the budget is silently ignored (<a href="https://github.com/vllm-project/vllm/issues/39573" target="_blank">vLLM #39573</a>). MTP buys decode speed and is mutually exclusive with a working budget, so keep the two on separate profiles.</li>
+      <li><strong>Pass it top-level.</strong> Inside <code>chat_template_kwargs</code> it is ignored.</li>
+    </ol>
+    <pre data-lang="python"><code>client.chat.completions.create(
+    model=..., messages=...,
+    extra_body={
+        "chat_template_kwargs": {"enable_thinking": True},
+        "thinking_token_budget": 512,
+    },
+)</code></pre>
+    <p>To verify the cap took effect, check that <code>usage.completion_tokens</code> lands near the budget plus a short answer. Note that <code>thinking_token_budget</code> is not a new vLLM feature &mdash; when it appears not to work, the cause is almost always the runner or MTP above rather than the vLLM version.</p>
+    <p>Model support varies: Qwen3 / Qwen3.5 emit <code>&lt;think&gt;…&lt;/think&gt;</code> and honor the budget, while gemma does not use <code>&lt;think&gt;</code> at all and exposes <code>reasoning_effort</code> (low / medium / high) instead.</p>
+
     <h2 id="dev-builds">Dev builds</h2>
     <p>A dev build produces a local <code>vllm-dev:&lt;tag&gt;</code> image from a vLLM git checkout — useful for testing an unreleased branch or a fork. Trigger it from the start dialog ("Dev Build") or with <code>llmux image build-dev --backend vllm</code>.</p>
     <p>The pipeline (shared with llama.cpp, in <code>tui/common/dev_build.py</code>):</p>

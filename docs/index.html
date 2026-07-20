@@ -300,6 +300,13 @@
         <h3>Config parameter toggles</h3>
         <p>Flip any config flag <strong>on or off without deleting it</strong> &mdash; a row switch in the TUI, or <code>config edit --disable/--enable</code> from the CLI. Disabled flags are parked as inert comments, and your own hand-written notes survive every edit.</p>
       </div>
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h10"/><path d="m11 4 3 3-3 3"/><path d="M20 17H10"/><path d="m13 20-3-3 3-3"/></svg>
+        </div>
+        <h3>Rename without rebuilding</h3>
+        <p>Rename a profile or a config in place &mdash; <code>R</code> in the TUI, or <code>profile rename</code> / <code>config rename</code> headless. Profiles pointing at a renamed config are repointed automatically, and a rename is refused while the container is running rather than orphaning it.</p>
+      </div>
     </div>
   </section>
 
@@ -312,25 +319,14 @@
     <div class="faq-list">
       <div class="faq-item open">
         <div class="faq-q" onclick="toggleFaq(this)">
-          Recipe-based config recommender
-          <span class="faq-arrow">+</span>
-        </div>
-        <div class="faq-a">
-          Give llmux a HuggingFace model ID and a target GPU, and let it auto-generate a
-          <code>config/vllm/&lt;name&gt;.yaml</code> from
-          <a href="https://recipes.vllm.ai/">recipes.vllm.ai</a> — the same engine that powers the
-          official vLLM deployment guides. No more hand-tuning <code>gpu-memory-utilization</code>,
-          <code>max-model-len</code>, and <code>tensor-parallel-size</code> by feel.
-        </div>
-      </div>
-      <div class="faq-item">
-        <div class="faq-q" onclick="toggleFaq(this)">
           Profile clone across backends
           <span class="faq-arrow">+</span>
         </div>
         <div class="faq-a">
-          Duplicate a vLLM profile as its llama.cpp GGUF equivalent in one keystroke — pair with the
-          built-in OpenAI-compatible bench for apples-to-apples throughput/latency.
+          <code>llmux profile clone</code> duplicates a profile within a backend today. What's still
+          open is cross-backend cloning — turning a vLLM profile into its llama.cpp GGUF equivalent
+          in one keystroke, to pair with the built-in OpenAI-compatible bench for apples-to-apples
+          throughput/latency.
         </div>
       </div>
       <div class="faq-item">

@@ -105,6 +105,13 @@
           <td>Tag for the official <code>vllm/vllm-openai</code> image.</td>
         </tr>
         <tr>
+          <td><code>VLLM_USE_V2_MODEL_RUNNER</code></td>
+          <td>Optional</td>
+          <td><code>1</code></td>
+          <td>vLLM</td>
+          <td>Set to <code>0</code> to use the V1 model runner, which is required for <code>thinking_token_budget</code>.</td>
+        </tr>
+        <tr>
           <td><code>VLLM_REPO_URL</code></td>
           <td>Optional</td>
           <td><code>https://github.com/vllm-project/vllm.git</code></td>
@@ -186,6 +193,25 @@
     <p>Tag of the official <code>vllm/vllm-openai</code> image used by <code>compose/vllm/docker-compose.yaml</code> (<code>image: vllm/vllm-openai:${VLLM_VERSION}</code>). In practice <code>llmux container up</code> selects the highest local versioned tag (or the tag you pass with <code>--tag</code>) and injects it for you — but setting <code>VLLM_VERSION</code> gives <code>env-check</code> and a bare <code>docker compose</code> invocation a known-good default.</p>
     <pre data-lang="ini"><code>VLLM_VERSION=v0.20.1</code></pre>
 
+    <h3 id="vllm-use-v2-model-runner"><code>VLLM_USE_V2_MODEL_RUNNER</code></h3>
+    <p>vLLM ships two model runners and defaults to V2. The V2 runner does <strong>not</strong> support the per-request <code>thinking_token_budget</code> parameter &mdash; a request that uses it fails with:</p>
+    <pre data-lang="text"><code>400: thinking_token_budget is not yet supported by the V2 model runner.
+Run vLLM with VLLM_USE_V2_MODEL_RUNNER=0</code></pre>
+    <p>Set it to <code>0</code> in <code>.env.common</code> to cap how long a reasoning model thinks:</p>
+    <pre data-lang="ini"><code>VLLM_USE_V2_MODEL_RUNNER=0</code></pre>
+    <div class="admonition warning">
+      <p class="admonition-title">Speculative decoding overrides the budget</p>
+      <p>If the profile's config enables <code>speculative-config</code> (MTP and friends), the budget is ignored even on the V1 runner &mdash; the model keeps thinking past the cap (<a href="https://github.com/vllm-project/vllm/issues/39573" target="_blank">vLLM #39573</a>). MTP is a decode-speed feature and is mutually exclusive with a thinking budget in practice, so keep them on separate profiles.</p>
+    </div>
+    <p>The budget itself is a per-request field, passed top-level &mdash; nesting it inside <code>chat_template_kwargs</code> silently does nothing:</p>
+    <pre data-lang="python"><code>client.chat.completions.create(
+    model=..., messages=...,
+    extra_body={
+        "chat_template_kwargs": {"enable_thinking": True},
+        "thinking_token_budget": 512,   # top-level
+    },
+)</code></pre>
+
     <h3 id="vllm-repo-url-vllm-branch"><code>VLLM_REPO_URL</code> / <code>VLLM_BRANCH</code></h3>
     <p>Defaults for the vLLM <strong>dev-build</strong> pipeline (<a href="cli.html#image-build-dev"><code>llmux image build-dev --backend vllm</code></a>). When <code>--repo-url</code> / <code>--branch</code> are omitted on the CLI, these values are used; if they are also unset, the pipeline falls back to <code>https://github.com/vllm-project/vllm.git</code> and <code>main</code>.</p>
     <pre data-lang="ini"><code>VLLM_REPO_URL=https://github.com/vllm-project/vllm.git
@@ -212,6 +238,11 @@ VLLM_BRANCH=main</code></pre>
 LLAMACPP_BRANCH=master</code></pre>
 
     <h2 id="common">Common</h2>
+
+    <h3 id="llmux-lang"><code>LLMUX_LANG</code></h3>
+    <p>UI language for the TUI &mdash; <code>ko</code> or <code>en</code>. Read from the process environment (not <code>.env.common</code>, which is a container-side file), and resolved once at startup, so set it before launching:</p>
+    <pre data-lang="bash"><code>LLMUX_LANG=en llmux</code></pre>
+    <p>Unset falls back to the system locale. This affects the TUI only; CLI output is English.</p>
 
     <h3 id="tz"><code>TZ</code></h3>
     <p>Timezone applied to both backend containers (<code>TZ=${TZ:-UTC}</code> in both Compose files). Affects log timestamps inside the container. Defaults to <code>UTC</code> if unset.</p>

@@ -76,8 +76,43 @@ def _maybe_check_for_update() -> None:
         pass
 
 
+def llmux_version() -> str:
+    """Installed llmux version, from the package metadata.
+
+    A source checkout that was never `pip install`ed has no metadata; fall back
+    to reading pyproject.toml so `--version` still answers in a dev tree.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("llmux")
+    except PackageNotFoundError:
+        import tomllib
+
+        from tui.common.profile_store import PROJECT_ROOT
+
+        pyproject = PROJECT_ROOT / "pyproject.toml"
+        if not pyproject.exists():
+            return "unknown"
+        data = tomllib.loads(pyproject.read_text())
+        return data.get("project", {}).get("version", "unknown")
+
+
+def _version_callback(value: bool) -> None:
+    if not value:
+        return
+    print(f"llmux {llmux_version()}")
+    raise typer.Exit()
+
+
 @app.callback(invoke_without_command=True)
-def _root(ctx: typer.Context) -> None:
+def _root(
+    ctx: typer.Context,
+    version: bool = typer.Option(
+        False, "--version", "-V", callback=_version_callback, is_eager=True,
+        help="Show the llmux version and exit.",
+    ),
+) -> None:
     """Default behavior: launch the TUI when no subcommand is given."""
     _maybe_run_onboarding()
     _maybe_check_for_update()

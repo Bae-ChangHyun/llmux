@@ -819,7 +819,7 @@ class DashboardScreen(Screen):
                 "  u/d/l   시작/중지/로그\n"
                 "  e/c/x   프로필/config 편집, 삭제\n"
                 "  R       프로필 이름변경\n"
-                "  C       config 목록 (복제/편집/삭제)\n"
+                "  C       config 목록 (복제/이름변경/편집/삭제)\n"
                 "  m       모델 메모리 추정\n"
                 "  n s r q 새로/시스템/새로고침/종료",
             ),
