@@ -396,6 +396,43 @@ uv run llmux profile edit gemma-3-4b --image-tag llamacpp-dev:mtp_main
 # Add an env var, remove another
 uv run llmux profile edit qwen3-8b --set VLLM_ATTENTION_BACKEND=FLASHINFER --unset OLD_VAR</code></pre>
 
+    <h3 id="profile-rename"><code>profile rename</code></h3>
+    <p>Rename a profile. The profile's container must be <strong>stopped</strong> — it is named after the profile, so renaming under a running container would orphan it.</p>
+    <p>An unset config link is pinned to the old name, so the profile keeps resolving to the config file it already used. An unset container name follows the new profile name.</p>
+    <pre data-lang="text"><code>llmux profile rename OLD NEW [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>OLD</code></td><td>Existing profile name. Required.</td></tr>
+        <tr><td><code>NEW</code></td><td>New profile name. Required. Must be unique across <em>both</em> backends.</td></tr>
+      </tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>auto-detect</em></td><td>Force backend; auto-detect if omitted.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux profile rename qwen3-8b qwen3-8b-fp8</code></pre>
+
+    <h3 id="profile-clone"><code>profile clone</code></h3>
+    <p>Copy a profile to a new name, keeping the same linked config. The clone reuses the source's port — change it before running both.</p>
+    <pre data-lang="text"><code>llmux profile clone SRC DST [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>SRC</code></td><td>Profile to copy from. Required.</td></tr>
+        <tr><td><code>DST</code></td><td>New profile name. Required.</td></tr>
+      </tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>auto-detect</em></td><td>Force backend; auto-detect if omitted.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux profile clone qwen3-8b qwen3-8b-tuned</code></pre>
+
     <h3 id="profile-delete"><code>profile delete</code></h3>
     <p>Delete a profile (and optionally its linked config YAML).</p>
     <pre data-lang="text"><code>llmux profile delete NAME [OPTIONS]</code></pre>
@@ -563,6 +600,25 @@ uv run llmux config edit qwen3-8b --enable enforce-eager</code></pre>
     <pre data-lang="bash"><code>uv run llmux config from-recipe Qwen/Qwen3-32B --list
 uv run llmux config from-recipe Qwen/Qwen3-32B --variant fp8 --feature reasoning
 uv run llmux config from-recipe Qwen/Qwen3-32B --variant awq --json</code></pre>
+
+    <h3 id="config-rename"><code>config rename</code></h3>
+    <p>Rename a config YAML and repoint every profile that referenced it. Refused while any referencing profile's container is running.</p>
+    <pre data-lang="text"><code>llmux config rename OLD NEW [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>OLD</code></td><td>Existing config name. Required.</td></tr>
+        <tr><td><code>NEW</code></td><td>New config name. Required.</td></tr>
+      </tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>auto-detect</em></td><td>Required if <code>OLD</code> exists in both backends.</td></tr>
+        <tr><td><code>--yes</code>, <code>-y</code></td><td><code>False</code></td><td>Skip the interactive confirmation prompt.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux config rename qwen3-0-6b qwen3-0-6b-fp8</code></pre>
 
     <h3 id="config-delete"><code>config delete</code></h3>
     <p>Delete a config YAML.</p>

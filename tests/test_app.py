@@ -12,7 +12,7 @@ import contextlib
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from tui.app import LlmuxApp
 from tui.screens.dashboard import DashboardScreen
@@ -155,6 +155,149 @@ class ConfigFormDisableSwitchTests(unittest.IsolatedAsyncioTestCase):
                 cfg = vs.load_config("cfg")
                 self.assertIn("max-model-len", cfg.disabled_params)
                 self.assertNotIn("max-model-len", cfg.extra_params)
+
+
+class ConfigListRenameTests(unittest.IsolatedAsyncioTestCase):
+    """`R` on the config list renames the YAML and repoints referencing
+    profiles — and refuses while a referencing profile's container is up."""
+
+    async def test_rename_moves_file_and_notifies(self) -> None:
+        from tui.backends.vllm.screens.config import ConfigListScreen
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cdir = root / "config"
+            cdir.mkdir()
+            (cdir / "cfg.yaml").write_text("model: m/x\n")
+            profiles_yaml = root / "profiles.yaml"
+            profiles_yaml.write_text(
+                "version: 1\ndefaults: {}\nprofiles:\n"
+                "- name: p\n  backend: vllm\n  config_name: cfg\n"
+            )
+
+            with _patched_vllm_config_dir(cdir), \
+                patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), \
+                patch("tui.common.profile_store.RUNTIME_DIR", root / ".runtime"), \
+                patch("tui.common.config_store.config_dir", lambda b: cdir), \
+                patch(
+                    "tui.common.docker.running_container_names",
+                    AsyncMock(return_value=set()),
+                ):
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    screen = ConfigListScreen()
+                    await app.push_screen(screen)
+                    await pilot.pause()
+
+                    screen._rename_config("cfg", "cfg2")
+                    await pilot.pause()
+                    await pilot.pause()
+
+                self.assertFalse((cdir / "cfg.yaml").exists())
+                self.assertTrue((cdir / "cfg2.yaml").exists())
+                from tui.common import profile_store
+
+                self.assertEqual(
+                    profile_store.load_profile("p", "vllm").config_name, "cfg2"
+                )
+
+    async def test_rename_refuses_while_referencing_container_runs(self) -> None:
+        from tui.backends.vllm.screens.config import ConfigListScreen
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cdir = root / "config"
+            cdir.mkdir()
+            (cdir / "cfg.yaml").write_text("model: m/x\n")
+            profiles_yaml = root / "profiles.yaml"
+            profiles_yaml.write_text(
+                "version: 1\ndefaults: {}\nprofiles:\n"
+                "- name: p\n  backend: vllm\n  config_name: cfg\n"
+            )
+
+            with _patched_vllm_config_dir(cdir), \
+                patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), \
+                patch("tui.common.profile_store.RUNTIME_DIR", root / ".runtime"), \
+                patch("tui.common.config_store.config_dir", lambda b: cdir), \
+                patch(
+                    "tui.common.docker.running_container_names",
+                    AsyncMock(return_value={"p"}),
+                ):
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    screen = ConfigListScreen()
+                    await app.push_screen(screen)
+                    await pilot.pause()
+
+                    screen._rename_config("cfg", "cfg2")
+                    await pilot.pause()
+                    await pilot.pause()
+
+                self.assertTrue((cdir / "cfg.yaml").exists())
+                self.assertFalse((cdir / "cfg2.yaml").exists())
+
+
+class DashboardRenameProfileTests(unittest.IsolatedAsyncioTestCase):
+    """`R` on the dashboard renames a stopped profile; a running one is refused."""
+
+    @contextlib.contextmanager
+    def _env(self, root: Path, running: set[str]):
+        profiles_yaml = root / "profiles.yaml"
+        profiles_yaml.write_text(
+            "version: 1\ndefaults: {}\nprofiles:\n- name: solo\n  backend: vllm\n"
+        )
+        with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), \
+            patch("tui.common.profile_store.RUNTIME_DIR", root / ".runtime"), \
+            patch(
+                "tui.common.docker.running_container_names",
+                AsyncMock(return_value=running),
+            ), \
+            patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=[])):
+            yield
+
+    async def test_r_opens_prompt_and_rename_applies(self) -> None:
+        from tui.common import profile_store
+        from tui.common.widgets import TextPromptModal
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self._env(root, set()):
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    await pilot.press("R")
+                    await pilot.pause()
+                    self.assertIsInstance(app.screen, TextPromptModal)
+
+                    app.screen.dismiss("renamed")
+                    await pilot.pause()
+                    await pilot.pause()
+
+                self.assertIsNone(profile_store.load_profile("solo", "vllm"))
+                moved = profile_store.load_profile("renamed", "vllm")
+                self.assertIsNotNone(moved)
+                # An unset config link is pinned to the old name so the profile
+                # keeps resolving to the config file it already used.
+                self.assertEqual(moved.config_name, "solo")
+
+    async def test_r_refused_while_container_runs(self) -> None:
+        from tui.common import profile_store
+        from tui.common.widgets import TextPromptModal
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self._env(root, {"solo"}):
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    await pilot.press("R")
+                    await pilot.pause()
+                    # No prompt at all — the guard fires before any input.
+                    self.assertNotIsInstance(app.screen, TextPromptModal)
+
+                self.assertIsNotNone(profile_store.load_profile("solo", "vllm"))
 
 
 if __name__ == "__main__":

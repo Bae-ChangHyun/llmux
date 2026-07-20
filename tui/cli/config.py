@@ -465,6 +465,53 @@ def clone_config(
     print(saved)
 
 
+@app.command("rename")
+def rename_config(
+    old: str = typer.Argument(..., help="Existing config name."),
+    new: str = typer.Argument(..., help="New config name."),
+    backend: Optional[str] = typer.Option(
+        None, "--backend", "-b",
+        help="Backend of the config; required if OLD exists in both backends.",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+) -> None:
+    """Rename a config YAML and repoint every profile that referenced it."""
+    from tui.common import config_store
+
+    bk = _resolve_backend_for_existing(backend, old)
+    _validate_new_name(new, param_hint="NEW")
+    _reject_creating_example(new, param_hint="NEW")
+
+    referencing = config_store.referencing_profiles(bk, old)
+    if referencing:
+        # A referencing profile whose container is up would keep serving the old
+        # file until it restarts; renaming under it makes the running container
+        # disagree with profiles.yaml.
+        from tui.cli.profile import _require_stopped
+
+        for p in referencing:
+            _require_stopped(p, action="rename the config")
+
+    if not yes:
+        prompt = f"Rename config '{old}' → '{new}' (backend={bk})?"
+        if referencing:
+            listed = ", ".join(sorted(p.name for p in referencing))
+            prompt = (
+                f"Rename config '{old}' → '{new}' (backend={bk})? "
+                f"(referenced by profiles: {listed} — they will be repointed)"
+            )
+        if not typer.confirm(prompt):
+            raise typer.Exit(code=0)
+
+    try:
+        updated = config_store.rename_config(bk, old, new)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="NEW") from exc
+    print(f"Renamed {_config_path(bk, old)} → {_config_path(bk, new)}")
+    for name in updated:
+        print(f"Repointed profile: {name}")
+
+
 @app.command("from-recipe")
 def config_from_recipe(
     model_id: str = typer.Argument(..., help="HuggingFace model id, e.g. Qwen/Qwen3-32B."),

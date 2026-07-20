@@ -523,6 +523,86 @@ def edit_profile(
     print(f"Updated profile '{name}' (backend={bk})")
 
 
+def _require_stopped(sp: profile_store.StoredProfile, *, action: str) -> None:
+    """Refuse a rename while the profile's container is up.
+
+    The container is named `container_name or name`; renaming out from under a
+    running one leaves a container no llmux path can find again.
+    """
+    from tui.common import docker as common_docker
+
+    container = sp.container_name or sp.name
+    try:
+        running = run_async(common_docker.running_container_names())
+    except Exception as exc:
+        raise typer.BadParameter(
+            f"could not enumerate running containers via `docker ps` ({exc}); "
+            f"refusing to {action} without confirming the container is stopped.",
+            param_hint="NAME",
+        ) from exc
+    if container in running:
+        raise typer.BadParameter(
+            f"container '{container}' is running; stop it first "
+            f"(`llmux down {sp.name}`) before you {action}.",
+            param_hint="NAME",
+        )
+
+
+@app.command("rename")
+def rename_profile(
+    old: str = typer.Argument(..., help="Existing profile name."),
+    new: str = typer.Argument(..., help="New profile name."),
+    backend: Optional[str] = typer.Option(None, "--backend", "-b"),
+) -> None:
+    """Rename a profile. Requires its container to be stopped."""
+    bk = detect_backend(old, override=backend)
+    _validate_profile_name(new, bk, param_hint="NEW")
+    sp = profile_store.load_profile(old, bk)
+    if sp is None:
+        raise typer.BadParameter(f"profile '{old}' not found in backend '{bk}'", param_hint="OLD")
+    _require_stopped(sp, action="rename the profile")
+    try:
+        renamed = profile_store.rename_profile(old, new, bk)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="NEW") from exc
+    print(f"Renamed profile '{old}' → '{new}' (backend={bk})")
+    print(f"  container: {renamed.container_name or renamed.name}")
+    print(f"  config:    {renamed.config_name or renamed.name}")
+
+
+@app.command("clone")
+def clone_profile(
+    src: str = typer.Argument(..., help="Profile to copy from."),
+    dst: str = typer.Argument(..., help="New profile name."),
+    backend: Optional[str] = typer.Option(None, "--backend", "-b"),
+) -> None:
+    """Clone SRC to a new profile DST (same backend, same linked config)."""
+    bk = detect_backend(src, override=backend)
+    _validate_profile_name(dst, bk, param_hint="DST")
+    sp = profile_store.load_profile(src, bk)
+    if sp is None:
+        raise typer.BadParameter(f"profile '{src}' not found in backend '{bk}'", param_hint="SRC")
+    owner = profile_store.find_name_owner(dst)
+    if owner is not None:
+        raise typer.BadParameter(
+            f"profile '{dst}' already exists in backend '{owner}'; profile names "
+            "must be unique across both backends.",
+            param_hint="DST",
+        )
+    # The clone keeps SRC's config link, but its container must not collide with
+    # SRC's — an unset container_name follows the new profile name on its own.
+    if sp.container_name == src:
+        sp.container_name = dst
+    sp.config_name = sp.config_name or src
+    sp.name = dst
+    profile_store.save_profile(sp)
+    print(f"Cloned profile '{src}' → '{dst}' (backend={bk})")
+    print(f"  container: {sp.container_name or sp.name}")
+    print(f"  config:    {sp.config_name or sp.name}")
+    if sp.port:
+        print(f"  port:      {sp.port}  (same as '{src}' — change it before running both)")
+
+
 @app.command("delete")
 def delete_profile(
     name: str = typer.Argument(..., help="Profile name."),
