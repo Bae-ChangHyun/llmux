@@ -29,7 +29,7 @@ from tui.common.http import list_served_models, run_bench
 from tui.common.i18n import t
 from tui.common.mem import estimate_model_memory
 from tui.common.metrics import ThroughputTracker, fetch_token_counters
-from tui.common.widgets import BackendPickerModal, ConfirmModal
+from tui.common.widgets import BackendPickerModal, ConfirmModal, TextPromptModal
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +58,7 @@ class DashboardScreen(Screen):
         Binding("e", "edit_profile", show=False),
         Binding("c", "edit_config", show=False),
         Binding("x", "delete_profile", show=False),
+        Binding("R", "rename_profile", show=False),
         Binding("escape", "hide_mem_search", show=False),
         Binding("question_mark", "help", show=False),
     ]
@@ -459,6 +460,8 @@ class DashboardScreen(Screen):
             self.app.push_screen(
                 ConfigFormScreen(config_name=cfg), self._after_mutation
             )
+        elif action == "rename_profile":
+            self.action_rename_profile()
         elif action == "delete":
             if row.running:
                 self.notify(
@@ -561,6 +564,8 @@ class DashboardScreen(Screen):
             from tui.backends.llamacpp.screens.profile import ProfileFormScreen
 
             self.app.push_screen(ProfileFormScreen(profile), self._after_mutation)
+        elif action == "rename-profile":
+            self.action_rename_profile()
         elif action == "delete-profile":
             from tui.backends.llamacpp.screens.profile import ProfileDeleteScreen
 
@@ -683,6 +688,49 @@ class DashboardScreen(Screen):
                 "edit-config", row, lbackend.load_profile(row.profile_name)
             )
 
+    def action_rename_profile(self) -> None:
+        row = self._selected_row()
+        if row is None:
+            return
+        if row.running:
+            self.notify(
+                t("Cannot rename: container running. Stop first.",
+                  "이름 변경 불가: 컨테이너가 실행 중입니다. 먼저 중지하세요."),
+                severity="error",
+            )
+            return
+
+        def after(new_name: str | None) -> None:
+            if not new_name or new_name == row.profile_name:
+                return
+            from tui.common import profile_store
+
+            try:
+                renamed = profile_store.rename_profile(
+                    row.profile_name, new_name, row.backend
+                )
+            except ValueError as exc:
+                self.notify(str(exc), severity="error")
+                return
+            self.notify(
+                t(
+                    f"Renamed '{row.profile_name}' → '{new_name}' "
+                    f"(config: {renamed.config_name or renamed.name})",
+                    f"이름 변경: '{row.profile_name}' → '{new_name}' "
+                    f"(config: {renamed.config_name or renamed.name})",
+                )
+            )
+            self._after_mutation(None)
+
+        self.app.push_screen(
+            TextPromptModal(
+                t(f"Rename profile '{row.profile_name}' to:",
+                  f"프로필 '{row.profile_name}' 의 새 이름:"),
+                default=row.profile_name,
+            ),
+            after,
+        )
+
     def action_delete_profile(self) -> None:
         row = self._selected_row()
         if row is None:
@@ -762,13 +810,15 @@ class DashboardScreen(Screen):
                 "  Enter   action menu\n"
                 "  u/d/l   start/stop/logs\n"
                 "  e/c/x   edit profile/config, delete\n"
-                "  C       config list (clone/edit/delete)\n"
+                "  R       rename profile\n"
+                "  C       config list (clone/rename/edit/delete)\n"
                 "  m       estimate model memory\n"
                 "  n s r q new/system/refresh/quit",
                 "[b]대시보드[/b]\n"
                 "  Enter   작업 메뉴\n"
                 "  u/d/l   시작/중지/로그\n"
                 "  e/c/x   프로필/config 편집, 삭제\n"
+                "  R       프로필 이름변경\n"
                 "  C       config 목록 (복제/편집/삭제)\n"
                 "  m       모델 메모리 추정\n"
                 "  n s r q 새로/시스템/새로고침/종료",

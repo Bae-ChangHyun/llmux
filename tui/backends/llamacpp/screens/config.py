@@ -544,6 +544,7 @@ class ConfigListScreen(Screen):
         Binding("n", "new_config", t("New", "새로")),
         Binding("e,enter", "edit_config", t("Edit", "편집")),
         Binding("c", "clone_config", t("Clone", "복제")),
+        Binding("R", "rename_config", t("Rename", "이름변경")),
         Binding("delete,x", "delete_config", t("Delete", "삭제")),
         Binding("escape,backspace", "go_back", t("Back", "뒤로")),
         Binding("r", "refresh", t("Refresh", "새로고침")),
@@ -635,6 +636,62 @@ class ConfigListScreen(Screen):
                 default=default,
             ),
             after,
+        )
+
+    def action_rename_config(self) -> None:
+        name = self._get_selected()
+        if not name:
+            self.notify(t("No config selected", "선택된 config 없음"), severity="warning")
+            return
+
+        def after(new_name: str | None) -> None:
+            if not new_name or new_name == name:
+                return
+            self._rename_config(name, new_name)
+
+        self.app.push_screen(
+            TextPromptModal(
+                t(f"Rename config '{name}' to:", f"Config '{name}' 의 새 이름:"),
+                default=name,
+            ),
+            after,
+        )
+
+    @work(exclusive=True, group="config-rename")
+    async def _rename_config(self, old: str, new: str) -> None:
+        from tui.common import config_store, docker as common_docker
+
+        try:
+            running = await common_docker.running_container_names()
+        except Exception as exc:
+            self.notify(
+                t(
+                    f"Could not check running containers ({exc}); rename aborted.",
+                    f"실행 중 컨테이너를 확인할 수 없습니다 ({exc}). 이름 변경을 중단합니다.",
+                ),
+                severity="error",
+            )
+            return
+        for p in config_store.referencing_profiles("llamacpp", old):
+            container = p.container_name or p.name
+            if container in running:
+                self.notify(
+                    t(
+                        f"Container '{container}' is running; stop it before renaming.",
+                        f"컨테이너 '{container}' 가 실행 중입니다. 중지 후 이름을 변경하세요.",
+                    ),
+                    severity="error",
+                )
+                return
+        try:
+            updated = config_store.rename_config("llamacpp", old, new)
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self._refresh_table()
+        suffix = f" ({len(updated)} profile(s) repointed)" if updated else ""
+        self.notify(
+            t(f"Renamed '{old}' → '{new}'{suffix}", f"이름 변경: '{old}' → '{new}'{suffix}")
         )
 
     def action_delete_config(self) -> None:
