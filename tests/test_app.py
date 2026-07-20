@@ -302,3 +302,136 @@ class DashboardRenameProfileTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProfileFormRenameTests(unittest.IsolatedAsyncioTestCase):
+    """The edit form's Name field is editable: changing it renames the profile
+    instead of creating a second one."""
+
+    @contextlib.contextmanager
+    def _env(self, root: Path, running: set[str]):
+        profiles_yaml = root / "profiles.yaml"
+        profiles_yaml.write_text(
+            "version: 1\ndefaults: {}\nprofiles:\n"
+            "- name: solo\n  backend: vllm\n  port: 8123\n"
+        )
+        with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), \
+            patch("tui.common.profile_store.RUNTIME_DIR", root / ".runtime"), \
+            patch(
+                "tui.common.docker.running_container_names",
+                AsyncMock(return_value=running),
+            ):
+            yield
+
+    async def test_editing_name_renames_in_place(self) -> None:
+        from textual.widgets import Input
+        from tui.backends.vllm.backend import load_profile
+        from tui.backends.vllm.screens.profile import ProfileFormScreen
+        from tui.common import profile_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self._env(root, set()):
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    screen = ProfileFormScreen(load_profile("solo"))
+                    await app.push_screen(screen)
+                    await pilot.pause()
+
+                    name_input = screen.query_one("#name-input", Input)
+                    self.assertFalse(name_input.disabled)  # the whole point
+                    name_input.value = "renamed"
+                    await pilot.pause()
+
+                    screen.query_one("#save-btn").press()
+                    await pilot.pause()
+                    await pilot.pause()
+
+                # Renamed, not duplicated.
+                self.assertIsNone(profile_store.load_profile("solo", "vllm"))
+                moved = profile_store.load_profile("renamed", "vllm")
+                self.assertIsNotNone(moved)
+                self.assertEqual(moved.port, 8123)
+                self.assertEqual(
+                    len(profile_store.list_profiles("vllm")), 1
+                )
+
+    async def test_editing_name_refused_while_running(self) -> None:
+        from textual.widgets import Input
+        from tui.backends.vllm.backend import load_profile
+        from tui.backends.vllm.screens.profile import ProfileFormScreen
+        from tui.common import profile_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self._env(root, {"solo"}):
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    screen = ProfileFormScreen(load_profile("solo"))
+                    await app.push_screen(screen)
+                    await pilot.pause()
+
+                    screen.query_one("#name-input", Input).value = "renamed"
+                    await pilot.pause()
+                    screen.query_one("#save-btn").press()
+                    await pilot.pause()
+                    await pilot.pause()
+
+                # Nothing moved, and no stray second profile was written.
+                self.assertIsNotNone(profile_store.load_profile("solo", "vllm"))
+                self.assertIsNone(profile_store.load_profile("renamed", "vllm"))
+                self.assertEqual(len(profile_store.list_profiles("vllm")), 1)
+
+
+class ConfigFormRenameTests(unittest.IsolatedAsyncioTestCase):
+    """The config form's Name field is editable too: changing it renames the
+    YAML and repoints referencing profiles, instead of forking a copy."""
+
+    async def test_editing_name_renames_and_repoints(self) -> None:
+        from textual.widgets import Input
+        from tui.backends.vllm.screens.config import ConfigFormScreen
+        from tui.common import profile_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cdir = root / "config"
+            cdir.mkdir()
+            (cdir / "cfg.yaml").write_text("model: m/x\ngpu-memory-utilization: '0.9'\n")
+            profiles_yaml = root / "profiles.yaml"
+            profiles_yaml.write_text(
+                "version: 1\ndefaults: {}\nprofiles:\n"
+                "- name: p\n  backend: vllm\n  config_name: cfg\n"
+            )
+
+            with _patched_vllm_config_dir(cdir), \
+                patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), \
+                patch("tui.common.profile_store.RUNTIME_DIR", root / ".runtime"), \
+                patch("tui.common.config_store.config_dir", lambda b: cdir), \
+                patch(
+                    "tui.common.docker.running_container_names",
+                    AsyncMock(return_value=set()),
+                ):
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    screen = ConfigFormScreen("cfg")
+                    await app.push_screen(screen)
+                    await pilot.pause()
+
+                    name_input = screen.query_one("#name-input", Input)
+                    self.assertFalse(name_input.disabled)
+                    name_input.value = "cfg2"
+                    await pilot.pause()
+
+                    screen.query_one("#save-btn").press()
+                    await pilot.pause()
+                    await pilot.pause()
+
+                # Renamed, not duplicated, and the profile follows.
+                self.assertFalse((cdir / "cfg.yaml").exists())
+                self.assertTrue((cdir / "cfg2.yaml").exists())
+                self.assertEqual(
+                    profile_store.load_profile("p", "vllm").config_name, "cfg2"
+                )
