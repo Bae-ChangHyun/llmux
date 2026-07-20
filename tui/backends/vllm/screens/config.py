@@ -183,6 +183,9 @@ class ConfigFormScreen(ModalScreen[str | None]):
         super().__init__()
         self._config_name = config_name
         self._edit_mode = bool(config_name)
+        # The name field stays editable in edit mode: a changed name is a
+        # rename, and _original_name is what tells the two apart at save time.
+        self._original_name = config_name
         self._param_counter = 0
         self._initial_config: Config | None = None
         self._saved_name: str | None = None
@@ -208,7 +211,6 @@ class ConfigFormScreen(ModalScreen[str | None]):
                         value=cfg.name if cfg else "",
                         placeholder="my-config",
                         id="name-input",
-                        disabled=self._edit_mode,
                     )
 
                 with Horizontal(classes="form-row"):
@@ -317,7 +319,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
             widget = widget.parent
 
     @on(Button.Pressed, "#save-btn")
-    def _on_save(self, event: Button.Pressed) -> None:
+    async def _on_save(self, event: Button.Pressed) -> None:
         name = self.query_one("#name-input", Input).value.strip()
         model = self.query_one("#model-input", Input).value.strip()
         gpu_mem = self.query_one("#gpu-mem-input", Input).value.strip()
@@ -405,6 +407,13 @@ class ConfigFormScreen(ModalScreen[str | None]):
             disabled_params=disabled_params,
         )
 
+        if (
+            self._edit_mode
+            and name != self._original_name
+            and not await self._rename_to(name)
+        ):
+            return
+
         save_config(cfg)
         self.notify(t(f"Saved: {name}", f"저장됨: {name}"), severity="information")
         self._saved_name = name
@@ -413,10 +422,55 @@ class ConfigFormScreen(ModalScreen[str | None]):
         if not self._edit_mode:
             self._edit_mode = True
             self._config_name = name
-            self.query_one("#name-input", Input).disabled = True
+            self._original_name = name
             self.query_one("#form-title", Static).update(
                 t(f"[b]Edit Config: {name}[/b]", f"[b]Config 편집: {name}[/b]")
             )
+
+    async def _rename_to(self, new_name: str) -> bool:
+        """Rename the config being edited. False = refused, caller must abort.
+
+        Goes through config_store so profiles referencing this config are
+        repointed in the same step, and so a referencing profile whose
+        container is still up blocks the rename.
+        """
+        from tui.common import config_store, docker as common_docker
+
+        old_name = self._original_name
+        try:
+            running = await common_docker.running_container_names()
+        except Exception as exc:
+            self.notify(
+                t(
+                    f"Could not check running containers ({exc}); rename aborted.",
+                    f"실행 중 컨테이너를 확인할 수 없습니다 ({exc}). 이름 변경을 중단합니다.",
+                ),
+                severity="error",
+            )
+            return False
+        for prof in config_store.referencing_profiles("vllm", old_name):
+            container = prof.container_name or prof.name
+            if container in running:
+                self.notify(
+                    t(
+                        f"Container '{container}' is running; stop it before renaming.",
+                        f"컨테이너 '{container}' 가 실행 중입니다. 중지 후 이름을 변경하세요.",
+                    ),
+                    severity="error",
+                )
+                return False
+        try:
+            config_store.rename_config("vllm", old_name, new_name)
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return False
+
+        self._original_name = new_name
+        self._config_name = new_name
+        self.query_one("#form-title", Static).update(
+            t(f"[b]Edit Config: {new_name}[/b]", f"[b]Config 편집: {new_name}[/b]")
+        )
+        return True
 
     @on(Button.Pressed, "#cancel-btn")
     def _on_close(self, event: Button.Pressed) -> None:

@@ -101,6 +101,9 @@ class ProfileFormScreen(ModalScreen[str | None]):
         self._profile = profile
         self._edit_mode = profile is not None
         self._saved_name: str | None = None
+        # In edit mode the name field stays editable: a changed name means a
+        # rename, and the original is what tells the two apart at save time.
+        self._original_name = profile.name if profile is not None else ""
 
     def compose(self) -> ComposeResult:
         p = self._profile
@@ -132,7 +135,6 @@ class ProfileFormScreen(ModalScreen[str | None]):
                         value=p.name if p else "",
                         placeholder="my-profile",
                         id="name-input",
-                        disabled=self._edit_mode,
                     )
 
                 with Horizontal(classes="form-row"):
@@ -217,7 +219,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 yield Button(t("Close", "닫기"), id="cancel-btn", variant="default")
 
     @on(Button.Pressed, "#save-btn")
-    def _on_save(self, event: Button.Pressed) -> None:
+    async def _on_save(self, event: Button.Pressed) -> None:
         name = self.query_one("#name-input", Input).value.strip()
         container = self.query_one("#container-input", Input).value.strip()
         port = self.query_one("#port-input", Input).value.strip()
@@ -244,7 +246,8 @@ class ProfileFormScreen(ModalScreen[str | None]):
             return
         # Profile names must be globally unique across both backends (see
         # profile_store.find_name_owner) — container_name defaults to the name.
-        if not self._edit_mode:
+        renaming = self._edit_mode and name != self._original_name
+        if not self._edit_mode or renaming:
             owner = profile_store.find_name_owner(name)
             if owner is not None:
                 self.notify(
@@ -256,7 +259,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 )
                 return
 
-        if not self._edit_mode and name == "example":
+        if (not self._edit_mode or renaming) and name == "example":
             # config 링크 기본값이 프로필 이름이라, 'example' 프로필은 tracked
             # example.yaml 에 파라미터를 써버린다.
             self.notify(
@@ -295,6 +298,9 @@ class ProfileFormScreen(ModalScreen[str | None]):
         # provided — mirrors what Quick Setup does so a hand-built profile
         # doesn't have to repeat the filename.
         effective_model_file = model_file or hf_file
+
+        if renaming and not await self._rename_to(name):
+            return
 
         if self._edit_mode and self._profile is not None:
             p = self._profile
@@ -342,10 +348,53 @@ class ProfileFormScreen(ModalScreen[str | None]):
         if not self._edit_mode:
             self._edit_mode = True
             self._profile = p
-            self.query_one("#name-input", Input).disabled = True
+            self._original_name = name
             self.query_one("#form-title", Static).update(
                 t(f"[b]Edit Profile: {name}[/b]", f"[b]프로필 편집: {name}[/b]")
             )
+
+    async def _rename_to(self, new_name: str) -> bool:
+        """Rename the profile being edited. False = refused, caller must abort.
+
+        The container is named after the profile, so renaming under a running
+        one would orphan it — same rule the dashboard's `R` key enforces.
+        """
+        from tui.common import docker as common_docker
+
+        old_name = self._original_name
+        container = self._profile.container_name or old_name
+        try:
+            running = await common_docker.running_container_names()
+        except Exception as exc:
+            self.notify(
+                t(
+                    f"Could not check running containers ({exc}); rename aborted.",
+                    f"실행 중 컨테이너를 확인할 수 없습니다 ({exc}). 이름 변경을 중단합니다.",
+                ),
+                severity="error",
+            )
+            return False
+        if container in running:
+            self.notify(
+                t(
+                    f"Container '{container}' is running; stop it before renaming.",
+                    f"컨테이너 '{container}' 가 실행 중입니다. 중지 후 이름을 변경하세요.",
+                ),
+                severity="error",
+            )
+            return False
+        try:
+            profile_store.rename_profile(old_name, new_name, "llamacpp")
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return False
+
+        self._original_name = new_name
+        self._profile.name = new_name
+        self.query_one("#form-title", Static).update(
+            t(f"[b]Edit Profile: {new_name}[/b]", f"[b]프로필 편집: {new_name}[/b]")
+        )
+        return True
 
     @on(Button.Pressed, "#cancel-btn")
     def _on_close(self, event: Button.Pressed) -> None:
