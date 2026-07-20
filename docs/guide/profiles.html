@@ -190,6 +190,10 @@ llmux profile edit my-model --port 8002 --gpu-id 0,1
 llmux profile edit my-model --set VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1
 llmux profile edit gemma --image-tag llamacpp-dev:master
 
+# Rename or duplicate (container must be stopped for a rename)
+llmux profile rename my-model my-model-fp8
+llmux profile clone  my-model my-model-experiment
+
 # One-step profile + config from a model id (vLLM only)
 llmux profile quick-setup Qwen/Qwen3-8B --gpu-id 0 --gpu-mem 0.9
 
@@ -199,6 +203,29 @@ llmux profile delete my-model --with-config</code></pre>
     <div class="admonition note">
       <p class="admonition-title">Auto-detected backend</p>
       <p>Most commands auto-detect the backend from the profile name. If the same name exists in both backends, pass <code>--backend</code> / <code>-b</code> to disambiguate.</p>
+    </div>
+
+    <h2 id="renaming-a-profile">Renaming a profile</h2>
+    <p>A profile's name is not just a label &mdash; it is the key of its <code>profiles.yaml</code> entry, the filename of its rendered <code>.runtime/&lt;backend&gt;/&lt;name&gt;.env</code>, and the fallback for both its container name and its linked config. Renaming therefore moves files and rewrites references, and it is <strong>refused while the container is running</strong>: the container is named after the profile, so renaming under a live one would orphan it from every lookup path.</p>
+
+    <pre data-lang="bash"><code>llmux down my-model            # stop it first
+llmux profile rename my-model my-model-fp8</code></pre>
+
+    <p>Names must be unique across <em>both</em> backends, since a vLLM and a llama.cpp profile of the same name would share one Docker object.</p>
+
+    <p>Two fields fall back to the profile name when unset, and they behave differently on rename:</p>
+    <table>
+      <thead><tr><th>Field</th><th>If unset</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td><code>container_name</code></td><td>Follows the new name</td><td>The container is recreated on the next start anyway.</td></tr>
+        <tr><td><code>config_name</code></td><td>Pinned to the <em>old</em> name</td><td>The config YAML on disk is untouched, so the profile keeps resolving to the file it already used.</td></tr>
+      </tbody>
+    </table>
+    <p>Fields you set explicitly are left exactly as they are. To rename the config file itself &mdash; and repoint every profile that referenced it &mdash; use <a href="configs.html">a config rename</a> instead.</p>
+
+    <div class="admonition note">
+      <p class="admonition-title">Copying instead of renaming</p>
+      <p><code>llmux profile clone SRC DST</code> duplicates a profile under a new name, keeping the same linked config. The clone reuses the source's port, so change it before running both at once.</p>
     </div>
 
     <h2 id="see-also">See also</h2>
