@@ -203,6 +203,9 @@ llmux config edit gemma --unset top-k
 # Clone a tuned config to a new name
 llmux config clone gemma gemma-longctx
 
+# Rename in place — profiles pointing at it are repointed automatically
+llmux config rename gemma gemma-q4
+
 # Delete
 llmux config delete gemma</code></pre>
 
@@ -210,6 +213,17 @@ llmux config delete gemma</code></pre>
       <p class="admonition-title"><code>--set</code> values are YAML-typed</p>
       <p><code>--set</code> parses each value as YAML: <code>--set ctx-size=8192</code> stores an int, <code>--set jinja=true</code> stores a bool, and an empty value (<code>--set jinja=</code>) stores <code>true</code>. For list-valued keys like <code>override-tensors</code> or <code>extra-args</code>, pass a YAML literal — <code>--set 'override-tensors=[".ffn_.*_exps.=CPU"]'</code> — or edit the file directly / use the <a href="tui.html#profile-and-config-forms">TUI config form</a>. A plain string works too: <code>--set 'override-tensors=.ffn_.*_exps.=CPU'</code>.</p>
     </div>
+
+    <h2 id="renaming-a-config">Renaming a config</h2>
+    <p>A config's name is its filename (<code>config/&lt;backend&gt;/&lt;name&gt;.yaml</code>), and profiles reference it by that name. <code>config rename</code> moves the file and rewrites every referencing profile's <code>config_name</code> in one step, so nothing is left pointing at a file that no longer exists.</p>
+
+    <pre data-lang="bash"><code>llmux config rename gemma gemma-q4
+# Renamed config/llamacpp/gemma.yaml → config/llamacpp/gemma-q4.yaml
+# Repointed profile: gemma</code></pre>
+
+    <p>In the TUI, press <kbd>R</kbd> on the config list. A rename is refused while any referencing profile's container is running &mdash; that container would keep serving the old file until it restarts, leaving the running server disagreeing with <code>profiles.yaml</code>.</p>
+
+    <p>A profile that never set <code>config_name</code> resolves to a config matching its own name, and those implicit references are repointed too. The tracked <code>example.yaml</code> template cannot be renamed.</p>
 
     <h2 id="toggling-parameters-on-off">Toggling parameters on / off</h2>
     <p>Sometimes you want to <em>keep</em> a flag but stop passing it to the server — an A/B test, a setting that only applies to one model variant, a tweak you're not sure about. Instead of deleting the line (and losing its value), toggle it:</p>

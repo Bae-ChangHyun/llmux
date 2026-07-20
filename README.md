@@ -63,6 +63,8 @@ llmux unifies both under a single Textual dashboard backed by Docker Compose.
 - **Per-model configs** &mdash; `config/<backend>/<name>.yaml` maps 1:1 to engine flags — sampling, context length, KV-cache precision, MoE CPU offload. Toggle any flag **on/off without deleting it**, and your hand-written comments survive edits.
 - **Live throughput + benchmarks** &mdash; Real-time generation tok/s polled from each container's `/metrics` (`llmux stats`), plus a warmup + median benchmark (`llmux bench`).
 - **Dev builds from source** &mdash; Build a `vllm-dev:` / `llamacpp-dev:` image from any fork/branch (GPU arch auto-detected) and pin a profile to it via `image_tag`.
+- **Rename without rebuilding** &mdash; Rename a profile or a config in place (`llmux profile rename`, `llmux config rename`, or `R` in the TUI). Configs that other profiles point at are repointed automatically; renames are refused while the container is running.
+- **Bilingual UI** &mdash; The whole TUI switches between Korean and English with `LLMUX_LANG=ko|en`.
 - **Cross-backend conflict gate** &mdash; Port/GPU overlap is checked before start, across *both* backends.
 - **Safe vLLM image resolution** &mdash; Refuses `:latest`, resolves stable picks to semver, verifies the in-container version.
 - **Quick Setup + memory estimator** &mdash; HF model → profile + config auto-generated, with a per-GPU [`hf-mem`](https://github.com/alvarobartt/hf-mem) fit bar.
@@ -109,8 +111,8 @@ uv tool update-shell           # one-time: adds ~/.local/bin to PATH
 > **Language:** the TUI is bilingual (English / Korean). It follows your system
 > locale by default; force one with `LLMUX_LANG=en` or `LLMUX_LANG=ko`.
 
-See the [Installation guide](https://Bae-ChangHyun.github.io/llmux/getting-started/installation/)
-and [Quick Start](https://Bae-ChangHyun.github.io/llmux/getting-started/quickstart/) for the full walkthrough.
+See the [Installation guide](https://Bae-ChangHyun.github.io/llmux/getting-started/installation.html)
+and [Quick Start](https://Bae-ChangHyun.github.io/llmux/getting-started/quickstart.html) for the full walkthrough.
 
 ### Headless CLI
 
@@ -125,11 +127,13 @@ llmux stats --once --json          # live tok/s from every running container
 llmux bench <profile> --runs 3     # warmup + median tok/s benchmark
 llmux profile quick-setup Qwen/Qwen3-8B --gpu-id 0,1
 llmux config edit <name> --disable trust-remote-code   # toggle a flag off, keep it
+llmux config from-recipe Qwen/Qwen3-32B --variant fp8   # official vLLM recipe
+llmux profile rename old-name new-name                  # container must be stopped
 llmux image build-dev --backend llamacpp --branch master
 ```
 
 `--json` is supported by every list/show/check command. Full command/flag list in the
-[CLI Reference](https://Bae-ChangHyun.github.io/llmux/reference/cli/).
+[CLI Reference](https://Bae-ChangHyun.github.io/llmux/reference/cli.html).
 
 <br/>
 
@@ -139,11 +143,11 @@ Full docs live at **[Bae-ChangHyun.github.io/llmux](https://Bae-ChangHyun.github
 
 | Section | What's there |
 |:---|:---|
-| [Getting Started](https://Bae-ChangHyun.github.io/llmux/getting-started/installation/) | Installation, first-model walkthrough (TUI + CLI) |
-| [Guide](https://Bae-ChangHyun.github.io/llmux/guide/profiles/) | Profiles, model configs, container lifecycle, TUI shortcuts, dev builds |
-| [Backends](https://Bae-ChangHyun.github.io/llmux/backends/comparison/) | vLLM and llama.cpp deep-dives + a feature comparison matrix |
-| [Reference](https://Bae-ChangHyun.github.io/llmux/reference/cli/) | Every CLI command/flag, `.env.common` variables, internal architecture |
-| [Troubleshooting](https://Bae-ChangHyun.github.io/llmux/troubleshooting/) | Common start/download/GPU issues — symptom → cause → fix |
+| [Getting Started](https://Bae-ChangHyun.github.io/llmux/getting-started/installation.html) | Installation, first-model walkthrough (TUI + CLI) |
+| [Guide](https://Bae-ChangHyun.github.io/llmux/guide/profiles.html) | Profiles, model configs, container lifecycle, TUI shortcuts, dev builds |
+| [Backends](https://Bae-ChangHyun.github.io/llmux/backends/comparison.html) | vLLM and llama.cpp deep-dives + a feature comparison matrix |
+| [Reference](https://Bae-ChangHyun.github.io/llmux/reference/cli.html) | Every CLI command/flag, `.env.common` variables, internal architecture |
+| [Troubleshooting](https://Bae-ChangHyun.github.io/llmux/troubleshooting.html) | Common start/download/GPU issues — symptom → cause → fix |
 
 <br/>
 
@@ -172,8 +176,8 @@ Full docs live at **[Bae-ChangHyun.github.io/llmux](https://Bae-ChangHyun.github
 
 ## Roadmap
 
-- [ ] **Recipe-based config recommender** &mdash; Auto-generate `config/vllm/<name>.yaml` from [recipes.vllm.ai](https://recipes.vllm.ai/) given a HF model ID + target GPU
-- [ ] **Profile clone across backends** &mdash; Duplicate a vLLM profile as its llama.cpp GGUF equivalent for quick A/B testing
+- [x] **Recipe-based config recommender** &mdash; Shipped in v2.4.0 as `llmux config from-recipe`
+- [ ] **Profile clone across backends** &mdash; `llmux profile clone` duplicates within a backend today; cloning a vLLM profile as its llama.cpp GGUF equivalent is still open
 - [ ] **Batch operations** &mdash; Start/stop multiple profiles across both backends at once
 - [ ] **Export/Import bundles** &mdash; Share full profile + config sets between machines
 - [ ] **Web UI** &mdash; Optional browser-based dashboard for remote access
