@@ -74,8 +74,12 @@ def dump_active_config(existing_text: str | None, data: dict[str, Any]) -> str:
         from io import StringIO
 
         from ruamel.yaml import YAML
-    except ImportError:  # ruamel is a declared dep; guard keeps saves working if absent
-        return plain()
+    except ImportError as exc:
+        raise RuntimeError(
+            "ruamel.yaml is required to preserve config comments but is not "
+            "installed; a plain dump would silently drop disabled-param markers. "
+            "Reinstall dependencies (uv sync)."
+        ) from exc
 
     ry = YAML()
     ry.preserve_quotes = True

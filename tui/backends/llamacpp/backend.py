@@ -576,5 +576,6 @@ async def list_hf_repo_files(repo: str) -> list[dict]:
 
     try:
         return await loop.run_in_executor(None, _do)
-    except Exception:
+    except Exception as exc:
+        log.warning("HF tree listing for %s failed: %s", repo, exc)
         return []
