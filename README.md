@@ -4,8 +4,9 @@
 
 # llmux
 
-**One TUI. Two backends. Zero config headaches.**
+**One TUI + CLI for running vLLM and llama.cpp side by side.**
 
+[![CI](https://github.com/Bae-ChangHyun/llmux/actions/workflows/ci.yml/badge.svg)](https://github.com/Bae-ChangHyun/llmux/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-7c4dff?style=flat-square)](https://Bae-ChangHyun.github.io/llmux/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)](https://docs.docker.com/compose/)
 [![vLLM](https://img.shields.io/badge/vLLM-semver-green?style=flat-square)](https://github.com/vllm-project/vllm)
@@ -20,6 +21,10 @@ vLLM for HF Transformers. llama.cpp for GGUF.
 llmux unifies both under a single Textual dashboard backed by Docker Compose.
 <br/>
 **Pick a profile, press Enter &mdash; whichever engine it belongs to just runs.**
+
+<br/>
+
+<sub>Linux · NVIDIA GPU · Docker. No macOS, AMD/ROCm, or CPU-only yet.</sub>
 
 <br/>
 
@@ -163,6 +168,8 @@ Full docs live at **[Bae-ChangHyun.github.io/llmux](https://Bae-ChangHyun.github
 | **Memory sizing** | Guess and hope it fits | [`hf-mem`](https://github.com/alvarobartt/hf-mem) integration with per-GPU fit bars |
 | **GGUF setup** | `hf download` → edit compose → mount | llama.cpp downloads on first start, cached on the host |
 
+**What llmux is not.** It doesn't proxy or route inference requests — each profile serves on its own port, and llmux is the layer that starts, stops, builds, and benchmarks them. If you want request-level model swapping behind a single endpoint, that's what [llama-swap](https://github.com/mostlygeek/llama-swap) does. It's also not a chat UI — point [Open WebUI](https://github.com/open-webui/open-webui) or any OpenAI-compatible client at the servers it launches.
+
 <br/>
 
 ## Requirements
@@ -181,6 +188,17 @@ Full docs live at **[Bae-ChangHyun.github.io/llmux](https://Bae-ChangHyun.github
 - [ ] **Batch operations** &mdash; Start/stop multiple profiles across both backends at once
 - [ ] **Export/Import bundles** &mdash; Share full profile + config sets between machines
 - [ ] **Web UI** &mdash; Optional browser-based dashboard for remote access
+
+<br/>
+
+## Built on
+
+llmux is a control layer — the hard parts are upstream. It runs the official, unmodified images and stands on:
+
+- [vLLM](https://github.com/vllm-project/vllm) and [llama.cpp](https://github.com/ggml-org/llama.cpp) — the inference engines it drives
+- [vllm-project/recipes](https://github.com/vllm-project/recipes) — source of the imported vLLM configs
+- [hf-mem](https://github.com/alvarobartt/hf-mem) — the model memory estimator
+- [Textual](https://github.com/Textualize/textual) and [Typer](https://github.com/fastapi/typer) — the TUI and CLI
 
 <br/>
 
