@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # GitHub Actions sets CI=true, which makes Rich enable ANSI color — that
+    # splits flag names like "--model" across escape codes and breaks the CLI
+    # tests' plain-substring assertions. Force plain output to match a normal
+    # non-TTY run.
+    env:
+      NO_COLOR: "1"
+      TERM: dumb
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Run tests
+        run: uv run pytest -q
