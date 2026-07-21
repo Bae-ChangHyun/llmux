@@ -179,6 +179,10 @@ llmux config from-recipe Qwen/Qwen3-32B --variant fp8 --feature reasoning
 # Preview without writing
 llmux config from-recipe Qwen/Qwen3-32B --variant awq --json</code></pre>
 
+    <h2 id="flag-autocomplete">Flag autocomplete, from your actual image</h2>
+    <p>When you add a flag row in the TUI config form, the name field autocompletes against the <em>real</em> flag set of the engine you're running — not a hardcoded list. The first time it's needed, llmux runs your vLLM image once (<code>vllm serve --help</code>) or <code>llama-server --help</code>, extracts every valid flag, and caches the result per image tag. Pin a different vLLM version to a profile and its config form suggests that version's flags.</p>
+    <p>A one-line description of the focused flag is shown underneath the row, so you can check what a flag does without leaving the form.</p>
+
     <h2 id="editing-configs-from-the-cli">Editing configs from the CLI</h2>
     <pre data-lang="bash"><code># List configs across both backends
 llmux config list
