@@ -67,18 +67,17 @@ llmux unifies both under a single Textual dashboard backed by Docker Compose.
 
 ## Features
 
-- **Unified Textual TUI** &mdash; Every vLLM and llama.cpp profile side-by-side in a single dashboard, with a live **tok/s** column per running model.
-- **TUI ⇄ CLI parity** &mdash; Every TUI action is also a headless subcommand, built for scripts, agents, and CI.
-- **YAML-native profiles** &mdash; One `profiles.yaml`, `defaults` block for inheritance, rendered to `.env` only at launch.
-- **Per-model configs** &mdash; `config/<backend>/<name>.yaml` maps 1:1 to engine flags — sampling, context length, KV-cache precision, MoE CPU offload. Toggle any flag **on/off without deleting it**, and your hand-written comments survive edits.
-- **Live throughput + benchmarks** &mdash; Real-time generation tok/s polled from each container's `/metrics` (`llmux stats`), plus a warmup + median benchmark (`llmux bench`).
+- **One dashboard for both engines** &mdash; Every vLLM and llama.cpp profile side-by-side in a single Textual TUI, with a live **tok/s** column per running model.
+- **Build a profile once, spin it up and down** &mdash; Keep every model you're experimenting with as a named profile in one `profiles.yaml`. No re-writing config each time — pick one, hit Enter, and it launches the right engine; stop it and start another just as fast.
+- **VRAM-aware vLLM recipe import** &mdash; Pull a model's official [vllm-project/recipes](https://github.com/vllm-project/recipes) config, then review its precision variants (bf16 / fp8 / awq) against your actual GPU's VRAM before it's written &mdash; so a recipe verified on an 80 GB card doesn't silently overshoot a 16 GB one.
+- **Memory estimator** &mdash; Point it at an HF model and get a per-GPU fit bar ([`hf-mem`](https://github.com/alvarobartt/hf-mem)) before you download or launch anything.
+- **Every engine flag, 1:1** &mdash; `config/<backend>/<name>.yaml` maps directly to engine flags — sampling, context length, KV-cache precision, MoE CPU offload. Toggle any flag **on/off without deleting it**, and your hand-written comments survive edits.
+- **Live throughput + benchmarks** &mdash; Real-time generation tok/s from each container's `/metrics` (`llmux stats`), plus a warmup + median benchmark (`llmux bench`) to compare quant A against quant B on the same hardware.
 - **Dev builds from source** &mdash; Build a `vllm-dev:` / `llamacpp-dev:` image from any fork/branch (GPU arch auto-detected) and pin a profile to it via `image_tag`.
-- **Rename without rebuilding** &mdash; Rename a profile or a config in place (`llmux profile rename`, `llmux config rename`, or `R` in the TUI). Configs that other profiles point at are repointed automatically; renames are refused while the container is running.
+- **Everything scriptable** &mdash; Every TUI action is also a headless `llmux` subcommand with `--json` output, built for scripts, agents, and CI.
+- **Rename in place** &mdash; Rename a profile or config without rebuilding; profiles pointing at a renamed config are repointed automatically.
+- **Safe vLLM image resolution** &mdash; Refuses the ambiguous `:latest`, resolves stable picks to a specific version, and verifies the version actually running inside the container.
 - **Bilingual UI** &mdash; The whole TUI switches between Korean and English with `LLMUX_LANG=ko|en`.
-- **Cross-backend conflict gate** &mdash; Port/GPU overlap is checked before start, across *both* backends.
-- **Safe vLLM image resolution** &mdash; Refuses `:latest`, resolves stable picks to semver, verifies the in-container version.
-- **Quick Setup + memory estimator** &mdash; HF model → profile + config auto-generated, with a per-GPU [`hf-mem`](https://github.com/alvarobartt/hf-mem) fit bar.
-- **vLLM recipe import** &mdash; Pull a model's official [vllm-project/recipes](https://github.com/vllm-project/recipes) config, then review its precision variants (bf16 / fp8 / awq) against your actual GPU's VRAM before it's written &mdash; so a recipe verified on an 80 GB card doesn't silently overshoot a 16 GB one.
 
 <br/>
 
