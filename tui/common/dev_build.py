@@ -59,10 +59,8 @@ def sanitize_docker_tag(name: str) -> str:
     spelling is still preserved in the `<prefix>.repo.branch` label.
 
     Public because the *runtime* paths must derive the exact same tag the
-    builder stamps (`<prefix>:<safe_branch>`). Sanitizing in only one of the two
-    made `--dev` on a `feat/foo` branch look for `vllm-dev:feat/foo` — an
-    invalid reference that never matches, so it rebuilt every time and then
-    failed to start.
+    builder stamps (`<prefix>:<safe_branch>`) — a slash in a branch like
+    `feat/foo` is not a valid docker tag reference.
     """
     sanitized = _TAG_INVALID_CHARS.sub("-", name).lstrip(".-")
     return sanitized or "branch"
@@ -392,11 +390,9 @@ def format_arch_cmake(caps: list[str]) -> str:
 
 
 async def get_image_label(image_ref: str, label: str) -> str:
-    # The label key must be a Go *string* literal — i.e. double-quoted. `!r`
-    # produced single quotes, which Go templates parse as a rune literal, so
-    # `docker inspect` failed with rc=64 for every lookup. That made
-    # image_matches() always False and forced a full rebuild on every
-    # `--dev` start, even when a matching image was sitting right there.
+    # The label key must be a Go *string* literal — double-quoted. Single
+    # quotes are parsed as a rune literal and `docker inspect` fails with
+    # rc=64.
     rc, out = await _run(
         "docker",
         "inspect",

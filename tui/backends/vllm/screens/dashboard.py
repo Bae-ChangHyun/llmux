@@ -1,7 +1,4 @@
-"""ProfileActionScreen — Enter-on-profile 의 액션 메뉴 (통합 Dashboard 가 push).
-
-구 `DashboardScreen` 은 `tui/screens/dashboard.py` 의 통합판으로 대체되어 제거됨.
-"""
+"""ProfileActionScreen — Enter-on-profile 의 액션 메뉴 (통합 Dashboard 가 push)."""
 
 from __future__ import annotations
 

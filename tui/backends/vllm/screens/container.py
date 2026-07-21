@@ -180,9 +180,9 @@ class ContainerUpScreen(Screen):
                         "[yellow]연결된 config 가 없습니다. 시작 시 기본 config 가 생성됩니다.[/yellow]",
                     )
                 )
-            # The pinned image_tag silently beat whatever the user selected
-            # here (except an explicit tag). Surface it, and give it a real
-            # radio option so it can be selected — or deselected — knowingly.
+            # A pinned image_tag overrides this selection (except an explicit
+            # tag), so surface it as its own radio option that can be selected
+            # or deselected knowingly.
             pinned = self._profile.image_tag
             if pinned:
                 yield Static(
@@ -264,7 +264,6 @@ class ContainerUpScreen(Screen):
 
     @work(exclusive=False)
     async def _fetch_version_info(self) -> None:
-        """Fetch version info and update radio button labels."""
         try:
             radio_set = self.query_one("#version-radio", RadioSet)
         except Exception:
@@ -370,7 +369,6 @@ class ContainerUpScreen(Screen):
 
     @work(exclusive=True)
     async def _do_start(self) -> None:
-        """Start the container in a background worker."""
         # Determine version from radio selection
         radio_set = self.query_one("#version-radio", RadioSet)
         pressed = radio_set.pressed_button

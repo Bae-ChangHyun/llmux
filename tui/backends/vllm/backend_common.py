@@ -29,12 +29,8 @@ DEFAULT_VLLM_REPO_URL = "https://github.com/vllm-project/vllm.git"
 
 
 def validate_name(name: str) -> bool:
-    """compose-safe lowercase name. Also prevents argv/path injection.
-
-    Mirrors tui.backends.llamacpp.backend.validate_name — docker compose project
-    names are lowercase-only, so a cross-backend profile created with uppercase
-    here would fail validation on the llama.cpp side.
-    """
+    """compose-safe lowercase name (docker compose project names are
+    lowercase-only). Also prevents argv/path injection."""
     return bool(re.match(r"^[a-z0-9][a-z0-9_-]*$", name))
 
 

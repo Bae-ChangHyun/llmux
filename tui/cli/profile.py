@@ -84,15 +84,12 @@ def show_profile(
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# Profile name rule (unified across backends). docker compose project names are
-# lowercase-only, and a cross-backend profile created with mixed-case here used
-# to round-trip cleanly via vLLM but fail validation on the llama.cpp side, so
-# both backends now share the lowercase rule.
+# Profile name rule, shared by both backends: docker compose project names are
+# lowercase-only.
 _PROFILE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
-# GPU id rule (unified across CLI + TUI + both backends). Multi-digit indices
-# are allowed so hosts with 10+ GPUs are addressable — the older
-# `[0-9](,[0-9])*` capped every index at a single digit.
+# GPU id rule. Multi-digit indices are allowed so hosts with 10+ GPUs are
+# addressable.
 _GPU_ID_RE = re.compile(r"^[0-9]+(,[0-9]+)*$")
 
 PORT_MIN = 1024

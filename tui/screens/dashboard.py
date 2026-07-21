@@ -111,11 +111,8 @@ class DashboardScreen(Screen):
         # Profile rows refresh every 5s — `docker ps` is cheap, and a stopped
         # container should drop off the running list quickly.
         self._refresh_timer = self.set_interval(5.0, lambda: self._reload())
-        # GPU bar refreshes on a tighter 2s cadence so the memory bar
-        # actually catches up after a container stops. The previous code
-        # called _poll_gpu() exactly once on mount and never again, so the
-        # bar stayed stuck at the pre-stop value until the user re-entered
-        # the dashboard.
+        # GPU bar refreshes on a tighter 2s cadence so the memory bar catches
+        # up after a container stops.
         self._gpu_timer = self.set_interval(2.0, lambda: self._poll_gpu())
 
     def on_screen_suspend(self) -> None:

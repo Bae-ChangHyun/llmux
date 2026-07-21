@@ -197,9 +197,8 @@ def logs(
 
     if not follow:
         # Go through the shared async helper so follow and no-follow paths
-        # don't drift (Finding #20). Same `docker logs --tail N` semantics
-        # the bare subprocess had — just routed through _runtime so both
-        # backends, and the TUI's log streamer, share one wrapper shape.
+        # share one `docker logs --tail N` wrapper across both backends and the
+        # TUI's log streamer.
         rc = run_async(docker_logs_once(container_name, tail=tail))
         raise typer.Exit(code=rc)
 
@@ -468,20 +467,16 @@ def ps(
     ),
 ) -> None:
     """List profiles and their container status across backends."""
-    # Unvalidated, `-b foo` fell through to the llamacpp branch and printed rows
-    # labelled with the bogus backend name.
     if backend and backend not in BACKENDS:
         raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
     backends = [backend] if backend else list(BACKENDS)
     rows = []
 
     async def _collect():
-        # Both backends now expose the identical `get_container_statuses()`
+        # Both backends expose the identical `get_container_statuses()`
         # contract (field-for-field mirror — see llamacpp.backend_runtime
         # ContainerStatus docstring), so dispatch once and reuse the same
-        # row-builder for both. Previously llama.cpp had its own inline parse
-        # that disagreed with the runtime's status detection on `Dead`/
-        # `created` and emitted the GGUF filename instead of the served alias.
+        # row-builder for both.
         for bk in backends:
             if bk == "vllm":
                 from tui.backends.vllm.backend_runtime import get_container_statuses
@@ -532,8 +527,6 @@ def render_env(
     ),
 ) -> None:
     """Re-render `.runtime/<backend>/<profile>.env` from `profiles.yaml`."""
-    # The PROFILE path validates via detect_backend; the render-all path went
-    # straight into profile_store and died with a raw ValueError traceback.
     if backend and backend not in BACKENDS:
         raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
     if profile is None:

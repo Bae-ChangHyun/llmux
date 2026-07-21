@@ -23,11 +23,8 @@ class LlmuxApp(App):
     SUB_TITLE = "vLLM + llama.cpp"
     CSS_PATH = "common/app.tcss"
 
+    # Modals are width:65 + padding/border/margins; below 80 cols they clip.
     MIN_WIDTH = 80
-    """Below this terminal width every modal/form gets clipped horizontally
-    (existing modals are width:65 + padding/border + outer margins). When the
-    terminal is narrower we push TooNarrowScreen as a full-screen guard and
-    pop it back as soon as the user widens the terminal."""
 
     BINDINGS = [
         Binding("q", "quit", t("Quit", "종료"), show=True),
@@ -80,10 +77,8 @@ class LlmuxApp(App):
                 self._release_width_guard(guard)
             # Guard is buried under another screen — keep the reference so a
             # re-narrow reuses it instead of pushing a duplicate. The guard
-            # pops itself from on_screen_resume once it surfaces on a terminal
-            # that is wide enough. Clearing the reference here (the old
-            # behavior) orphaned the guard: it stayed on the stack and
-            # resurfaced on an already-wide terminal, unfixable by resizing.
+            # pops itself from on_screen_resume once it surfaces on a
+            # wide-enough terminal.
 
     def _release_width_guard(self, guard: TooNarrowScreen) -> None:
         """Pop the width guard and drop our reference. Called by `_enforce_width`
@@ -95,9 +90,8 @@ class LlmuxApp(App):
             self.pop_screen()
 
     def action_show_dashboard(self) -> None:
-        # Pop back to the dashboard already at the bottom of the stack.
-        # switch_screen("dashboard") replaced the *top* screen with a second
-        # DashboardScreen instance, leaving the original buried underneath.
+        # Pop back to the dashboard already at the bottom of the stack, rather
+        # than pushing/switching in a second DashboardScreen instance.
         while not isinstance(self.screen, DashboardScreen) and len(self.screen_stack) > 1:
             if self.screen is self._too_narrow:
                 # The guard outranks F1 while the terminal is still narrow —

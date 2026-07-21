@@ -91,15 +91,11 @@ async def run_bench(
 
 
 async def list_served_models(port: int | str, timeout: int = 5) -> list[str]:
-    """GET /v1/models → id 리스트. 실패 시 []. 실패 원인은 debug 로그로.
+    """GET /v1/models → id 리스트. 실패 시 []. 실패 원인은 DEBUG 로그로.
 
-    Used by benchmark and readiness paths — callers treat `[]` as 'no model
-    served yet' regardless of cause. The previous bare `except: return []`
-    swallowed network errors, JSON parse failures, and server crashes
-    indistinguishably, so a hung benchmark gave the user no hint of *why*
-    discovery failed. Logging at DEBUG keeps the silent-success contract
-    intact for happy paths while letting `--log-level=DEBUG` (or similar)
-    surface the actual exception.
+    Callers (benchmark, readiness) treat `[]` as 'no model served yet'
+    regardless of cause; DEBUG logging lets `--log-level=DEBUG` surface the
+    actual exception without breaking that contract.
     """
     loop = asyncio.get_running_loop()
 
