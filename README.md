@@ -38,6 +38,11 @@ llmux unifies both under a single Textual dashboard backed by Docker Compose.
 
 <div align="center">
 
+<b>Both engines on one GPU, live tok/s per model</b> &mdash; a vLLM model and a llama.cpp model running side by side, each with its own throughput, all in one dashboard<br/>
+<img src="assets/dashboard-tokps.png" alt="llmux dashboard — a vLLM and a llama.cpp model running at once, each showing live tokens/sec" width="820"/>
+
+<br/><br/>
+
 <b>One dashboard for vLLM + llama.cpp</b> &mdash; toggle a config flag on/off, add one with autocomplete, then import a model from its official vLLM recipe &mdash; reviewed against your GPU's VRAM<br/>
 <img src="demo/llmux.gif" alt="llmux walkthrough — config editing, autocomplete, and GPU-aware recipe import" width="800"/>
 
