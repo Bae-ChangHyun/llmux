@@ -121,11 +121,10 @@ echo
 ok "llmux installed at $INSTALL_DIR"
 echo
 printf '  Next:\n'
-printf '    1. Shared settings — HF token, cache + model dirs:\n'
-printf '       %bcd %s%b  then  %bcp .env.common.example .env.common%b  and edit it\n' \
-    "$C_BOLD" "$INSTALL_DIR" "$C_OFF" "$C_BOLD" "$C_OFF"
-printf '    2. Profiles:  %bcp profiles.example.yaml profiles.yaml%b\n' "$C_BOLD" "$C_OFF"
-printf '    3. Launch:    %bllmux%b\n' "$C_BOLD" "$C_OFF"
+printf '    1. Run %bllmux%b — on first launch it walks you through shared\n' "$C_BOLD" "$C_OFF"
+printf '       settings (HF token, cache + model dirs) and writes .env.common.\n'
+printf '    2. Create your first profile from the dashboard (press %bn%b), or\n' "$C_BOLD" "$C_OFF"
+printf '       headless: %bllmux profile quick-setup <hf-model-id>%b\n' "$C_BOLD" "$C_OFF"
 echo
 if ! command -v llmux >/dev/null 2>&1; then
     warn "The 'llmux' command is not on PATH in this shell yet."

@@ -139,12 +139,12 @@ class SystemScreen(Screen):
                 else f"[green]{g.utilization}%[/]"
             )
             try:
-                t = int(g.temperature)
+                temp_c = int(g.temperature)
             except ValueError:
-                t = 0
+                temp_c = 0
             temp = (
-                f"[red]{g.temperature}°C[/]" if t > 80
-                else f"[yellow]{g.temperature}°C[/]" if t > 60
+                f"[red]{g.temperature}°C[/]" if temp_c > 80
+                else f"[yellow]{g.temperature}°C[/]" if temp_c > 60
                 else f"[green]{g.temperature}°C[/]"
             )
             try:

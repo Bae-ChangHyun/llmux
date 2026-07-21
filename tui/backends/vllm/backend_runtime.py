@@ -114,7 +114,6 @@ def _ensure_profile_config(profile: Profile) -> tuple[bool, list[str]]:
             Config(
                 name=profile.config_name,
                 model=profile.model_id,
-                gpu_memory_utilization="0.55",
             )
         )
         messages.append(f"Created default config: config/{profile.config_name}.yaml")
@@ -124,7 +123,7 @@ def _ensure_profile_config(profile: Profile) -> tuple[bool, list[str]]:
         f"# Auto-generated default config for profile: {profile.name}\n"
         "# Set a valid Hugging Face model ID below, then start again.\n"
         "model: your-org/your-model\n"
-        "gpu-memory-utilization: 0.55\n"
+        "gpu-memory-utilization: 0.9\n"
     )
     messages.extend(
         [
