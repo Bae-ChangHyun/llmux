@@ -4,7 +4,7 @@
 
 # llmux
 
-**One TUI + CLI for running vLLM and llama.cpp side by side.**
+**Run and manage vLLM and llama.cpp servers from one terminal — TUI or CLI.**
 
 [![CI](https://github.com/Bae-ChangHyun/llmux/actions/workflows/ci.yml/badge.svg)](https://github.com/Bae-ChangHyun/llmux/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-7c4dff?style=flat-square)](https://Bae-ChangHyun.github.io/llmux/)
@@ -180,9 +180,16 @@ Full docs live at **[Bae-ChangHyun.github.io/llmux](https://Bae-ChangHyun.github
 ## Requirements
 
 - Linux with NVIDIA GPU(s) + a recent driver
-- Docker with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-- Python 3.10+
-- [uv](https://docs.astral.sh/uv/) for the TUI environment
+- [Docker Engine](https://docs.docker.com/engine/install/) + the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) (for GPU passthrough)
+- Python 3.10+, and [uv](https://docs.astral.sh/uv/) for the TUI environment
+
+Confirm GPU passthrough works before the first run:
+
+```bash
+docker run --rm --gpus all ubuntu nvidia-smi
+```
+
+> macOS, AMD/ROCm, and CPU-only aren't supported yet — llmux drives CUDA images through NVIDIA GPU passthrough, which needs an NVIDIA GPU on Linux.
 
 <br/>
 
@@ -192,6 +199,8 @@ Full docs live at **[Bae-ChangHyun.github.io/llmux](https://Bae-ChangHyun.github
 - [ ] **Profile clone across backends** &mdash; `llmux profile clone` duplicates within a backend today; cloning a vLLM profile as its llama.cpp GGUF equivalent is still open
 - [ ] **Batch operations** &mdash; Start/stop multiple profiles across both backends at once
 - [ ] **Export/Import bundles** &mdash; Share full profile + config sets between machines
+- [ ] **AMD / ROCm** &mdash; Mostly a base-image + device-mount swap; more feasible than macOS
+- [ ] **macOS (native Metal)** &mdash; Under consideration, and llama.cpp only: Docker can't pass an Apple GPU into a Linux container, so this would mean running llama.cpp as a native process instead of a container (vLLM stays CUDA-only)
 - [ ] **Web UI** &mdash; Optional browser-based dashboard for remote access
 
 <br/>

@@ -18,7 +18,10 @@ Start from `llmux --help`. Top-level shortcuts and sub-apps:
 - Images: `llmux image {list,pull,remove,build-dev}`
 - System: `llmux system {gpu,mem-estimate,disk,env-check}` (`gpu` / `env-check` also available top-level)
 
-Running `llmux` with no arguments launches the TUI (intended for humans).
+Every `list` / `show` / `check` command takes `--json` for machine-readable
+output, and `llmux --version` prints the version — the CLI is meant to be
+driven from scripts, agents, and CI. Running `llmux` with no arguments launches
+the TUI (intended for humans).
 
 ## Repo layout (high-level)
 
