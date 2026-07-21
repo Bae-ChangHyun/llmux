@@ -27,14 +27,12 @@ async def gpu_conflict_messages(
     """Cross-backend warnings when the target profile's GPUs overlap any
     currently-running container.
 
-    Single source of truth for what used to be two near-identical helpers in
-    `tui.backends.vllm.backend_runtime` and `tui.backends.llamacpp.backend_runtime`.
-    Both backends now call this with their own (name, container_name, gpu_id)
-    and read off the same list of warnings.
+    Both backends call this with their own (name, container_name, gpu_id) and
+    read off the same list of warnings.
 
-    The function intentionally never raises — any `docker ps` failure becomes
-    a single inspection warning that the caller can log alongside the genuine
-    overlap warnings; it should not abort a startup.
+    Never raises — a `docker ps` failure becomes a single inspection warning
+    the caller logs alongside genuine overlap warnings, so it can't abort a
+    startup.
     """
     # Lazy import — profile_store pulls in yaml at import time, which is
     # heavier than the alternative of one extra import inside the rare

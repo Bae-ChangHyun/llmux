@@ -181,11 +181,8 @@ class SystemScreen(Screen):
 
     @work(exclusive=True, group="sys-containers")
     async def _refresh_containers(self) -> None:
-        """Show every llmux-managed container, across BOTH backends.
-
-        Mirrors the vLLM System screen: filtering to just this backend made the
-        panel claim 'no profile containers' while vLLM containers were running.
-        """
+        """Show every llmux-managed container, across BOTH backends. Mirrors
+        the vLLM System screen."""
         known = {load_profile(n).container_name for n in list_profile_names()}
         for stored in profile_store.list_profiles("vllm"):
             known.add(stored.container_name or stored.name)

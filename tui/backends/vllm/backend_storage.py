@@ -37,10 +37,8 @@ def _to_profile(stored: profile_store.StoredProfile) -> Profile:
 
 
 def _to_stored(profile: Profile) -> profile_store.StoredProfile:
-    # `extra_pip_packages` is now a first-class field on Profile (no longer
-    # stuffed through env_vars["EXTRA_PIP_PACKAGES"] and popped here). The
-    # reserved-key denylist in profile_store rejects any leftover env_vars
-    # entry under that name, so this conversion stays a straight 1:1 mapping.
+    # profile_store's reserved-key denylist rejects an env_vars entry named
+    # EXTRA_PIP_PACKAGES, so this stays a straight 1:1 mapping.
     return profile_store.StoredProfile(
         name=profile.name,
         backend="vllm",

@@ -1,12 +1,9 @@
 """Shared parsing + validation for .env-style files.
 
 Single source of truth for what every backend treats as a well-formed
-`.env.common`. Backends used to carry their own near-identical parsers
-(`tui.backends.{vllm,llamacpp}.backend{_storage,}._parse_env_file`) and a
-mismatched validator (vLLM checked HF_CACHE_PATH up front; llama.cpp let
-docker discover the missing/relative path during compose interpolation).
-The mismatched validator surfaced as a confusing late failure; this module
-removes the asymmetry.
+`.env.common` — one parser and one validator for both backends, so
+HF_CACHE_PATH is checked up front rather than surfacing as a late compose
+interpolation failure.
 """
 
 from __future__ import annotations

@@ -133,7 +133,6 @@ class SystemScreen(Screen):
 
     @work(exclusive=True, group="gpu")
     async def _refresh_gpu(self) -> None:
-        """Fetch GPU info and update the GPU table."""
         gpus = await get_gpu_info()
         self._update_gpu_table(gpus)
 
@@ -181,7 +180,6 @@ class SystemScreen(Screen):
 
     @work(exclusive=True, group="images")
     async def _refresh_images(self) -> None:
-        """Fetch Docker images and update both tables."""
         official = await get_docker_images()
         dev = await get_dev_images()
         self._update_image_table("#official-images", official)
@@ -200,14 +198,8 @@ class SystemScreen(Screen):
 
     @work(exclusive=True, group="containers")
     async def _refresh_containers(self) -> None:
-        """Show every llmux-managed container, across BOTH backends.
-
-        The unified Dashboard already lists profiles from both backends; this
-        view used to filter to just the vLLM side, which made the System
-        screen claim 'no profile containers found' when only llama.cpp
-        containers were running. The CLI `container ps` returns both — this
-        now matches.
-        """
+        """Show every llmux-managed container, across BOTH backends — matching
+        the unified Dashboard and the CLI `container ps`."""
         known_names = {
             load_profile(name).container_name
             for name in list_profile_names()

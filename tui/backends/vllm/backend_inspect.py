@@ -1,8 +1,4 @@
-"""System inspection, version lookup, and vLLM metadata helpers.
-
-get_gpu_info / format_gpu_bar / estimate_model_memory 은 tui.common 으로
-이동됨. 하위 호환을 위해 이 모듈에서도 re-export.
-"""
+"""System inspection, version lookup, and vLLM metadata helpers."""
 
 from __future__ import annotations
 

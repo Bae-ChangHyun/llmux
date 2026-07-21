@@ -62,7 +62,7 @@ def _backend_save_config(
     The vLLM backend hoists `model` / `gpu-memory-utilization` into typed
     fields and writes them in a fixed order; the llama.cpp backend writes a
     flat flag dict. Going through these instead of a local `yaml.safe_dump`
-    keeps TUI and CLI round-trips byte-identical (Finding #4). `disabled`
+    keeps TUI and CLI round-trips byte-identical. `disabled`
     carries params kept as comment markers rather than active keys.
     """
     disabled = disabled or {}

@@ -84,11 +84,8 @@ def _ensure_profile_config(profile: Profile) -> tuple[bool, list[str]]:
         if model and model != "your-org/your-model":
             return True, messages
         # Existing config still carries the placeholder. If the profile has a
-        # concrete model_id, auto-promote it into the config (preserving any
-        # other tuning the user set on the same file). Without this rewrite,
-        # the placeholder kept winning despite the per-profile MODEL_ID being
-        # set — and the error told the user to "set MODEL_ID" they had
-        # already set.
+        # concrete model_id, promote it into the config (preserving other
+        # tuning on the same file) so a set MODEL_ID isn't overridden by it.
         if profile.model_id:
             config.model = profile.model_id
             save_config(config)
