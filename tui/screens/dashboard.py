@@ -667,13 +667,23 @@ class DashboardScreen(Screen):
             )
 
     async def action_plain_mode(self) -> None:
-        """Suspend the Textual UI and show a plain-text dashboard in the normal
-        terminal (for low-bandwidth SSH, dumb terminals, or preference). Returns
-        to the TUI when the plain view exits."""
-        from tui.common.plain_dashboard import run_plain_dashboard
+        """Suspend the Textual UI and show the btop-style monitor for the
+        selected running model in the normal terminal (for low-bandwidth SSH or
+        dumb terminals). Same metrics as the `v` monitor; returns on exit."""
+        row = self._selected_row()
+        if row is None:
+            return
+        if not row.running:
+            self.notify(
+                t("Terminal monitor is only for running containers.",
+                  "터미널 모니터는 실행 중인 컨테이너만 볼 수 있습니다."),
+                severity="warning",
+            )
+            return
+        from tui.common.plain_monitor import run_plain_monitor
 
         with self.app.suspend():
-            await run_plain_dashboard()
+            await run_plain_monitor(row)
         self._reload()
 
     def action_monitor(self) -> None:

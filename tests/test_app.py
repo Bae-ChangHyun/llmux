@@ -505,19 +505,23 @@ class VersionScreenEnterTests(unittest.IsolatedAsyncioTestCase):
 class PlainModeToggleTests(unittest.IsolatedAsyncioTestCase):
     """The `t` key suspends the TUI, runs the plain dashboard, then reloads."""
 
-    async def test_plain_mode_suspends_runs_and_reloads(self) -> None:
+    async def test_plain_mode_suspends_runs_monitor_and_reloads(self) -> None:
         import contextlib
         from unittest.mock import AsyncMock, MagicMock, patch
         from tui.screens.dashboard import DashboardScreen
+        from tui.common.adapter import DashboardRow
 
+        row = DashboardRow(backend="vllm", profile_name="m", container_name="m",
+                           port=8000, running=True, model="m", detail="", gpu_id="0")
         with patch("tui.common.docker.running_container_names", AsyncMock(return_value=set())), \
             patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=[])), \
-            patch("tui.common.plain_dashboard.run_plain_dashboard", AsyncMock()) as run, \
+            patch("tui.common.plain_monitor.run_plain_monitor", AsyncMock()) as run, \
             patch("tui.app.LlmuxApp.suspend", lambda self: contextlib.nullcontext()):
             app = LlmuxApp()
             async with app.run_test(size=WIDE) as pilot:
                 await pilot.pause()
                 dash = next(s for s in app.screen_stack if isinstance(s, DashboardScreen))
+                dash._selected_row = MagicMock(return_value=row)
                 dash._reload = MagicMock()
                 await dash.action_plain_mode()
                 run.assert_awaited_once()

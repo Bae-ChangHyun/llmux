@@ -132,11 +132,16 @@ def tui_cmd() -> None:
 
 
 @app.command("top")
-def top_cmd() -> None:
-    """Live plain-text dashboard (no TUI) — profiles, status, tok/s, GPU. q to quit."""
-    from tui.common.plain_dashboard import run_cli
+def top_cmd(
+    profile: str = typer.Argument(
+        None, help="Running profile to monitor (auto-picks if only one is running)."
+    ),
+) -> None:
+    """Live btop-style monitor in a plain terminal (no TUI) — throughput, queue,
+    KV cache, latency, GPU. q or Ctrl+C to quit."""
+    from tui.common.plain_monitor import run_cli
 
-    run_cli()
+    raise typer.Exit(code=run_cli(profile))
 
 
 # ── Sub-apps ─────────────────────────────────────────────────────────────────

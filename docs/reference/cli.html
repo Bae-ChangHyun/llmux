@@ -51,7 +51,7 @@
       </p>
       <pre data-lang="text"><code>llmux                      # launch the interactive TUI (default)
 llmux tui                  # launch the TUI explicitly
-llmux top                  # plain-text live dashboard (no TUI)
+llmux top &lt;profile&gt;        # btop-style monitor in a plain terminal (no TUI)
 llmux &lt;group&gt; &lt;command&gt;    # headless control
 llmux &lt;alias&gt;              # top-level shortcut (see below)
 llmux --version            # print the installed version and exit</code></pre>
@@ -109,8 +109,8 @@ llmux --version            # print the installed version and exit</code></pre>
     <h2 id="common-concepts">Common concepts</h2>
 
     <h3 id="top"><code>top</code></h3>
-    <p>A plain-text, auto-refreshing dashboard — profiles, status, live tok/s, and a GPU bar — rendered without the Textual TUI. Good for low-bandwidth SSH, dumb terminals, or a quick glance. Press <kbd>q</kbd> or Ctrl+C to exit. The same view is reachable from inside the TUI with the <kbd>t</kbd> key.</p>
-    <pre data-lang="text"><code>llmux top</code></pre>
+    <p>The btop-style monitor for one running model — throughput, request queue, KV-cache usage, latency, and GPU — rendered in a plain terminal without the Textual TUI. Good for low-bandwidth SSH or dumb terminals. Pass a running profile; with none given it auto-picks when exactly one model is running. Press <kbd>q</kbd> or Ctrl+C to exit. The same monitor is reachable inside the TUI with the <kbd>t</kbd> key.</p>
+    <pre data-lang="text"><code>llmux top &lt;profile&gt;</code></pre>
 
     <h3 id="backend-detection">Backend detection</h3>
     <p>Most commands take a <strong>profile name</strong> and resolve its backend (<code>vllm</code> or <code>llamacpp</code>) automatically by scanning <code>profiles.yaml</code>:</p>
