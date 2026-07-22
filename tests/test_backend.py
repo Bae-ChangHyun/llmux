@@ -2751,6 +2751,63 @@ class FindCachedGgufTests(unittest.TestCase):
             self.assertEqual(cached[0]["size_bytes"], 2048)
 
 
+class ServerMetricsParseTests(unittest.TestCase):
+    def test_parses_full_vllm_metric_families(self) -> None:
+        from tui.common.metrics import parse_server_metrics
+
+        text = (
+            'vllm:prompt_tokens_total{model_name="m"} 1000.0\n'
+            'vllm:generation_tokens_total{model_name="m"} 2000.0\n'
+            'vllm:num_requests_running{model_name="m"} 3.0\n'
+            'vllm:num_requests_waiting{model_name="m"} 1.0\n'
+            'vllm:gpu_cache_usage_perc{model_name="m"} 0.34\n'
+            'vllm:time_to_first_token_seconds_sum{model_name="m"} 12.5\n'
+            'vllm:time_to_first_token_seconds_count{model_name="m"} 50.0\n'
+            'vllm:time_to_first_token_seconds_bucket{le="0.1",model_name="m"} 5.0\n'
+            'vllm:time_per_output_token_seconds_sum{model_name="m"} 7.0\n'
+            'vllm:time_per_output_token_seconds_count{model_name="m"} 1000.0\n'
+        )
+        m = parse_server_metrics(text)
+        self.assertEqual(m.prompt_tokens, 1000.0)
+        self.assertEqual(m.generation_tokens, 2000.0)
+        self.assertEqual(m.requests_running, 3.0)
+        self.assertEqual(m.requests_waiting, 1.0)
+        self.assertEqual(m.kv_cache_usage, 0.34)
+        self.assertEqual(m.ttft_sum, 12.5)
+        # The _bucket line must NOT be counted toward _count.
+        self.assertEqual(m.ttft_count, 50.0)
+        self.assertEqual(m.tpot_sum, 7.0)
+        self.assertEqual(m.tpot_count, 1000.0)
+
+    def test_parses_llamacpp_names_and_leaves_absent_histograms_none(self) -> None:
+        from tui.common.metrics import parse_server_metrics
+
+        text = (
+            "llamacpp:prompt_tokens_total 500\n"
+            "llamacpp:tokens_predicted_total 800\n"
+            "llamacpp:requests_processing 2\n"
+            "llamacpp:requests_deferred 0\n"
+            "llamacpp:kv_cache_usage_ratio 0.5\n"
+        )
+        m = parse_server_metrics(text)
+        self.assertEqual(m.prompt_tokens, 500.0)
+        self.assertEqual(m.generation_tokens, 800.0)
+        self.assertEqual(m.requests_running, 2.0)
+        self.assertEqual(m.requests_waiting, 0.0)
+        self.assertEqual(m.kv_cache_usage, 0.5)
+        self.assertIsNone(m.ttft_sum)
+        self.assertIsNone(m.tpot_sum)
+        self.assertEqual(m.token_counters(), (500.0, 800.0))
+
+    def test_empty_body_yields_all_none(self) -> None:
+        from tui.common.metrics import parse_server_metrics
+
+        m = parse_server_metrics("# only comments\nunrelated_metric 1.0\n")
+        self.assertIsNone(m.prompt_tokens)
+        self.assertIsNone(m.requests_running)
+        self.assertIsNone(m.token_counters())
+
+
 class TokenMetricsTests(unittest.TestCase):
     def test_parses_vllm_labelled_counters_and_sums_label_sets(self) -> None:
         from tui.common.metrics import parse_token_counters

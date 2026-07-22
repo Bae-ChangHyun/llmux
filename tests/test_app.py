@@ -435,3 +435,64 @@ class ConfigFormRenameTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     profile_store.load_profile("p", "vllm").config_name, "cfg2"
                 )
+
+
+class MonitorScreenTests(unittest.IsolatedAsyncioTestCase):
+    """The live monitor renders real metric values from /metrics + nvidia-smi."""
+
+    def _row(self, backend="vllm"):
+        from tui.common.adapter import DashboardRow
+        return DashboardRow(
+            backend=backend, profile_name="m1", container_name="m1",
+            port=8000, running=True, model="m1", detail="", gpu_id="0",
+        )
+
+    async def test_renders_metrics_and_gpu(self) -> None:
+        from tui.common.metrics import ServerMetrics
+        from tui.common.docker import GpuInfo
+        from tui.screens.monitor import MonitorScreen
+        from textual.widgets import Static
+
+        metrics = ServerMetrics(
+            prompt_tokens=100.0, generation_tokens=200.0,
+            requests_running=3.0, requests_waiting=1.0, kv_cache_usage=0.34,
+        )
+        gpus = [GpuInfo("0", "RTX", "8000", "16000", "78", "71", "210")]
+
+        with patch("tui.common.metrics.fetch_server_metrics",
+                   AsyncMock(return_value=metrics)), \
+            patch("tui.screens.monitor.fetch_server_metrics",
+                  AsyncMock(return_value=metrics)), \
+            patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=gpus)):
+            app = LlmuxApp()
+            async with app.run_test(size=WIDE) as pilot:
+                await pilot.pause()
+                screen = MonitorScreen(self._row())
+                await app.push_screen(screen)
+                await pilot.pause()
+                await pilot.pause()
+
+                kv = screen.query_one("#mon-kv", Static)
+                gpu = screen.query_one("#mon-gpu", Static)
+                req = screen.query_one("#mon-requests", Static)
+                self.assertIn("34%", str(kv.render()))
+                self.assertIn("GPU0", str(gpu.render()))
+                self.assertIn("210W", str(gpu.render()))
+                self.assertIn("3", str(req.render()))
+
+    async def test_unreachable_server_does_not_crash(self) -> None:
+        from tui.screens.monitor import MonitorScreen
+        from textual.widgets import Static
+
+        with patch("tui.screens.monitor.fetch_server_metrics",
+                   AsyncMock(return_value=None)), \
+            patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=[])):
+            app = LlmuxApp()
+            async with app.run_test(size=WIDE) as pilot:
+                await pilot.pause()
+                screen = MonitorScreen(self._row())
+                await app.push_screen(screen)
+                await pilot.pause()
+                await pilot.pause()
+                # Renders the unreachable notice rather than raising.
+                self.assertIsInstance(screen.query_one("#mon-gen-label", Static), Static)

@@ -14,6 +14,7 @@ class GpuInfo:
     memory_total: str  # MiB
     utilization: str
     temperature: str
+    power: str = ""    # W (may be "[N/A]" on GPUs that don't report it)
 
 
 async def run_command(*args: str, timeout: float = 10) -> tuple[int, str]:
@@ -45,7 +46,7 @@ async def run_command(*args: str, timeout: float = 10) -> tuple[int, str]:
 async def get_gpu_info() -> list[GpuInfo]:
     rc, out = await run_command(
         "nvidia-smi",
-        "--query-gpu=index,name,memory.used,memory.total,utilization.gpu,temperature.gpu",
+        "--query-gpu=index,name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw",
         "--format=csv,noheader,nounits",
         timeout=5,
     )
@@ -54,7 +55,9 @@ async def get_gpu_info() -> list[GpuInfo]:
     gpus: list[GpuInfo] = []
     for line in out.strip().splitlines():
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) >= 6:
+        if len(parts) >= 7:
+            gpus.append(GpuInfo(*parts[:7]))
+        elif len(parts) >= 6:
             gpus.append(GpuInfo(*parts[:6]))
     return gpus
 
