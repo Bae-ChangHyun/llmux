@@ -131,6 +131,14 @@ def tui_cmd() -> None:
     launch_tui()
 
 
+@app.command("top")
+def top_cmd() -> None:
+    """Live plain-text dashboard (no TUI) — profiles, status, tok/s, GPU. q to quit."""
+    from tui.common.plain_dashboard import run_cli
+
+    run_cli()
+
+
 # ── Sub-apps ─────────────────────────────────────────────────────────────────
 from tui.cli import config as _config  # noqa: E402
 from tui.cli import container as _container  # noqa: E402

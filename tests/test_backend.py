@@ -3394,3 +3394,50 @@ class ListHfRepoFilesTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlainDashboardTests(unittest.IsolatedAsyncioTestCase):
+    def _row(self, name, backend="vllm", running=True, port=8000):
+        from tui.common.adapter import DashboardRow
+        return DashboardRow(backend=backend, profile_name=name, container_name=name,
+                            port=port, running=running, model="Qwen/Q", detail="", gpu_id="0")
+
+    def test_render_includes_rows_tps_and_gpu(self) -> None:
+        import io
+        from rich.console import Console
+        from tui.common.plain_dashboard import render
+        from tui.common.docker import GpuInfo
+        rows = [self._row("m1"),
+                self._row("m2", backend="llamacpp", running=False, port=8080)]
+        tps = {"vllm:m1": 142.3}
+        gpus = [GpuInfo("0", "RTX", "8000", "16000", "78", "71", "210")]
+        con = Console(width=100, file=io.StringIO())
+        con.print(render(rows, tps, gpus))
+        out = con.file.getvalue()
+        self.assertIn("m1", out)
+        self.assertIn("142.3", out)
+        self.assertIn("vLLM", out)
+        self.assertIn("llama.cpp", out)
+        self.assertIn("GPU0", out)
+
+    async def test_collect_builds_rows_and_derives_rate(self) -> None:
+        from unittest.mock import AsyncMock, patch
+        from tui.common import plain_dashboard as mod
+        from tui.common.metrics import ThroughputTracker
+        from tui.common.docker import GpuInfo
+        rows = [self._row("m1")]
+        tracker = ThroughputTracker()
+        with patch.object(mod.VllmAdapter, "rows", lambda self, running: rows), \
+            patch.object(mod.LlamacppAdapter, "rows", lambda self, running: []), \
+            patch.object(mod.common_docker, "running_container_names",
+                         AsyncMock(return_value={"m1"})), \
+            patch.object(mod.common_docker, "get_gpu_info",
+                         AsyncMock(return_value=[GpuInfo("0", "R", "1", "2", "3", "4", "5")])), \
+            patch.object(mod, "fetch_token_counters",
+                         AsyncMock(side_effect=[(0.0, 0.0), (10.0, 200.0)])):
+            r1, t1, g1 = await mod._collect(tracker, 100.0)
+            self.assertEqual([x.profile_name for x in r1], ["m1"])
+            self.assertEqual(t1, {})  # first sample: no rate yet
+            r2, t2, g2 = await mod._collect(tracker, 101.0)
+            self.assertAlmostEqual(t2["vllm:m1"], 200.0)  # 200 gen tokens / 1s
+            self.assertEqual(len(g2), 1)
