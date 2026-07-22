@@ -431,3 +431,72 @@ class MonitorScreenTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 # Renders the unreachable notice rather than raising.
                 self.assertIsInstance(screen.query_one("#mon-gen-label", Static), Static)
+
+
+class VersionScreenEnterTests(unittest.IsolatedAsyncioTestCase):
+    """Enter on the version picker commits the highlighted option and starts,
+    instead of only selecting the radio."""
+
+    def _profile(self):
+        import types
+        return types.SimpleNamespace(
+            name="p", image_tag="", port=8000, container_name="p",
+            config_name="p", gpu_id="0", model_id="", enable_lora="false",
+            tensor_parallel="1", extra_pip_packages="",
+        )
+
+    async def test_enter_commits_selection_and_starts(self) -> None:
+        from tui.backends.vllm.screens import container as mod
+        from tui.backends.vllm.screens.container import ContainerUpScreen, VER_OFFICIAL
+        from textual.widgets import RadioSet, RadioButton
+
+        with patch.object(mod, "load_profile", lambda n: self._profile()), \
+            patch.object(mod, "get_local_latest_tag", AsyncMock(return_value="v0.1.0")), \
+            patch.object(mod, "get_dockerhub_release_version", AsyncMock(return_value="v0.1.0")), \
+            patch.object(mod, "get_dockerhub_nightly_date", AsyncMock(return_value="available")), \
+            patch.object(mod, "get_gpu_info", AsyncMock(return_value=[])):
+            app = LlmuxApp()
+            async with app.run_test(size=WIDE) as pilot:
+                await pilot.pause()
+                screen = ContainerUpScreen("p")
+                await app.push_screen(screen)
+                await pilot.pause()
+                await pilot.pause()
+
+                rs = screen.query_one("#version-radio", RadioSet)
+                rs.query_one(f"#{VER_OFFICIAL}", RadioButton).value = True
+                await pilot.pause()
+
+                called = []
+                screen._do_start = lambda: called.append(True)
+                screen.action_confirm_start()
+                self.assertEqual(called, [True])
+
+    async def test_enter_on_empty_custom_focuses_input_not_start(self) -> None:
+        from tui.backends.vllm.screens import container as mod
+        from tui.backends.vllm.screens.container import ContainerUpScreen, VER_CUSTOM
+        from textual.widgets import RadioSet, RadioButton, Input
+
+        with patch.object(mod, "load_profile", lambda n: self._profile()), \
+            patch.object(mod, "get_local_latest_tag", AsyncMock(return_value="v0.1.0")), \
+            patch.object(mod, "get_dockerhub_release_version", AsyncMock(return_value="v0.1.0")), \
+            patch.object(mod, "get_dockerhub_nightly_date", AsyncMock(return_value="available")), \
+            patch.object(mod, "get_gpu_info", AsyncMock(return_value=[])):
+            app = LlmuxApp()
+            async with app.run_test(size=WIDE) as pilot:
+                await pilot.pause()
+                screen = ContainerUpScreen("p")
+                await app.push_screen(screen)
+                await pilot.pause()
+                await pilot.pause()
+
+                rs = screen.query_one("#version-radio", RadioSet)
+                rs.query_one(f"#{VER_CUSTOM}", RadioButton).value = True
+                await pilot.pause()
+
+                called = []
+                screen._do_start = lambda: called.append(True)
+                screen.action_confirm_start()
+                # Empty custom tag → don't start, focus the input.
+                self.assertEqual(called, [])
+                self.assertIs(app.focused, screen.query_one("#custom-tag-input", Input))
