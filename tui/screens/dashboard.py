@@ -49,6 +49,7 @@ class DashboardScreen(Screen):
         Binding("m", "mem_estimate", t("Memory", "메모리")),
         Binding("C", "config_list", t("Configs", "설정")),
         Binding("s", "system_info", t("System", "시스템")),
+        Binding("t", "plain_mode", t("Terminal", "터미널")),
         Binding("r", "refresh", t("Refresh", "새로고침")),
         Binding("q", "quit", t("Quit", "종료")),
         # Power-user: footer 에서 숨김
@@ -664,6 +665,16 @@ class DashboardScreen(Screen):
             self._dispatch_llamacpp(
                 "logs", row, lbackend.load_profile(row.profile_name)
             )
+
+    async def action_plain_mode(self) -> None:
+        """Suspend the Textual UI and show a plain-text dashboard in the normal
+        terminal (for low-bandwidth SSH, dumb terminals, or preference). Returns
+        to the TUI when the plain view exits."""
+        from tui.common.plain_dashboard import run_plain_dashboard
+
+        with self.app.suspend():
+            await run_plain_dashboard()
+        self._reload()
 
     def action_monitor(self) -> None:
         row = self._selected_row()

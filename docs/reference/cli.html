@@ -51,6 +51,7 @@
       </p>
       <pre data-lang="text"><code>llmux                      # launch the interactive TUI (default)
 llmux tui                  # launch the TUI explicitly
+llmux top                  # plain-text live dashboard (no TUI)
 llmux &lt;group&gt; &lt;command&gt;    # headless control
 llmux &lt;alias&gt;              # top-level shortcut (see below)
 llmux --version            # print the installed version and exit</code></pre>
@@ -99,13 +100,17 @@ llmux --version            # print the installed version and exit</code></pre>
         </tr>
         <tr>
           <td><em>(top-level)</em></td>
-          <td><code>tui</code> · <code>gpu</code> · <code>env-check</code> · <code>up</code> · <code>down</code> · <code>logs</code> · <code>ps</code> · <code>bench</code> · <code>stats</code> · <code>render-env</code></td>
+          <td><code>tui</code> · <code>top</code> · <code>gpu</code> · <code>env-check</code> · <code>up</code> · <code>down</code> · <code>logs</code> · <code>ps</code> · <code>bench</code> · <code>stats</code> · <code>render-env</code></td>
           <td><code>tui/cli/__init__.py</code></td>
         </tr>
       </tbody>
     </table>
 
     <h2 id="common-concepts">Common concepts</h2>
+
+    <h3 id="top"><code>top</code></h3>
+    <p>A plain-text, auto-refreshing dashboard — profiles, status, live tok/s, and a GPU bar — rendered without the Textual TUI. Good for low-bandwidth SSH, dumb terminals, or a quick glance. Press <kbd>q</kbd> or Ctrl+C to exit. The same view is reachable from inside the TUI with the <kbd>t</kbd> key.</p>
+    <pre data-lang="text"><code>llmux top</code></pre>
 
     <h3 id="backend-detection">Backend detection</h3>
     <p>Most commands take a <strong>profile name</strong> and resolve its backend (<code>vllm</code> or <code>llamacpp</code>) automatically by scanning <code>profiles.yaml</code>:</p>

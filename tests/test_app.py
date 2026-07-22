@@ -500,3 +500,25 @@ class VersionScreenEnterTests(unittest.IsolatedAsyncioTestCase):
                 # Empty custom tag → don't start, focus the input.
                 self.assertEqual(called, [])
                 self.assertIs(app.focused, screen.query_one("#custom-tag-input", Input))
+
+
+class PlainModeToggleTests(unittest.IsolatedAsyncioTestCase):
+    """The `t` key suspends the TUI, runs the plain dashboard, then reloads."""
+
+    async def test_plain_mode_suspends_runs_and_reloads(self) -> None:
+        import contextlib
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from tui.screens.dashboard import DashboardScreen
+
+        with patch("tui.common.docker.running_container_names", AsyncMock(return_value=set())), \
+            patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=[])), \
+            patch("tui.common.plain_dashboard.run_plain_dashboard", AsyncMock()) as run, \
+            patch("tui.app.LlmuxApp.suspend", lambda self: contextlib.nullcontext()):
+            app = LlmuxApp()
+            async with app.run_test(size=WIDE) as pilot:
+                await pilot.pause()
+                dash = next(s for s in app.screen_stack if isinstance(s, DashboardScreen))
+                dash._reload = MagicMock()
+                await dash.action_plain_mode()
+                run.assert_awaited_once()
+                dash._reload.assert_called_once()
