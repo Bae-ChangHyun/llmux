@@ -42,6 +42,7 @@ the TUI (intended for humans).
 - **Parity rules:**
   - **TUI ⇄ CLI parity** — any feature added to one interface belongs in the other.
   - **vLLM ⇄ llama.cpp parity** — features should land on both backends unless the asymmetry is deliberate and documented.
+  - **Deliberate asymmetry:** the live monitor (`v` on a running row) is TUI-only — a btop-style visual view doesn't map to a shell command. The scriptable equivalent is `llmux stats --json`. Don't add a CLI monitor to "restore parity".
 
 ## Per-developer notes
 

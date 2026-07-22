@@ -65,6 +65,7 @@ class ProfileActionScreen(ModalScreen[str]):
         # offered in both states — matching the `l` binding on the dashboard.
         options.append(Option(t("◉ View Logs", "◉ 로그 보기"), id="logs"))
         if self._profile_running:
+            options.append(Option(t("📊 Monitor", "📊 모니터"), id="monitor"))
             options.append(Option(t("⚡ Benchmark", "⚡ 벤치마크"), id="benchmark"))
         options.append(Option(t("✎ Edit Profile", "✎ 프로필 편집"), id="edit_profile"))
         options.append(Option(t("⚙ Edit Config", "⚙ Config 편집"), id="edit_config"))

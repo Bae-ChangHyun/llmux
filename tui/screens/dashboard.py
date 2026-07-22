@@ -55,6 +55,7 @@ class DashboardScreen(Screen):
         Binding("u", "start_container", show=False),
         Binding("d", "stop_container", show=False),
         Binding("l", "view_logs", show=False),
+        Binding("v", "monitor", show=False),
         Binding("e", "edit_profile", show=False),
         Binding("c", "edit_config", show=False),
         Binding("x", "delete_profile", show=False),
@@ -442,6 +443,9 @@ class DashboardScreen(Screen):
 
             p = vbackend.load_profile(name)
             self.app.push_screen(LogScreen(p.container_name))
+        elif action == "monitor":
+            from tui.screens.monitor import MonitorScreen
+            self.app.push_screen(MonitorScreen(row))
         elif action == "benchmark":
             self._run_vllm_bench(row)
         elif action == "edit_profile":
@@ -549,6 +553,9 @@ class DashboardScreen(Screen):
             from tui.backends.llamacpp.screens.dashboard import LogViewer
 
             self.app.push_screen(LogViewer(profile.container_name))
+        elif action == "monitor":
+            from tui.screens.monitor import MonitorScreen
+            self.app.push_screen(MonitorScreen(row))
         elif action == "benchmark":
             self._run_llamacpp_bench(profile)
         elif action == "edit-config":
@@ -662,6 +669,21 @@ class DashboardScreen(Screen):
             self._dispatch_llamacpp(
                 "logs", row, lbackend.load_profile(row.profile_name)
             )
+
+    def action_monitor(self) -> None:
+        row = self._selected_row()
+        if row is None:
+            return
+        if not row.running:
+            self.notify(
+                t("Monitor is only for running containers.",
+                  "모니터는 실행 중인 컨테이너만 볼 수 있습니다."),
+                severity="warning",
+            )
+            return
+        from tui.screens.monitor import MonitorScreen
+
+        self.app.push_screen(MonitorScreen(row))
 
     def action_edit_profile(self) -> None:
         row = self._selected_row()
@@ -806,6 +828,7 @@ class DashboardScreen(Screen):
                 "[b]Dashboard[/b]\n"
                 "  Enter   action menu\n"
                 "  u/d/l   start/stop/logs\n"
+                "  v       live monitor (running)\n"
                 "  e/c/x   edit profile/config, delete\n"
                 "  R       rename profile\n"
                 "  C       config list (clone/rename/edit/delete)\n"
@@ -814,6 +837,7 @@ class DashboardScreen(Screen):
                 "[b]대시보드[/b]\n"
                 "  Enter   작업 메뉴\n"
                 "  u/d/l   시작/중지/로그\n"
+                "  v       라이브 모니터 (실행 중)\n"
                 "  e/c/x   프로필/config 편집, 삭제\n"
                 "  R       프로필 이름변경\n"
                 "  C       config 목록 (복제/이름변경/편집/삭제)\n"
