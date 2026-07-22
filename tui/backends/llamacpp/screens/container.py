@@ -55,6 +55,10 @@ class ContainerUpScreen(Screen):
         Binding("escape", "cancel", "Cancel", show=False),
         Binding("q", "cancel", "Quit", show=False),
         Binding("f", "toggle_follow", t("Follow on/off", "자동 스크롤")),
+        # Enter picks the highlighted version and starts, so you don't have to
+        # tab to the Start button. Priority so it fires even while the RadioSet
+        # (which would otherwise consume Enter to just toggle) is focused.
+        Binding("enter", "confirm_start", t("Start", "시작"), priority=True),
     ]
 
     DEFAULT_CSS = """
@@ -195,8 +199,8 @@ class ContainerUpScreen(Screen):
                 yield Label(t("Version", "버전"), id="version-label")
                 yield Static(
                     t(
-                        "[dim]Click or use ↑↓ + Enter/Space to select[/dim]",
-                        "[dim]클릭 또는 ↑↓ + Enter/Space 로 선택[/dim]",
+                        "[dim]↑↓ to choose · Enter to start · Esc to cancel[/dim]",
+                        "[dim]↑↓ 선택 · Enter 로 시작 · Esc 취소[/dim]",
                     ),
                     id="version-help",
                 )
@@ -332,6 +336,33 @@ class ContainerUpScreen(Screen):
     def action_cancel(self) -> None:
         self._cleanup()
         self.app.pop_screen()
+
+    def action_confirm_start(self) -> None:
+        """Enter: commit the highlighted version and start (see the vLLM screen)."""
+        try:
+            if str(self.query_one("#version-scroll").styles.display) == "none":
+                return
+            radio_set = self.query_one("#version-radio", RadioSet)
+        except Exception:
+            return
+        sel = getattr(radio_set, "_selected", None)
+        if sel is not None:
+            try:
+                btn = radio_set._nodes[sel]
+            except (IndexError, AttributeError, TypeError):
+                btn = None
+            if isinstance(btn, RadioButton) and not btn.disabled and not btn.value:
+                btn.value = True
+        pressed = radio_set.pressed_button
+        if pressed is None:
+            return
+        if pressed.id == VER_CUSTOM and not self.query_one("#custom-tag-input", Input).value.strip():
+            self.query_one("#custom-tag-input", Input).focus()
+            return
+        if pressed.id == VER_DEV and not self.query_one("#dev-repo-input", Input).value.strip():
+            self.query_one("#dev-repo-input", Input).focus()
+            return
+        self._do_start()
 
     @on(Button.Pressed, "#start-btn")
     def _on_start(self) -> None:
