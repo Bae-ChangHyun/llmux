@@ -74,7 +74,6 @@ class ActionModal(ModalScreen[str]):
         options.append(Option(t("✎ Edit Profile", "✎ 프로필 편집"), id="edit-profile"))
         options.append(Option(t("⚙ Edit Config", "⚙ Config 편집"), id="edit-config"))
         if not running:
-            options.append(Option(t("⇄ Rename Profile", "⇄ 프로필 이름변경"), id="rename-profile"))
             options.append(Option(t("✗ Delete Profile", "✗ 프로필 삭제"), id="delete-profile"))
 
         with Vertical():

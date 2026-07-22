@@ -9,7 +9,7 @@ from tui.common.adapter import DashboardRow
 class VllmAdapter:
     name = "vllm"
     display_name = "vLLM"
-    accent_color = "#7c3aed"   # purple-600
+    accent_color = "#4c8dff"   # blue
 
     def rows(self, running: set[str]) -> list[DashboardRow]:
         out: list[DashboardRow] = []

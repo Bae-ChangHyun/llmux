@@ -29,7 +29,7 @@ from tui.common.http import list_served_models, run_bench
 from tui.common.i18n import t
 from tui.common.mem import estimate_model_memory
 from tui.common.metrics import ThroughputTracker, fetch_token_counters
-from tui.common.widgets import BackendPickerModal, ConfirmModal, TextPromptModal
+from tui.common.widgets import BackendPickerModal, ConfirmModal
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,6 @@ class DashboardScreen(Screen):
         Binding("e", "edit_profile", show=False),
         Binding("c", "edit_config", show=False),
         Binding("x", "delete_profile", show=False),
-        Binding("R", "rename_profile", show=False),
         Binding("escape", "hide_mem_search", show=False),
         Binding("question_mark", "help", show=False),
     ]
@@ -98,7 +97,7 @@ class DashboardScreen(Screen):
     def on_mount(self) -> None:
         table = self.query_one("#profile-table", DataTable)
         self._col_keys = table.add_columns(
-            "Backend", "Profile", "Status", "Port", "tok/s", "Model", "Detail"
+            "Status", "Backend", "Profile", "Port", "tok/s", "Model", "Detail"
         )
         # tok/s is column index 4 — kept as a key so live updates can address
         # the cell without re-rendering the whole table.
@@ -201,14 +200,14 @@ class DashboardScreen(Screen):
         v_total = sum(1 for r in rows if r.backend == "vllm")
         l_total = sum(1 for r in rows if r.backend == "llamacpp")
         status_bar.update(
-            f" [magenta]vLLM[/] {v_run}/{v_total}  ·  "
+            f" [#4c8dff]vLLM[/] {v_run}/{v_total}  ·  "
             f"[green]llama.cpp[/] {l_run}/{l_total}  ·  "
             + t("[dim]Enter = actions[/dim]", "[dim]Enter = 작업 메뉴[/dim]")
         )
 
         for r in rows:
             backend_cell = (
-                "[magenta]vLLM[/]" if r.backend == "vllm" else "[green]llama.cpp[/]"
+                "[#4c8dff]vLLM[/]" if r.backend == "vllm" else "[green]llama.cpp[/]"
             )
             if r.running:
                 status_cell = "[green]● running[/]"
@@ -220,9 +219,9 @@ class DashboardScreen(Screen):
             key = f"{r.backend}:{r.profile_name}"
             tps_cell = self._tps.get(key, "—") if r.running else "—"
             table.add_row(
+                status_cell,
                 backend_cell,
                 r.profile_name,
-                status_cell,
                 port_cell,
                 tps_cell,
                 model_short,
@@ -461,8 +460,6 @@ class DashboardScreen(Screen):
             self.app.push_screen(
                 ConfigFormScreen(config_name=cfg), self._after_mutation
             )
-        elif action == "rename_profile":
-            self.action_rename_profile()
         elif action == "delete":
             if row.running:
                 self.notify(
@@ -568,8 +565,6 @@ class DashboardScreen(Screen):
             from tui.backends.llamacpp.screens.profile import ProfileFormScreen
 
             self.app.push_screen(ProfileFormScreen(profile), self._after_mutation)
-        elif action == "rename-profile":
-            self.action_rename_profile()
         elif action == "delete-profile":
             from tui.backends.llamacpp.screens.profile import ProfileDeleteScreen
 
@@ -707,49 +702,6 @@ class DashboardScreen(Screen):
                 "edit-config", row, lbackend.load_profile(row.profile_name)
             )
 
-    def action_rename_profile(self) -> None:
-        row = self._selected_row()
-        if row is None:
-            return
-        if row.running:
-            self.notify(
-                t("Cannot rename: container running. Stop first.",
-                  "이름 변경 불가: 컨테이너가 실행 중입니다. 먼저 중지하세요."),
-                severity="error",
-            )
-            return
-
-        def after(new_name: str | None) -> None:
-            if not new_name or new_name == row.profile_name:
-                return
-            from tui.common import profile_store
-
-            try:
-                renamed = profile_store.rename_profile(
-                    row.profile_name, new_name, row.backend
-                )
-            except ValueError as exc:
-                self.notify(str(exc), severity="error")
-                return
-            self.notify(
-                t(
-                    f"Renamed '{row.profile_name}' → '{new_name}' "
-                    f"(config: {renamed.config_name or renamed.name})",
-                    f"이름 변경: '{row.profile_name}' → '{new_name}' "
-                    f"(config: {renamed.config_name or renamed.name})",
-                )
-            )
-            self._after_mutation(None)
-
-        self.app.push_screen(
-            TextPromptModal(
-                t(f"Rename profile '{row.profile_name}' to:",
-                  f"프로필 '{row.profile_name}' 의 새 이름:"),
-                default=row.profile_name,
-            ),
-            after,
-        )
-
     def action_delete_profile(self) -> None:
         row = self._selected_row()
         if row is None:
@@ -830,7 +782,6 @@ class DashboardScreen(Screen):
                 "  u/d/l   start/stop/logs\n"
                 "  v       live monitor (running)\n"
                 "  e/c/x   edit profile/config, delete\n"
-                "  R       rename profile\n"
                 "  C       config list (clone/rename/edit/delete)\n"
                 "  m       estimate model memory\n"
                 "  n s r q new/system/refresh/quit",
@@ -839,7 +790,6 @@ class DashboardScreen(Screen):
                 "  u/d/l   시작/중지/로그\n"
                 "  v       라이브 모니터 (실행 중)\n"
                 "  e/c/x   프로필/config 편집, 삭제\n"
-                "  R       프로필 이름변경\n"
                 "  C       config 목록 (복제/이름변경/편집/삭제)\n"
                 "  m       모델 메모리 추정\n"
                 "  n s r q 새로/시스템/새로고침/종료",
