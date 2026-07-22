@@ -78,7 +78,7 @@ llmux는 이 둘을 Docker Compose 위의 Textual 대시보드 하나로 묶습�
 - **실제 이미지에서 뽑은 플래그 자동완성** &mdash; config 편집기가 지금 쓰는 `vllm serve` / `llama-server` 이미지의 실제 플래그 목록에서 이름을 자동완성합니다. 한 번 추출해 버전별로 캐시하므로, 제안이 실제로 띄우는 엔진 빌드와 정확히 맞습니다.
 - **실시간 처리량 + 벤치마크** &mdash; 각 컨테이너의 `/metrics`에서 생성 tok/s를 실시간으로 읽고(`llmux stats`), warmup + 중앙값 벤치마크(`llmux bench`)로 같은 하드웨어에서 quant A와 B를 비교합니다.
 - **btop 스타일 라이브 모니터** &mdash; 실행 중인 모델에서 `v`를 누르면 전체 화면 상세 뷰가 뜹니다. 처리량 스파크라인, 요청 큐, KV 캐시 사용률, 지연, GPU별 util/mem/temp/power를 1초마다 갱신합니다. 두 엔진 모두 지원.
-- **일반 터미널 대시보드** &mdash; TUI에서 `t`를 누르거나 `llmux top`을 실행하면 Textual 없이 자동 갱신되는 텍스트 대시보드로 전환됩니다. 저대역 SSH나 단순 터미널에 좋고, `q`로 TUI에 돌아옵니다.
+- **일반 터미널 모니터** &mdash; `v` 모니터를 Textual 없이: `llmux top <프로필>`(또는 실행 중인 행에서 `t`)로 같은 처리량 / 큐 / KV 캐시 / 지연 / GPU 뷰를 자동 갱신되는 터미널 페이지로 봅니다. 저대역 SSH나 단순 터미널에 좋고, `q`로 나갑니다.
 - **멀티 GPU** &mdash; vLLM 프로필을 `tensor_parallel_size`로 GPU에 분할합니다. GPU 목록에서 자동으로 도출하거나 직접 지정합니다.
 - **LoRA 어댑터** &mdash; 호스트 디렉터리의 LoRA 모듈을 마운트해 vLLM 베이스 모델에 얹어 서빙합니다.
 - **GGUF 자동 다운로드** &mdash; llama.cpp가 첫 실행 때 `-hf`/`-hff`로 GGUF를 HF 캐시에 바로 받습니다. 별도의 `hf download`나 `models/` 연결이 없습니다.

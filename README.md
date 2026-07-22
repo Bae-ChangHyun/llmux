@@ -78,7 +78,7 @@ llmux unifies both under a single Textual dashboard backed by Docker Compose.
 - **Flag autocomplete from your actual image** &mdash; The config editor completes flag names from the real `vllm serve` / `llama-server` flag set of the image you're running (extracted once and cached per version), so suggestions match the engine build you actually launch.
 - **Live throughput + benchmarks** &mdash; Real-time generation tok/s from each container's `/metrics` (`llmux stats`), plus a warmup + median benchmark (`llmux bench`) to compare quant A against quant B on the same hardware.
 - **btop-style live monitor** &mdash; Press `v` on a running model for a full-screen detail view: throughput sparklines, request queue, KV-cache usage, latency, and per-GPU util/mem/temp/power — refreshed every second, for both engines.
-- **Plain terminal fallback** &mdash; Press `t` in the TUI (or run `llmux top`) for a plain-text, auto-refreshing dashboard — no Textual, so it's fine over low-bandwidth SSH or on dumb terminals. `q` returns to the TUI.
+- **Plain terminal monitor** &mdash; The `v` monitor without the Textual UI: `llmux top <profile>` (or `t` on a running row) renders the same throughput / queue / KV-cache / latency / GPU view as an auto-refreshing plain-terminal page — good for low-bandwidth SSH or dumb terminals. `q` exits.
 - **Multi-GPU** &mdash; vLLM profiles shard across GPUs by `tensor_parallel_size`, derived from the GPU list or set explicitly.
 - **LoRA adapters** &mdash; Serve a vLLM base model with LoRA modules mounted from a host directory.
 - **GGUF auto-download** &mdash; llama.cpp pulls the GGUF on first start (`-hf`/`-hff`) straight into your HF cache — no separate `hf download` or `models/` wiring.
