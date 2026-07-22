@@ -36,7 +36,10 @@ def _bar(ratio: float | None, width: int = 24, color: str = "cyan") -> str:
 
 class MonitorScreen(Screen):
     BINDINGS = [
-        Binding("escape,q", "go_back", t("Back", "뒤로")),
+        # `q` leads so the footer advertises the same back key as the other
+        # view screens (logs); Esc still works as a hidden alternate.
+        Binding("q", "go_back", t("Back", "뒤로")),
+        Binding("escape", "go_back", show=False),
     ]
 
     def __init__(self, row: DashboardRow) -> None:
