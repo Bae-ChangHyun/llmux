@@ -13,8 +13,9 @@ label-set line for a given counter (vLLM labels its counters by model name).
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
+import math
 import urllib.request
 
 log = logging.getLogger(__name__)
@@ -29,37 +30,103 @@ _GENERATION_PREFIXES = (
     "llamacpp:tokens_predicted_total",
 )
 
-# Extra live-monitor metrics. Counters/gauges: match the metric name exactly and
-# sum every label-set line. Both engines name the same concept differently, so
-# each field lists both. Absent families stay None (server without that metric).
+# Live-monitor counter/gauge fields. Each maps to the metric-name families that
+# express the same concept; llama.cpp and vLLM name them differently, and vLLM
+# has renamed some across releases (kv_cache_usage_perc ← gpu_cache_usage_perc).
+# The first family seen for a field wins, so a server exposing both the old and
+# new name never double-counts; within one family, label sets are summed.
 _COUNTER_GAUGE_FIELDS: dict[str, tuple[str, ...]] = {
     "prompt_tokens": _PROMPT_PREFIXES,
     "generation_tokens": _GENERATION_PREFIXES,
     "requests_running": ("vllm:num_requests_running", "llamacpp:requests_processing"),
     "requests_waiting": ("vllm:num_requests_waiting", "llamacpp:requests_deferred"),
-    "kv_cache_usage": ("vllm:gpu_cache_usage_perc", "llamacpp:kv_cache_usage_ratio"),
+    "kv_cache_usage": (
+        "vllm:kv_cache_usage_perc",
+        "vllm:gpu_cache_usage_perc",
+        "llamacpp:kv_cache_usage_ratio",
+    ),
+    "prefix_hits": ("vllm:prefix_cache_hits_total",),
+    "prefix_queries": ("vllm:prefix_cache_queries_total",),
+    "ext_prefix_hits": ("vllm:external_prefix_cache_hits_total",),
+    "ext_prefix_queries": ("vllm:external_prefix_cache_queries_total",),
+    "preemptions": ("vllm:num_preemptions_total",),
+    "requests_finished": ("vllm:request_success_total",),
+    "prompt_tps_gauge": ("llamacpp:prompt_tokens_seconds",),
+    "gen_tps_gauge": ("llamacpp:predicted_tokens_seconds",),
 }
-# Histogram bases (vLLM only). avg = _sum / _count. `_bucket` lines are ignored.
-_HISTOGRAM_BASES: dict[str, str] = {
-    "ttft": "vllm:time_to_first_token_seconds",
-    "tpot": "vllm:time_per_output_token_seconds",
+
+# Histogram fields → the metric bases that feed them. `inter_token_latency` is
+# the current vLLM per-output-token histogram; `time_per_output_token` is its
+# older name. vLLM only — llama.cpp exposes no latency histograms.
+_HISTOGRAM_BASES: dict[str, tuple[str, ...]] = {
+    "ttft": ("vllm:time_to_first_token_seconds",),
+    "e2e": ("vllm:e2e_request_latency_seconds",),
+    "tpot": ("vllm:inter_token_latency_seconds", "vllm:time_per_output_token_seconds"),
+    "queue": ("vllm:request_queue_time_seconds",),
+    "prefill": ("vllm:request_prefill_time_seconds",),
+    "decode": ("vllm:request_decode_time_seconds",),
+    "infer": ("vllm:request_inference_time_seconds",),
 }
 
 
 @dataclass
-class ServerMetrics:
-    """A single /metrics snapshot. Every field is None when the engine doesn't
-    expose that family (e.g. llama.cpp has no TTFT/TPOT histograms)."""
+class Hist:
+    """One Prometheus histogram, summed across label sets."""
 
+    sum: float = 0.0
+    count: float = 0.0
+    buckets: dict[float, float] = field(default_factory=dict)  # le → cumulative
+
+    def avg(self) -> float | None:
+        return self.sum / self.count if self.count > 0 else None
+
+    def quantile(self, q: float) -> float | None:
+        """Approximate the q-quantile (0..1) from cumulative buckets, Prometheus
+        `histogram_quantile` style with linear interpolation inside the bucket."""
+        if self.count <= 0 or not self.buckets:
+            return None
+        ordered = sorted(self.buckets.items())  # by le; math.inf sorts last
+        target = q * self.count
+        prev_le, prev_c = 0.0, 0.0
+        for le, cum in ordered:
+            if cum >= target:
+                if math.isinf(le):
+                    return prev_le or None
+                span = cum - prev_c
+                if span <= 0:
+                    return le
+                return prev_le + (le - prev_le) * (target - prev_c) / span
+            prev_le, prev_c = le, cum
+        return prev_le or None
+
+
+@dataclass
+class MetricsSnapshot:
+    """A single /metrics snapshot. Every field stays None when the engine does
+    not expose that family (e.g. llama.cpp has no latency histograms, no prefix
+    cache breakdown, no preemption counter)."""
+
+    backend: str = "unknown"                 # "vllm" | "llamacpp" | "unknown"
     prompt_tokens: float | None = None       # cumulative counter
     generation_tokens: float | None = None   # cumulative counter
     requests_running: float | None = None    # gauge
     requests_waiting: float | None = None    # gauge
-    kv_cache_usage: float | None = None       # gauge, 0..1
-    ttft_sum: float | None = None            # histogram sum (seconds)
-    ttft_count: float | None = None
-    tpot_sum: float | None = None
-    tpot_count: float | None = None
+    kv_cache_usage: float | None = None      # gauge, 0..1
+    prefix_hits: float | None = None         # counter (tokens)
+    prefix_queries: float | None = None      # counter (tokens)
+    ext_prefix_hits: float | None = None     # counter (tokens)
+    ext_prefix_queries: float | None = None  # counter (tokens)
+    preemptions: float | None = None         # counter
+    requests_finished: float | None = None   # counter (request_success_total)
+    prompt_tps_gauge: float | None = None    # llama.cpp reports tok/s directly
+    gen_tps_gauge: float | None = None
+    ttft: Hist | None = None
+    e2e: Hist | None = None
+    tpot: Hist | None = None
+    queue: Hist | None = None
+    prefill: Hist | None = None
+    decode: Hist | None = None
+    infer: Hist | None = None
 
     def token_counters(self) -> tuple[float, float] | None:
         if self.prompt_tokens is None and self.generation_tokens is None:
@@ -81,39 +148,81 @@ def _metric_value(line: str) -> float | None:
         return None
 
 
-def parse_server_metrics(text: str) -> ServerMetrics:
-    """Parse the live-monitor fields out of a Prometheus exposition body.
+def _bucket_le(line: str) -> float | None:
+    """Extract the `le` label from a histogram `_bucket` line, or None."""
+    lo = line.find('le="')
+    if lo < 0:
+        return None
+    lo += 4
+    hi = line.find('"', lo)
+    if hi < 0:
+        return None
+    token = line[lo:hi]
+    try:
+        return math.inf if token in ("+Inf", "Inf") else float(token)
+    except ValueError:
+        return None
 
-    Fields absent from the body stay None. Counter/gauge values are summed
-    across label sets; histogram `_sum`/`_count` are summed separately so the
-    caller can derive a per-window average from successive samples.
+
+def parse_snapshot(text: str) -> MetricsSnapshot:
+    """Parse a full monitor snapshot out of a Prometheus exposition body.
+
+    Counter/gauge fields are summed across label sets (first-seen family wins).
+    Histograms accumulate `_sum`, `_count`, and every `_bucket{le=…}` so the
+    caller can derive both window averages and quantiles.
     """
-    sums: dict[str, float] = {}
-    seen: set[str] = set()
+    cg: dict[str, float] = {}
+    chosen: dict[str, str] = {}   # field → the family name that first matched it
+    hists: dict[str, Hist] = {}
+    backend = "unknown"
+
     for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         name = _metric_name(line)
+        if backend == "unknown":
+            if name.startswith("vllm:"):
+                backend = "vllm"
+            elif name.startswith("llamacpp:"):
+                backend = "llamacpp"
 
-        for field, prefixes in _COUNTER_GAUGE_FIELDS.items():
-            if name in prefixes:
+        for fld, families in _COUNTER_GAUGE_FIELDS.items():
+            if name in families:
+                if chosen.get(fld, name) != name:
+                    break  # a different family already owns this field
                 value = _metric_value(line)
                 if value is not None:
-                    sums[field] = sums.get(field, 0.0) + value
-                    seen.add(field)
+                    chosen[fld] = name
+                    cg[fld] = cg.get(fld, 0.0) + value
                 break
         else:
-            for field, base in _HISTOGRAM_BASES.items():
-                if name == f"{base}_sum" or name == f"{base}_count":
-                    value = _metric_value(line)
-                    if value is not None:
-                        key = f"{field}_sum" if name.endswith("_sum") else f"{field}_count"
-                        sums[key] = sums.get(key, 0.0) + value
-                        seen.add(key)
+            for fld, bases in _HISTOGRAM_BASES.items():
+                matched = False
+                for base in bases:
+                    if name == f"{base}_sum":
+                        value = _metric_value(line)
+                        if value is not None:
+                            hists.setdefault(fld, Hist()).sum += value
+                        matched = True
+                    elif name == f"{base}_count":
+                        value = _metric_value(line)
+                        if value is not None:
+                            hists.setdefault(fld, Hist()).count += value
+                        matched = True
+                    elif name == f"{base}_bucket":
+                        le = _bucket_le(line)
+                        value = _metric_value(line)
+                        if le is not None and value is not None:
+                            b = hists.setdefault(fld, Hist()).buckets
+                            b[le] = b.get(le, 0.0) + value
+                        matched = True
+                    if matched:
+                        break
+                if matched:
                     break
 
-    return ServerMetrics(**{k: sums[k] for k in seen})
+    return MetricsSnapshot(backend=backend, **cg, **hists)
 
 
 def parse_token_counters(text: str) -> tuple[float, float] | None:
@@ -186,13 +295,13 @@ async def fetch_token_counters(
     return await loop.run_in_executor(None, _do)
 
 
-async def fetch_server_metrics(
+async def fetch_snapshot(
     port: int | str, timeout: int = 2
-) -> ServerMetrics | None:
-    """GET /metrics → ServerMetrics, or None if the server is unreachable."""
+) -> MetricsSnapshot | None:
+    """GET /metrics → MetricsSnapshot, or None if the server is unreachable."""
     loop = asyncio.get_running_loop()
 
-    def _do() -> ServerMetrics | None:
+    def _do() -> MetricsSnapshot | None:
         try:
             with urllib.request.urlopen(
                 f"http://localhost:{port}/metrics", timeout=timeout
@@ -200,11 +309,11 @@ async def fetch_server_metrics(
                 body = r.read().decode(errors="replace")
         except Exception as exc:
             log.debug(
-                "fetch_server_metrics(%s) failed: %s: %s",
+                "fetch_snapshot(%s) failed: %s: %s",
                 port, type(exc).__name__, exc,
             )
             return None
-        return parse_server_metrics(body)
+        return parse_snapshot(body)
 
     return await loop.run_in_executor(None, _do)
 

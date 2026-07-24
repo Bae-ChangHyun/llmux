@@ -667,39 +667,21 @@ class DashboardScreen(Screen):
             )
 
     async def action_plain_mode(self) -> None:
-        """Suspend the Textual UI and show the btop-style monitor for the
-        selected running model in the normal terminal (for low-bandwidth SSH or
-        dumb terminals). Same metrics as the `v` monitor; returns on exit."""
+        """Suspend the Textual UI and show the btop-style monitor in the normal
+        terminal (for low-bandwidth SSH or dumb terminals). System-wide: GPUs
+        always, plus every running model — a stopped row just means no focus."""
         row = self._selected_row()
-        if row is None:
-            return
-        if not row.running:
-            self.notify(
-                t("Terminal monitor is only for running containers.",
-                  "터미널 모니터는 실행 중인 컨테이너만 볼 수 있습니다."),
-                severity="warning",
-            )
-            return
         from tui.common.plain_monitor import run_plain_monitor
 
+        focus = row.profile_name if row is not None and row.running else None
         with self.app.suspend():
-            await run_plain_monitor(row)
+            await run_plain_monitor(focus)
         self._reload()
 
     def action_monitor(self) -> None:
-        row = self._selected_row()
-        if row is None:
-            return
-        if not row.running:
-            self.notify(
-                t("Monitor is only for running containers.",
-                  "모니터는 실행 중인 컨테이너만 볼 수 있습니다."),
-                severity="warning",
-            )
-            return
         from tui.screens.monitor import MonitorScreen
 
-        self.app.push_screen(MonitorScreen(row))
+        self.app.push_screen(MonitorScreen(self._selected_row()))
 
     def action_edit_profile(self) -> None:
         row = self._selected_row()

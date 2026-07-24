@@ -97,7 +97,7 @@ llmux tui      # explicit</code></pre>
         <tr><td><kbd>u</kbd></td><td>Start container</td><td>Power-user shortcut (hidden from footer)</td></tr>
         <tr><td><kbd>d</kbd></td><td>Stop container</td><td>Power-user shortcut</td></tr>
         <tr><td><kbd>l</kbd></td><td>View logs</td><td>Works for stopped containers too (last-run logs)</td></tr>
-        <tr><td><kbd>v</kbd></td><td>Live monitor</td><td>Running containers only &mdash; btop-style detail view (throughput, queue, KV cache, GPU)</td></tr>
+        <tr><td><kbd>v</kbd></td><td>Live monitor</td><td>Running containers only &mdash; btop-style detail view (throughput/KV graphs, cache-hit, latency percentiles, GPU + PCIe)</td></tr>
         <tr><td><kbd>e</kbd></td><td>Edit profile</td><td>Power-user shortcut</td></tr>
         <tr><td><kbd>c</kbd></td><td>Edit config</td><td>Power-user shortcut</td></tr>
         <tr><td><kbd>x</kbd></td><td>Delete profile</td><td>Stopped containers only</td></tr>
@@ -146,16 +146,17 @@ llmux tui      # explicit</code></pre>
     <h2 id="live-monitor">Live monitor</h2>
     <p>Press <kbd>v</kbd> on a running profile (or pick <strong>📊 Monitor</strong> from the action menu) to open a full-screen, btop-style detail view for that one model. It polls the server's <code>/metrics</code> and <code>nvidia-smi</code> once a second and shows:</p>
     <ul>
-      <li><strong>Throughput</strong> — generation and prompt tok/s, each as a live sparkline;</li>
-      <li><strong>Requests</strong> — running and waiting (queue depth);</li>
-      <li><strong>KV cache</strong> — cache utilization as a percentage bar;</li>
-      <li><strong>Latency</strong> — TTFT and per-token time (vLLM; llama.cpp shows <code>—</code> where it doesn't expose the histogram);</li>
-      <li><strong>GPU</strong> — utilization, memory, temperature, and power for the profile's GPUs.</li>
+      <li><strong>Throughput</strong> — generation and prompt tok/s as a braille graph, with current and peak;</li>
+      <li><strong>KV cache</strong> — utilization trend as a braille graph, current and peak;</li>
+      <li><strong>Requests</strong> — running, waiting, completions/s, and preemptions;</li>
+      <li><strong>Cache hit</strong> — KV, prefix, and external prefix hit rate as heat bars (vLLM; llama.cpp shows KV only);</li>
+      <li><strong>Latency</strong> — TTFT and E2E percentiles (p50/p95/p99) from the histograms, plus TPOT, queue, and prefill/decode/inference phases (vLLM; llama.cpp shows <code>—</code> where it exposes no histogram);</li>
+      <li><strong>GPU</strong> — utilization, memory, temperature, power, and PCIe rx/tx as heat bars for the profile's GPUs.</li>
     </ul>
-    <p>Both backends work — the differing Prometheus metric names are matched by family. The monitor is TUI-only; for a scriptable snapshot use <code>llmux stats --json</code>. Press <kbd>Esc</kbd> or <kbd>q</kbd> to go back.</p>
+    <p>Both backends work — the differing Prometheus metric names are matched by family, and any metric a backend doesn't expose reads <code>—</code> rather than a made-up value. Keys: <kbd>p</kbd> pause, <kbd>r</kbd> reset peaks, <kbd>+</kbd>/<kbd>-</kbd> poll interval, <kbd>l</kbd> language, <kbd>Esc</kbd>/<kbd>q</kbd> back.</p>
 
     <h2 id="plain-terminal">Terminal monitor (plain)</h2>
-    <p>Press <kbd>t</kbd> on a running model to suspend the Textual UI and open the same <a href="#live-monitor">monitor</a> — throughput sparklines, request queue, KV-cache usage, latency, and GPU bars — as a plain-terminal page in your normal terminal, auto-refreshing every second. No Textual rendering, so it holds up over low-bandwidth SSH or on terminals that render the TUI poorly. Press <kbd>q</kbd> (or Ctrl+C) to return.</p>
+    <p>Press <kbd>t</kbd> on a running model to suspend the Textual UI and open the same <a href="#live-monitor">monitor</a> — the same braille graphs, cache-hit, latency percentiles, and GPU/PCIe panels — as a plain-terminal page in your normal terminal, auto-refreshing every second. No Textual rendering, so it holds up over low-bandwidth SSH or on terminals that render the TUI poorly. Same keys; <kbd>q</kbd> (or Ctrl+C) returns.</p>
     <p>The same monitor is available without the TUI at all: <a href="../reference/cli.html#top"><code>llmux top &lt;profile&gt;</code></a>.</p>
 
     <h2 id="quick-setup">Quick Setup</h2>

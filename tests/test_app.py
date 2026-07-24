@@ -383,45 +383,53 @@ class MonitorScreenTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_renders_metrics_and_gpu(self) -> None:
-        from tui.common.metrics import ServerMetrics
+        import io
+        from rich.console import Console
+        from tui.common.metrics import MetricsSnapshot
         from tui.common.docker import GpuInfo
         from tui.screens.monitor import MonitorScreen
         from textual.widgets import Static
 
-        metrics = ServerMetrics(
-            prompt_tokens=100.0, generation_tokens=200.0,
+        snap = MetricsSnapshot(
+            backend="vllm", prompt_tokens=100.0, generation_tokens=200.0,
             requests_running=3.0, requests_waiting=1.0, kv_cache_usage=0.34,
         )
         gpus = [GpuInfo("0", "RTX", "8000", "16000", "78", "71", "210")]
 
-        with patch("tui.common.metrics.fetch_server_metrics",
-                   AsyncMock(return_value=metrics)), \
-            patch("tui.screens.monitor.fetch_server_metrics",
-                  AsyncMock(return_value=metrics)), \
-            patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=gpus)):
+        with patch("tui.common.plain_monitor.fetch_snapshot",
+                   AsyncMock(return_value=snap)), \
+            patch("tui.common.plain_monitor._running_rows",
+                  AsyncMock(return_value=[self._row()])), \
+            patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=gpus)), \
+            patch("tui.common.docker.get_pcie_stats", AsyncMock(return_value={})):
             app = LlmuxApp()
             async with app.run_test(size=WIDE) as pilot:
                 await pilot.pause()
                 screen = MonitorScreen(self._row())
                 await app.push_screen(screen)
-                await pilot.pause()
-                await pilot.pause()
+                for _ in range(30):
+                    await pilot.pause()
+                    if screen._rendered is not None:
+                        break
 
-                kv = screen.query_one("#mon-kv", Static)
-                gpu = screen.query_one("#mon-gpu", Static)
-                req = screen.query_one("#mon-requests", Static)
-                self.assertIn("34%", str(kv.render()))
-                self.assertIn("GPU0", str(gpu.render()))
-                self.assertIn("210W", str(gpu.render()))
-                self.assertIn("3", str(req.render()))
+                con = Console(width=120, file=io.StringIO())
+                con.print(screen._rendered)
+                out = con.file.getvalue()
+                self.assertIn("34%", out)
+                self.assertIn("GPU0", out)
+                self.assertIn("210W", out)
+                self.assertIn("REQUESTS", out)
 
     async def test_unreachable_server_does_not_crash(self) -> None:
         from tui.screens.monitor import MonitorScreen
         from textual.widgets import Static
 
-        with patch("tui.screens.monitor.fetch_server_metrics",
+        with patch("tui.common.plain_monitor.fetch_snapshot",
                    AsyncMock(return_value=None)), \
-            patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=[])):
+            patch("tui.common.plain_monitor._running_rows",
+                  AsyncMock(return_value=[self._row()])), \
+            patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=[])), \
+            patch("tui.common.docker.get_pcie_stats", AsyncMock(return_value={})):
             app = LlmuxApp()
             async with app.run_test(size=WIDE) as pilot:
                 await pilot.pause()
@@ -429,8 +437,35 @@ class MonitorScreenTests(unittest.IsolatedAsyncioTestCase):
                 await app.push_screen(screen)
                 await pilot.pause()
                 await pilot.pause()
-                # Renders the unreachable notice rather than raising.
-                self.assertIsInstance(screen.query_one("#mon-gen-label", Static), Static)
+                # Renders (with unreachable server) rather than raising.
+                self.assertIsInstance(screen.query_one("#mon", Static), Static)
+
+    async def test_opens_with_nothing_running_and_shows_gpu(self) -> None:
+        """`v` must not be gated on a running container — the GPU panel is the
+        whole point of opening the monitor when nothing is up."""
+        import io
+        from rich.console import Console
+        from tui.common.docker import GpuInfo
+        from tui.screens.monitor import MonitorScreen
+
+        gpus = [GpuInfo("0", "RTX", "8000", "16000", "78", "71", "210")]
+        with patch("tui.common.plain_monitor._running_rows", AsyncMock(return_value=[])), \
+            patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=gpus)), \
+            patch("tui.common.docker.get_pcie_stats", AsyncMock(return_value={})):
+            app = LlmuxApp()
+            async with app.run_test(size=WIDE) as pilot:
+                await pilot.pause()
+                screen = MonitorScreen(None)
+                await app.push_screen(screen)
+                for _ in range(30):
+                    await pilot.pause()
+                    if screen._rendered is not None:
+                        break
+                con = Console(width=120, file=io.StringIO())
+                con.print(screen._rendered)
+                out = con.file.getvalue()
+                self.assertIn("GPU0", out)
+                self.assertIn("210W", out)
 
 
 class VersionScreenEnterTests(unittest.IsolatedAsyncioTestCase):

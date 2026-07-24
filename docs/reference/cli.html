@@ -109,7 +109,7 @@ llmux --version            # print the installed version and exit</code></pre>
     <h2 id="common-concepts">Common concepts</h2>
 
     <h3 id="top"><code>top</code></h3>
-    <p>The btop-style monitor for one running model — throughput, request queue, KV-cache usage, latency, and GPU — rendered in a plain terminal without the Textual TUI. Good for low-bandwidth SSH or dumb terminals. Pass a running profile; with none given it auto-picks when exactly one model is running. Press <kbd>q</kbd> or Ctrl+C to exit. The same monitor is reachable inside the TUI with the <kbd>t</kbd> key.</p>
+    <p>The btop-style monitor for one running model — throughput and KV-cache braille graphs, cache-hit, requests, latency percentiles (TTFT/E2E p50/p95/p99, phases), and per-GPU util/mem/temp/power/PCIe — rendered in a plain terminal without the Textual TUI. Good for low-bandwidth SSH or dumb terminals. Pass a running profile; with none given it auto-picks when exactly one model is running. Press <kbd>q</kbd> or Ctrl+C to exit. The same monitor is reachable inside the TUI with the <kbd>t</kbd> key.</p>
     <pre data-lang="text"><code>llmux top &lt;profile&gt;</code></pre>
 
     <h3 id="backend-detection">Backend detection</h3>
