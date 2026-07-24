@@ -62,6 +62,34 @@ async def get_gpu_info() -> list[GpuInfo]:
     return gpus
 
 
+async def get_pcie_stats() -> dict[str, tuple[float, float]]:
+    """gpu index → (rx MB/s, tx MB/s) via `nvidia-smi dmon -c 1 -s t`.
+
+    Empty dict when nvidia-smi is absent or dmon isn't supported. dmon prints a
+    two-line comment header then one row per GPU: `idx rxpci txpci` in MB/s.
+    """
+    rc, out = await run_command(
+        "nvidia-smi", "dmon", "-c", "1", "-s", "t", timeout=5
+    )
+    if rc != 0:
+        return {}
+    stats: dict[str, tuple[float, float]] = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        idx = parts[0]
+        try:
+            rx, tx = float(parts[1]), float(parts[2])
+        except ValueError:
+            continue
+        stats[idx] = (rx, tx)
+    return stats
+
+
 async def running_container_names() -> set[str]:
     """현재 실행 중인 모든 docker container 이름 (backend 무관)."""
     rc, out = await run_command(

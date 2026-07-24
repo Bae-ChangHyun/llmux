@@ -77,8 +77,8 @@ llmux는 이 둘을 Docker Compose 위의 Textual 대시보드 하나로 묶습�
 - **엔진 플래그를 1:1로** &mdash; `config/<backend>/<name>.yaml`이 엔진 플래그에 그대로 대응합니다. 샘플링, context 길이, KV 캐시 정밀도, MoE CPU offload 등. 플래그는 **지우지 않고 켜고 끌 수 있고**, 손으로 쓴 주석도 편집 후 그대로 남습니다.
 - **실제 이미지에서 뽑은 플래그 자동완성** &mdash; config 편집기가 지금 쓰는 `vllm serve` / `llama-server` 이미지의 실제 플래그 목록에서 이름을 자동완성합니다. 한 번 추출해 버전별로 캐시하므로, 제안이 실제로 띄우는 엔진 빌드와 정확히 맞습니다.
 - **실시간 처리량 + 벤치마크** &mdash; 각 컨테이너의 `/metrics`에서 생성 tok/s를 실시간으로 읽고(`llmux stats`), warmup + 중앙값 벤치마크(`llmux bench`)로 같은 하드웨어에서 quant A와 B를 비교합니다.
-- **btop 스타일 라이브 모니터** &mdash; 실행 중인 모델에서 `v`를 누르면 전체 화면 상세 뷰가 뜹니다. 처리량 스파크라인, 요청 큐, KV 캐시 사용률, 지연, GPU별 util/mem/temp/power를 1초마다 갱신합니다. 두 엔진 모두 지원.
-- **일반 터미널 모니터** &mdash; `v` 모니터를 Textual 없이: `llmux top <프로필>`(또는 실행 중인 행에서 `t`)로 같은 처리량 / 큐 / KV 캐시 / 지연 / GPU 뷰를 자동 갱신되는 터미널 페이지로 봅니다. 저대역 SSH나 단순 터미널에 좋고, `q`로 나갑니다.
+- **btop 스타일 라이브 모니터** &mdash; 실행 중인 모델에서 `v`를 누르면 전체 화면 상세 뷰가 뜹니다. 처리량 braille 그래프, KV 캐시 추이, 캐시 적중·요청·GPU별 util·mem·temp·power·PCIe를 heat bar로, 그리고 TTFT·E2E percentile(p50/p95/p99)과 prefill/decode 구간을 담은 지연 패널을 보여줍니다. `p` 일시정지, `r` 피크 초기화, `+/-` 주기, `l` 언어. 두 엔진 모두 지원하며, llama.cpp가 노출하지 않는 지표는 `—`로 표시합니다.
+- **일반 터미널 모니터** &mdash; `v` 모니터를 Textual 없이: `llmux top <프로필>`(또는 실행 중인 행에서 `t`)로 같은 그래프·캐시 적중·지연 percentile·GPU/PCIe 패널을 자동 갱신되는 터미널 페이지로 봅니다. 저대역 SSH나 단순 터미널에 좋고, `q`로 나갑니다.
 - **멀티 GPU** &mdash; vLLM 프로필을 `tensor_parallel_size`로 GPU에 분할합니다. GPU 목록에서 자동으로 도출하거나 직접 지정합니다.
 - **LoRA 어댑터** &mdash; 호스트 디렉터리의 LoRA 모듈을 마운트해 vLLM 베이스 모델에 얹어 서빙합니다.
 - **GGUF 자동 다운로드** &mdash; llama.cpp가 첫 실행 때 `-hf`/`-hff`로 GGUF를 HF 캐시에 바로 받습니다. 별도의 `hf download`나 `models/` 연결이 없습니다.

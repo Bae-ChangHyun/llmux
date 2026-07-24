@@ -2751,36 +2751,67 @@ class FindCachedGgufTests(unittest.TestCase):
             self.assertEqual(cached[0]["size_bytes"], 2048)
 
 
-class ServerMetricsParseTests(unittest.TestCase):
+class SnapshotParseTests(unittest.TestCase):
     def test_parses_full_vllm_metric_families(self) -> None:
-        from tui.common.metrics import parse_server_metrics
+        from tui.common.metrics import parse_snapshot
 
         text = (
             'vllm:prompt_tokens_total{model_name="m"} 1000.0\n'
             'vllm:generation_tokens_total{model_name="m"} 2000.0\n'
             'vllm:num_requests_running{model_name="m"} 3.0\n'
             'vllm:num_requests_waiting{model_name="m"} 1.0\n'
-            'vllm:gpu_cache_usage_perc{model_name="m"} 0.34\n'
+            'vllm:kv_cache_usage_perc{model_name="m"} 0.34\n'
+            'vllm:prefix_cache_hits_total{model_name="m"} 80.0\n'
+            'vllm:prefix_cache_queries_total{model_name="m"} 100.0\n'
+            'vllm:num_preemptions_total{model_name="m"} 2.0\n'
+            'vllm:request_success_total{model_name="m"} 42.0\n'
             'vllm:time_to_first_token_seconds_sum{model_name="m"} 12.5\n'
             'vllm:time_to_first_token_seconds_count{model_name="m"} 50.0\n'
             'vllm:time_to_first_token_seconds_bucket{le="0.1",model_name="m"} 5.0\n'
-            'vllm:time_per_output_token_seconds_sum{model_name="m"} 7.0\n'
-            'vllm:time_per_output_token_seconds_count{model_name="m"} 1000.0\n'
+            'vllm:time_to_first_token_seconds_bucket{le="+Inf",model_name="m"} 50.0\n'
+            'vllm:inter_token_latency_seconds_sum{model_name="m"} 7.0\n'
+            'vllm:inter_token_latency_seconds_count{model_name="m"} 1000.0\n'
         )
-        m = parse_server_metrics(text)
+        m = parse_snapshot(text)
+        self.assertEqual(m.backend, "vllm")
         self.assertEqual(m.prompt_tokens, 1000.0)
         self.assertEqual(m.generation_tokens, 2000.0)
         self.assertEqual(m.requests_running, 3.0)
         self.assertEqual(m.requests_waiting, 1.0)
         self.assertEqual(m.kv_cache_usage, 0.34)
-        self.assertEqual(m.ttft_sum, 12.5)
-        # The _bucket line must NOT be counted toward _count.
-        self.assertEqual(m.ttft_count, 50.0)
-        self.assertEqual(m.tpot_sum, 7.0)
-        self.assertEqual(m.tpot_count, 1000.0)
+        self.assertEqual(m.prefix_hits, 80.0)
+        self.assertEqual(m.prefix_queries, 100.0)
+        self.assertEqual(m.preemptions, 2.0)
+        self.assertEqual(m.requests_finished, 42.0)
+        self.assertEqual(m.ttft.sum, 12.5)
+        # The _bucket lines must NOT be counted toward _count.
+        self.assertEqual(m.ttft.count, 50.0)
+        self.assertEqual(m.ttft.buckets, {0.1: 5.0, float("inf"): 50.0})
+        self.assertEqual(m.tpot.sum, 7.0)
+        self.assertEqual(m.tpot.count, 1000.0)
+
+    def test_kv_cache_first_family_wins_no_double_count(self) -> None:
+        from tui.common.metrics import parse_snapshot
+
+        # A server exposing both the new and the legacy name must not sum them.
+        m = parse_snapshot(
+            "vllm:kv_cache_usage_perc 0.4\n"
+            "vllm:gpu_cache_usage_perc 0.4\n"
+        )
+        self.assertEqual(m.kv_cache_usage, 0.4)
+
+    def test_tpot_falls_back_to_legacy_name(self) -> None:
+        from tui.common.metrics import parse_snapshot
+
+        m = parse_snapshot(
+            "vllm:time_per_output_token_seconds_sum 7.0\n"
+            "vllm:time_per_output_token_seconds_count 100.0\n"
+        )
+        self.assertEqual(m.tpot.sum, 7.0)
+        self.assertEqual(m.tpot.count, 100.0)
 
     def test_parses_llamacpp_names_and_leaves_absent_histograms_none(self) -> None:
-        from tui.common.metrics import parse_server_metrics
+        from tui.common.metrics import parse_snapshot
 
         text = (
             "llamacpp:prompt_tokens_total 500\n"
@@ -2788,24 +2819,50 @@ class ServerMetricsParseTests(unittest.TestCase):
             "llamacpp:requests_processing 2\n"
             "llamacpp:requests_deferred 0\n"
             "llamacpp:kv_cache_usage_ratio 0.5\n"
+            "llamacpp:predicted_tokens_seconds 85.0\n"
         )
-        m = parse_server_metrics(text)
+        m = parse_snapshot(text)
+        self.assertEqual(m.backend, "llamacpp")
         self.assertEqual(m.prompt_tokens, 500.0)
         self.assertEqual(m.generation_tokens, 800.0)
         self.assertEqual(m.requests_running, 2.0)
         self.assertEqual(m.requests_waiting, 0.0)
         self.assertEqual(m.kv_cache_usage, 0.5)
-        self.assertIsNone(m.ttft_sum)
-        self.assertIsNone(m.tpot_sum)
+        self.assertEqual(m.gen_tps_gauge, 85.0)
+        self.assertIsNone(m.ttft)
+        self.assertIsNone(m.tpot)
+        self.assertIsNone(m.prefix_hits)
         self.assertEqual(m.token_counters(), (500.0, 800.0))
 
     def test_empty_body_yields_all_none(self) -> None:
-        from tui.common.metrics import parse_server_metrics
+        from tui.common.metrics import parse_snapshot
 
-        m = parse_server_metrics("# only comments\nunrelated_metric 1.0\n")
+        m = parse_snapshot("# only comments\nunrelated_metric 1.0\n")
+        self.assertEqual(m.backend, "unknown")
         self.assertIsNone(m.prompt_tokens)
         self.assertIsNone(m.requests_running)
+        self.assertIsNone(m.ttft)
         self.assertIsNone(m.token_counters())
+
+
+class HistTests(unittest.TestCase):
+    def test_avg_and_quantile_from_buckets(self) -> None:
+        from tui.common.metrics import Hist
+
+        # Cumulative buckets: 10 samples, evenly spread across 0–1s.
+        h = Hist(sum=5.0, count=10.0, buckets={
+            0.2: 2.0, 0.4: 4.0, 0.6: 6.0, 0.8: 8.0, 1.0: 10.0, float("inf"): 10.0,
+        })
+        self.assertEqual(h.avg(), 0.5)
+        # p50 → target 5 sits between le=0.4 (cum 4) and le=0.6 (cum 6).
+        self.assertAlmostEqual(h.quantile(0.5), 0.5)
+        self.assertAlmostEqual(h.quantile(0.9), 0.9)
+
+    def test_quantile_none_without_data(self) -> None:
+        from tui.common.metrics import Hist
+
+        self.assertIsNone(Hist().quantile(0.5))
+        self.assertIsNone(Hist(sum=1.0, count=0.0).avg())
 
 
 class TokenMetricsTests(unittest.TestCase):
@@ -3405,39 +3462,80 @@ class PlainMonitorTests(unittest.IsolatedAsyncioTestCase):
                             port=port, running=True, model="Qwen/Q", detail="", gpu_id="0")
 
     def test_state_derives_rate_over_two_samples(self) -> None:
-        from tui.common.plain_monitor import MonitorState
-        from tui.common.metrics import ServerMetrics
+        from tui.common.monitor_render import MonitorState
+        from tui.common.metrics import MetricsSnapshot
         st = MonitorState()
-        g1, p1 = st.rates(ServerMetrics(prompt_tokens=0.0, generation_tokens=0.0), 100.0)
-        self.assertIsNone(g1)
-        g2, p2 = st.rates(ServerMetrics(prompt_tokens=10.0, generation_tokens=200.0), 101.0)
-        self.assertAlmostEqual(g2, 200.0)
-        self.assertAlmostEqual(p2, 10.0)
+        d1 = st.update(MetricsSnapshot(prompt_tokens=0.0, generation_tokens=0.0), 100.0, 1.0)
+        self.assertIsNone(d1.gen_tps)
+        d2 = st.update(MetricsSnapshot(prompt_tokens=10.0, generation_tokens=200.0), 101.0, 1.0)
+        self.assertAlmostEqual(d2.gen_tps, 200.0)
+        self.assertAlmostEqual(d2.prompt_tps, 10.0)
 
-    def test_render_frame_shows_kv_and_gpu(self) -> None:
+    def _entry(self, snap):
+        from tui.common.monitor_render import ModelEntry, MonitorState
+        st = MonitorState()
+        return ModelEntry(self._row(), snap, st, st.update(snap, 100.0, 1.0))
+
+    def test_render_dashboard_shows_kv_and_gpu(self) -> None:
         import io
         from rich.console import Console
-        from tui.common.plain_monitor import render_frame, MonitorState
-        from tui.common.metrics import ServerMetrics
+        from tui.common.monitor_render import render_dashboard
+        from tui.common.metrics import MetricsSnapshot
         from tui.common.docker import GpuInfo
-        m = ServerMetrics(prompt_tokens=1.0, generation_tokens=2.0,
-                          requests_running=3.0, requests_waiting=1.0, kv_cache_usage=0.34)
+        m = MetricsSnapshot(backend="vllm", prompt_tokens=1.0, generation_tokens=2.0,
+                            requests_running=3.0, requests_waiting=1.0, kv_cache_usage=0.34)
         gpus = [GpuInfo("0", "RTX", "8000", "16000", "78", "71", "210")]
-        con = Console(width=100, file=io.StringIO())
-        con.print(render_frame(self._row(), m, gpus, MonitorState()))
+        con = Console(width=110, file=io.StringIO())
+        con.print(render_dashboard([self._entry(m)], gpus, {}, 110))
         out = con.file.getvalue()
-        self.assertIn("KV cache", out)
+        self.assertIn("KV", out)
         self.assertIn("34%", out)
         self.assertIn("GPU0", out)
         self.assertIn("210W", out)
-        self.assertIn("Requests", out)
+        self.assertIn("REQUESTS", out)
 
-    async def test_resolve_reports_when_none_running(self) -> None:
+    def test_render_dashboard_shows_gpu_with_no_models(self) -> None:
+        """The monitor is a system view — GPUs render even with nothing up."""
+        import io
+        from rich.console import Console
+        from tui.common.monitor_render import render_dashboard
+        from tui.common.docker import GpuInfo
+        gpus = [GpuInfo("0", "RTX", "8000", "16000", "78", "71", "210")]
+        con = Console(width=110, file=io.StringIO())
+        con.print(render_dashboard([], gpus, {"0": (12.0, 34.0)}, 110))
+        out = con.file.getvalue()
+        self.assertIn("GPU0", out)
+        self.assertIn("210W", out)
+        self.assertIn("rx 12", out)
+        self.assertIn("MODELS", out)
+
+    def test_render_dashboard_compacts_multiple_models(self) -> None:
+        import io
+        from rich.console import Console
+        from tui.common.monitor_render import render_dashboard, ModelEntry, MonitorState
+        from tui.common.metrics import MetricsSnapshot
+
+        def entry(name):
+            snap = MetricsSnapshot(backend="vllm", generation_tokens=1.0, kv_cache_usage=0.2)
+            st = MonitorState()
+            return ModelEntry(self._row(name), snap, st, st.update(snap, 100.0, 1.0))
+
+        con = Console(width=110, file=io.StringIO())
+        con.print(render_dashboard([entry("a"), entry("b")], [], {}, 110))
+        out = con.file.getvalue()
+        self.assertIn("a", out)
+        self.assertIn("b", out)
+
+    async def test_resolve_runs_system_view_when_none_running(self) -> None:
+        """No profile given and nothing up is not an error — the GPU view still
+        opens. Only an explicitly named, non-running profile is rejected."""
         from unittest.mock import patch, AsyncMock
         from tui.common import plain_monitor as mod
-        with patch.object(mod, "_running_rows", AsyncMock(return_value=[])):
+        with patch.object(mod, "_running_rows", AsyncMock(return_value=[])), \
+             patch.object(mod, "run_plain_monitor", AsyncMock(return_value=None)) as run:
             rc = await mod._resolve_and_run(None)
-            self.assertEqual(rc, 1)
+            self.assertEqual(rc, 0)
+            run.assert_awaited_once()
 
     async def test_resolve_rejects_non_running_name(self) -> None:
         from unittest.mock import patch, AsyncMock
