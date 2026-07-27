@@ -69,3 +69,6 @@ site/
 
 # 개인 노트(thinking/budget 정리, 공용 참고)
 THINKING_BUDGET.md
+
+# VHS 스틸 촬영 시 생기는 부산물 gif
+demo/.*-capture.gif

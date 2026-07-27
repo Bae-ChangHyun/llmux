@@ -40,8 +40,20 @@ llmux unifies both under a single Textual dashboard backed by Docker Compose.
 
 <div align="center">
 
+<b>btop-style live monitor</b> &mdash; every GPU always, plus a panel per running model: throughput and KV-cache graphs, cache hit rate, and TTFT/E2E percentiles with prefill/decode phases, read off the engine's Prometheus histograms<br/>
+<img src="assets/monitor.png" alt="llmux monitor — GPU util/VRAM/temp/power/PCIe plus per-model throughput, KV cache, cache hit and latency percentiles" width="860"/>
+
+<sub><a href="demo/monitor.gif">▶ animated version</a> &middot; <code>v</code> in the TUI, or <code>llmux top</code> with no TUI at all</sub>
+
+<br/><br/>
+
 <b>Both engines on one GPU, live tok/s per model</b> &mdash; a vLLM model and a llama.cpp model running side by side, each with its own throughput, all in one dashboard<br/>
 <img src="assets/dashboard-tokps.png" alt="llmux dashboard — a vLLM and a llama.cpp model running at once, each showing live tokens/sec" width="820"/>
+
+<br/><br/>
+
+<b>Several models at once</b> &mdash; the monitor re-scans every tick, so each running model gets its own row. Metrics an engine doesn't expose read <code>&mdash;</code> instead of a made-up number<br/>
+<img src="assets/monitor-multi.png" alt="llmux monitor with two models running — vLLM and llama.cpp summarised side by side" width="860"/>
 
 <br/><br/>
 
