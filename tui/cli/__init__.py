@@ -134,11 +134,14 @@ def tui_cmd() -> None:
 @app.command("top")
 def top_cmd(
     profile: str = typer.Argument(
-        None, help="Running profile to monitor (auto-picks if only one is running)."
+        None, help="Show only this running profile (default: every running model)."
     ),
 ) -> None:
-    """Live btop-style monitor in a plain terminal (no TUI) — throughput, queue,
-    KV cache, latency, GPU. q or Ctrl+C to quit."""
+    """Live btop-style system monitor in a plain terminal (no TUI).
+
+    Always shows every GPU — util, memory, temperature, power, PCIe — whether or
+    not anything is running, plus a panel per running model (throughput and KV
+    graphs, cache hit, requests, latency percentiles). q or Ctrl+C to quit."""
     from tui.common.plain_monitor import run_cli
 
     raise typer.Exit(code=run_cli(profile))

@@ -17,7 +17,7 @@ Start from `llmux --help`. Top-level shortcuts and sub-apps:
 - Configs: `llmux config {list,show,new,edit,clone,rename,delete}`
 - Images: `llmux image {list,pull,remove,build-dev}`
 - System: `llmux system {gpu,mem-estimate,disk,env-check}` (`gpu` / `env-check` also available top-level)
-- Plain monitor: `llmux top <profile>` — the btop-style monitor in a plain terminal, no TUI (also `t` on a running row in the TUI)
+- Plain monitor: `llmux top [profile]` — the btop-style system monitor in a plain terminal, no TUI (also `t` in the TUI). GPUs always; a profile argument narrows it to one running model.
 
 Every `list` / `show` / `check` command takes `--json` for machine-readable
 output, and `llmux --version` prints the version — the CLI is meant to be
