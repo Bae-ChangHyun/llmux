@@ -40,8 +40,20 @@ llmux는 이 둘을 Docker Compose 위의 Textual 대시보드 하나로 묶습�
 
 <div align="center">
 
+<b>btop 스타일 라이브 모니터</b> &mdash; GPU는 항상, 여기에 실행 중인 모델마다 패널이 붙습니다. 처리량·KV 캐시 그래프, 캐시 적중률, 그리고 엔진의 Prometheus 히스토그램에서 직접 읽은 TTFT·E2E percentile과 prefill/decode 구간<br/>
+<img src="assets/monitor.png" alt="llmux 모니터 — GPU util/VRAM/온도/전력/PCIe와 모델별 처리량·KV 캐시·캐시 적중·지연 percentile" width="860"/>
+
+<sub><a href="demo/monitor.gif">▶ 움직이는 버전</a> &middot; TUI에서 <code>v</code>, 또는 TUI 없이 <code>llmux top</code></sub>
+
+<br/><br/>
+
 <b>한 GPU에서 두 엔진, 모델별 실시간 tok/s</b> &mdash; vLLM 모델과 llama.cpp 모델을 나란히 띄우고, 각각의 처리 속도를 한 대시보드에서 봅니다<br/>
 <img src="assets/dashboard-tokps.png" alt="llmux 대시보드 — vLLM과 llama.cpp 모델이 동시에 돌며 각자 tok/s 표시" width="820"/>
+
+<br/><br/>
+
+<b>모델 여러 개를 동시에</b> &mdash; 모니터가 매 틱 실행 목록을 다시 훑어서 모델마다 한 줄씩 잡습니다. 엔진이 안 내주는 지표는 지어내지 않고 <code>&mdash;</code> 로 둡니다<br/>
+<img src="assets/monitor-multi.png" alt="모델 2개가 도는 llmux 모니터 — vLLM과 llama.cpp 요약" width="860"/>
 
 <br/><br/>
 
