@@ -40,25 +40,20 @@ llmux unifies both under a single Textual dashboard backed by Docker Compose.
 
 <div align="center">
 
-<b>btop-style live monitor</b> &mdash; every GPU always, plus a panel per running model: throughput and KV-cache graphs, cache hit rate, and TTFT/E2E percentiles with prefill/decode phases, read off the engine's Prometheus histograms<br/>
-<img src="assets/monitor.png" alt="llmux monitor — GPU util/VRAM/temp/power/PCIe plus per-model throughput, KV cache, cache hit and latency percentiles" width="860"/>
-
-<sub><a href="demo/monitor.gif">▶ animated version</a> &middot; <code>v</code> in the TUI, or <code>llmux top</code> with no TUI at all</sub>
-
-<br/><br/>
-
 <b>Both engines on one GPU, live tok/s per model</b> &mdash; a vLLM model and a llama.cpp model running side by side, each with its own throughput, all in one dashboard<br/>
-<img src="assets/dashboard-tokps.png" alt="llmux dashboard — a vLLM and a llama.cpp model running at once, each showing live tokens/sec" width="820"/>
-
-<br/><br/>
-
-<b>Several models at once</b> &mdash; the monitor re-scans every tick, so each running model gets its own row. Metrics an engine doesn't expose read <code>&mdash;</code> instead of a made-up number<br/>
-<img src="assets/monitor-multi.png" alt="llmux monitor with two models running — vLLM and llama.cpp summarised side by side" width="860"/>
+<img src="assets/dashboard-tokps.png" alt="llmux dashboard — a vLLM and a llama.cpp model running at once, each showing live tokens/sec" width="860"/>
 
 <br/><br/>
 
 <b>One dashboard for vLLM + llama.cpp</b> &mdash; toggle a config flag on/off, add one with autocomplete, then import a model from its official vLLM recipe &mdash; reviewed against your GPU's VRAM<br/>
 <img src="demo/llmux.gif" alt="llmux walkthrough — config editing, autocomplete, and GPU-aware recipe import" width="800"/>
+
+<br/><br/>
+
+<b>Live monitor</b> &mdash; press <code>v</code> (or run <code>llmux top</code>) for GPUs plus a panel per running model: throughput and KV-cache graphs, cache hit rate, and latency percentiles read off the engine's Prometheus histograms<br/>
+<img src="assets/monitor.png" alt="llmux monitor — GPU util/VRAM/temp/power/PCIe plus per-model throughput, KV cache, cache hit and latency percentiles" width="820"/>
+
+<sub><a href="demo/monitor.gif">▶ animated</a></sub>
 
 <br/><br/>
 
@@ -88,16 +83,11 @@ llmux unifies both under a single Textual dashboard backed by Docker Compose.
 - **Memory estimator** &mdash; Point it at an HF model and get a per-GPU fit bar ([`hf-mem`](https://github.com/alvarobartt/hf-mem)) before you download or launch anything.
 - **Every engine flag, 1:1** &mdash; `config/<backend>/<name>.yaml` maps directly to engine flags — sampling, context length, KV-cache precision, MoE CPU offload. Toggle any flag **on/off without deleting it**, and your hand-written comments survive edits.
 - **Flag autocomplete from your actual image** &mdash; The config editor completes flag names from the real `vllm serve` / `llama-server` flag set of the image you're running (extracted once and cached per version), so suggestions match the engine build you actually launch.
-- **Live throughput + benchmarks** &mdash; Real-time generation tok/s from each container's `/metrics` (`llmux stats`), plus a warmup + median benchmark (`llmux bench`) to compare quant A against quant B on the same hardware.
-- **btop-style live monitor** &mdash; Press `v` for a full-screen system view: every GPU always (util·mem·temp·power·PCIe as heat bars, card name in the title), plus a panel per running model — braille throughput and KV graphs, cache-hit, requests, and a latency panel with TTFT/E2E percentiles (p50/p95/p99) and prefill/decode phases. Nothing running still shows the GPUs. `p` pause, `r` reset peaks, `+/-` interval, `l` language. Both engines — llama.cpp reads `—` where it exposes no such metric.
-- **Plain terminal monitor** &mdash; The `v` monitor without the Textual UI: `llmux top` (or `t` in the TUI) draws the same GPU, graph, cache-hit, and latency panels as an auto-refreshing plain-terminal page — good for low-bandwidth SSH or a dumb terminal. Add a profile name to narrow it to one model. `q` exits.
-- **Multi-GPU** &mdash; vLLM profiles shard across GPUs by `tensor_parallel_size`, derived from the GPU list or set explicitly.
-- **LoRA adapters** &mdash; Serve a vLLM base model with LoRA modules mounted from a host directory.
-- **GGUF auto-download** &mdash; llama.cpp pulls the GGUF on first start (`-hf`/`-hff`) straight into your HF cache — no separate `hf download` or `models/` wiring.
+- **LoRA and speculative / MTP setups** &mdash; LoRA modules are profile fields, mounted and served on the base model; speculative decoding params are ordinary config params on a profile pinned to whatever image that setup needs.
+- **Benchmarks** &mdash; `llmux bench` runs a warmup + median pass so you can compare quant A against quant B on the same hardware.
+- **btop-style live monitor** &mdash; Press `v` in the TUI, or run `llmux top` with no TUI at all. Every GPU is always shown (util·mem·temp·power·PCIe as heat bars), plus a panel per running model: braille throughput and KV graphs, cache-hit, requests, and TTFT/E2E percentiles (p50/p95/p99) with prefill/decode phases. Metrics an engine doesn't expose read `—` rather than a made-up number.
 - **Dev builds from source** &mdash; Build a `vllm-dev:` / `llamacpp-dev:` image from any fork/branch (GPU arch auto-detected) and pin a profile to it via `image_tag`.
 - **Everything scriptable** &mdash; Every TUI action is also a headless `llmux` subcommand with `--json` output, built for scripts, agents, and CI.
-- **Rename in place** &mdash; Rename a profile or config without rebuilding; profiles pointing at a renamed config are repointed automatically.
-- **Bilingual UI** &mdash; The whole TUI switches between Korean and English with `LLMUX_LANG=ko|en`.
 
 <br/>
 
