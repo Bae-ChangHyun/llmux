@@ -40,25 +40,20 @@ llmux는 이 둘을 Docker Compose 위의 Textual 대시보드 하나로 묶습�
 
 <div align="center">
 
-<b>btop 스타일 라이브 모니터</b> &mdash; GPU는 항상, 여기에 실행 중인 모델마다 패널이 붙습니다. 처리량·KV 캐시 그래프, 캐시 적중률, 그리고 엔진의 Prometheus 히스토그램에서 직접 읽은 TTFT·E2E percentile과 prefill/decode 구간<br/>
-<img src="assets/monitor.png" alt="llmux 모니터 — GPU util/VRAM/온도/전력/PCIe와 모델별 처리량·KV 캐시·캐시 적중·지연 percentile" width="860"/>
-
-<sub><a href="demo/monitor.gif">▶ 움직이는 버전</a> &middot; TUI에서 <code>v</code>, 또는 TUI 없이 <code>llmux top</code></sub>
-
-<br/><br/>
-
 <b>한 GPU에서 두 엔진, 모델별 실시간 tok/s</b> &mdash; vLLM 모델과 llama.cpp 모델을 나란히 띄우고, 각각의 처리 속도를 한 대시보드에서 봅니다<br/>
-<img src="assets/dashboard-tokps.png" alt="llmux 대시보드 — vLLM과 llama.cpp 모델이 동시에 돌며 각자 tok/s 표시" width="820"/>
-
-<br/><br/>
-
-<b>모델 여러 개를 동시에</b> &mdash; 모니터가 매 틱 실행 목록을 다시 훑어서 모델마다 한 줄씩 잡습니다. 엔진이 안 내주는 지표는 지어내지 않고 <code>&mdash;</code> 로 둡니다<br/>
-<img src="assets/monitor-multi.png" alt="모델 2개가 도는 llmux 모니터 — vLLM과 llama.cpp 요약" width="860"/>
+<img src="assets/dashboard-tokps.png" alt="llmux 대시보드 — vLLM과 llama.cpp 모델이 동시에 돌며 각자 tok/s 표시" width="860"/>
 
 <br/><br/>
 
 <b>vLLM과 llama.cpp를 한 대시보드에서</b> &mdash; config 플래그를 켜고 끄고, 자동완성으로 추가하고, vLLM 공식 recipe에서 모델을 가져와 GPU VRAM에 맞는지 확인<br/>
 <img src="demo/llmux.gif" alt="llmux 워크스루 — config 편집, 자동완성, GPU 인지 recipe import" width="800"/>
+
+<br/><br/>
+
+<b>라이브 모니터</b> &mdash; <code>v</code>(또는 <code>llmux top</code>)로 GPU와 실행 중인 모델별 패널을 봅니다. 처리량·KV 캐시 그래프, 캐시 적중률, 엔진의 Prometheus 히스토그램에서 직접 읽은 지연 percentile<br/>
+<img src="assets/monitor.png" alt="llmux 모니터 — GPU util/VRAM/온도/전력/PCIe와 모델별 처리량·KV 캐시·캐시 적중·지연 percentile" width="820"/>
+
+<sub><a href="demo/monitor.gif">▶ 움직이는 버전</a></sub>
 
 <br/><br/>
 
@@ -88,16 +83,11 @@ llmux는 이 둘을 Docker Compose 위의 Textual 대시보드 하나로 묶습�
 - **메모리 추정** &mdash; HF 모델을 넣으면 다운로드나 실행 전에 GPU별 fit 바를 보여줍니다 ([`hf-mem`](https://github.com/alvarobartt/hf-mem)).
 - **엔진 플래그를 1:1로** &mdash; `config/<backend>/<name>.yaml`이 엔진 플래그에 그대로 대응합니다. 샘플링, context 길이, KV 캐시 정밀도, MoE CPU offload 등. 플래그는 **지우지 않고 켜고 끌 수 있고**, 손으로 쓴 주석도 편집 후 그대로 남습니다.
 - **실제 이미지에서 뽑은 플래그 자동완성** &mdash; config 편집기가 지금 쓰는 `vllm serve` / `llama-server` 이미지의 실제 플래그 목록에서 이름을 자동완성합니다. 한 번 추출해 버전별로 캐시하므로, 제안이 실제로 띄우는 엔진 빌드와 정확히 맞습니다.
-- **실시간 처리량 + 벤치마크** &mdash; 각 컨테이너의 `/metrics`에서 생성 tok/s를 실시간으로 읽고(`llmux stats`), warmup + 중앙값 벤치마크(`llmux bench`)로 같은 하드웨어에서 quant A와 B를 비교합니다.
-- **btop 스타일 라이브 모니터** &mdash; `v`를 누르면 전체 화면 시스템 뷰가 뜹니다. GPU는 항상 전부(util·mem·temp·power·PCIe heat bar, 패널 제목에 카드 이름), 여기에 실행 중인 모델마다 패널이 붙어 처리량·KV braille 그래프, 캐시 적중, 요청, TTFT·E2E percentile(p50/p95/p99)과 prefill/decode 구간 지연을 보여줍니다. 실행 중인 모델이 없어도 GPU는 나옵니다. `p` 일시정지, `r` 피크 초기화, `+/-` 주기, `l` 언어. 두 엔진 모두 지원하며, llama.cpp가 노출하지 않는 지표는 `—`로 표시합니다.
-- **일반 터미널 모니터** &mdash; `v` 모니터를 Textual 없이: `llmux top`(또는 TUI에서 `t`)으로 같은 GPU·그래프·캐시 적중·지연 패널을 자동 갱신되는 터미널 페이지로 봅니다. 저대역 SSH나 단순 터미널에 좋고, 프로필 이름을 붙이면 그 모델만 봅니다. `q`로 나갑니다.
-- **멀티 GPU** &mdash; vLLM 프로필을 `tensor_parallel_size`로 GPU에 분할합니다. GPU 목록에서 자동으로 도출하거나 직접 지정합니다.
-- **LoRA 어댑터** &mdash; 호스트 디렉터리의 LoRA 모듈을 마운트해 vLLM 베이스 모델에 얹어 서빙합니다.
-- **GGUF 자동 다운로드** &mdash; llama.cpp가 첫 실행 때 `-hf`/`-hff`로 GGUF를 HF 캐시에 바로 받습니다. 별도의 `hf download`나 `models/` 연결이 없습니다.
+- **LoRA·speculative/MTP 구성** &mdash; LoRA 모듈은 프로필 항목이라 베이스 모델 위에 얹어 서빙되고, speculative decoding 파라미터는 일반 config 파라미터입니다. 그 구성에 필요한 이미지를 프로필에 고정해서 씁니다.
+- **벤치마크** &mdash; `llmux bench`가 warmup + 중앙값으로 돌려, 같은 하드웨어에서 quant A와 B를 비교합니다.
+- **btop 스타일 라이브 모니터** &mdash; TUI에서 `v`, 또는 TUI 없이 `llmux top`. GPU는 항상 전부 보이고(util·mem·temp·power·PCIe heat bar), 실행 중인 모델마다 패널이 붙어 처리량·KV braille 그래프, 캐시 적중, 요청, TTFT·E2E percentile(p50/p95/p99)과 prefill/decode 구간을 보여줍니다. 엔진이 노출하지 않는 지표는 지어내지 않고 `—`로 둡니다.
 - **소스에서 dev 빌드** &mdash; 임의의 fork/branch에서 `vllm-dev:` / `llamacpp-dev:` 이미지를 빌드하고(GPU arch 자동 감지) `image_tag`로 프로필에 고정합니다.
 - **전부 스크립트로도** &mdash; TUI의 모든 동작은 `--json`을 지원하는 headless `llmux` 서브커맨드로도 됩니다. 스크립트, 에이전트, CI에 그대로 붙습니다.
-- **이름 즉시 변경** &mdash; 프로필이나 config를 다시 빌드하지 않고 이름만 바꿉니다. 그 config를 참조하던 프로필들은 자동으로 다시 연결됩니다.
-- **한/영 UI** &mdash; TUI 전체가 `LLMUX_LANG=ko|en`으로 한국어와 영어를 오갑니다.
 
 <br/>
 
