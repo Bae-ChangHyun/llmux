@@ -111,7 +111,7 @@ def mem_estimate(
         return
     if est_gb <= 0:
         print("(no parseable size in estimate — skipping per-GPU fit view)")
-        return
+        raise typer.Exit(code=1)
     if n_gpus > 1:
         print(f"TP={n_gpus}: {per_gpu_gb:.1f} GB/GPU")
     for r in fit_rows:

@@ -109,6 +109,34 @@ def _version_callback(value: bool) -> None:
     raise typer.Exit()
 
 
+def _configure_logging(level: str) -> None:
+    """Attach a stderr handler so the modules' log calls are actually visible.
+
+    Without this the root logger has no handler: DEBUG records are dropped
+    entirely and WARNING records only reach stderr via logging.lastResort,
+    which the TUI swallows.
+    """
+    import logging
+
+    resolved = getattr(logging, level.upper(), None)
+    if not isinstance(resolved, int):
+        raise typer.BadParameter(
+            f"unknown log level {level!r} (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
+            param_hint="--log-level",
+        )
+    import sys
+
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    # Scoped to llmux's own logger: a root handler at DEBUG would drown the
+    # output in httpcore/urllib3 chatter.
+    logger = logging.getLogger("tui")
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(resolved)
+    logger.propagate = False
+
+
 @app.callback(invoke_without_command=True)
 def _root(
     ctx: typer.Context,
@@ -116,8 +144,14 @@ def _root(
         False, "--version", "-V", callback=_version_callback, is_eager=True,
         help="Show the llmux version and exit.",
     ),
+    log_level: str = typer.Option(
+        "WARNING", "--log-level",
+        envvar="LLMUX_LOG_LEVEL",
+        help="Log verbosity on stderr (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
+    ),
 ) -> None:
     """Default behavior: launch the TUI when no subcommand is given."""
+    _configure_logging(log_level)
     _maybe_run_onboarding()
     _maybe_check_for_update()
     if ctx.invoked_subcommand is not None:
