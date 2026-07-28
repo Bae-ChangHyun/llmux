@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-render-override.py — profile + config 를 읽어 docker-compose.override.yaml 을 생성.
+render-override.py — profile + config 를 읽어 프로필별 compose override 를 생성.
 
 입력:
-  - profiles.yaml 의 llamacpp/<profile> (CONFIG_NAME, MODEL_FILE 등)
-  - config/llamacpp/<CONFIG_NAME>.yaml  (llama-server 플래그)
+  - profiles.yaml 의 llamacpp/<profile> (config_name, model_file, hf_repo, hf_file)
+  - config/llamacpp/<config_name>.yaml  (llama-server 플래그)
 
 출력:
-  - docker-compose.override.yaml  (services.llama-server.command 블록)
+  - .runtime/llamacpp/override-<profile>.yaml  (services.llama-server.command 블록)
 
 사용:
   python3 scripts/llamacpp/render-override.py <profile-name>
@@ -33,7 +33,6 @@ from tui.common import profile_store  # noqa: E402
 # 쓴다 — 둘이 서로 다른 루트를 가리키면 엉뚱한 config 로 override 를 렌더한다.
 ROOT = profile_store.PROJECT_ROOT
 CONFIG_DIR = ROOT / "config" / "llamacpp"
-COMPOSE_DIR = ROOT / "compose" / "llamacpp"
 RUNTIME_DIR = ROOT / ".runtime" / "llamacpp"
 
 _SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")

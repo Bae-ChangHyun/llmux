@@ -104,8 +104,7 @@
 ├── scripts/
 │   ├── vllm/entrypoint-wrapper.sh
 │   └── llamacpp/
-│       ├── render-override.py        # profile + config → per-profile compose override
-│       └── legacy/                   # archived shell scripts (superseded by Python)
+│       └── render-override.py        # profile + config → per-profile compose override
 ├── profiles.yaml              # single source of truth (gitignored)
 ├── .env.common                # host-wide settings (gitignored)
 └── .runtime/                  # auto-rendered, gitignored
@@ -309,7 +308,7 @@
     <p>GPU architecture is auto-detected from <code>nvidia-smi</code> (<code>detect_local_gpu_caps</code>) and formatted per backend convention — dotted/space-separated for vLLM/PyTorch, dot-stripped/semicolon-separated for llama.cpp's CMake. Drive it from <a href="cli.html#image-build-dev"><code>llmux image build-dev</code></a>.</p>
 
     <h2 id="from-shell-scripts-to-a-python-runtime">From shell scripts to a Python runtime</h2>
-    <p>llama.cpp orchestration used to be a set of Bash scripts (<code>switch.sh</code>, <code>stop.sh</code>, <code>logs.sh</code>, <code>pull-model.sh</code>, <code>_common.sh</code>). They have been replaced by <code>tui/backends/llamacpp/backend_runtime.py</code> — a Python-native pipeline that mirrors the vLLM backend's async-generator contract — and the originals are archived under <code>scripts/llamacpp/legacy/</code> for reference only. The one Python script that remains active is <code>scripts/llamacpp/render-override.py</code>, which generates the per-profile Compose override described in <a href="#step-3-render-the-engine-command">Step 3</a>.</p>
+    <p>llama.cpp orchestration used to be a set of Bash scripts (<code>switch.sh</code>, <code>stop.sh</code>, <code>logs.sh</code>, <code>pull-model.sh</code>, <code>_common.sh</code>). They have been replaced by <code>tui/backends/llamacpp/backend_runtime.py</code> — a Python-native pipeline that mirrors the vLLM backend's async-generator contract. The one Python script that remains active is <code>scripts/llamacpp/render-override.py</code>, which generates the per-profile Compose override described in <a href="#step-3-render-the-engine-command">Step 3</a>.</p>
     <p>The benefits of the move: a single conflict-check / status / streaming code path shared with vLLM, no <code>current-profile</code> global state (multiple llama.cpp profiles run side by side), and the same logic reachable from both the TUI and the headless CLI.</p>
 
     <h2 id="entrypoint-dispatch">Entrypoint dispatch</h2>

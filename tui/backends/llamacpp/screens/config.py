@@ -37,7 +37,7 @@ from tui.common.widgets import TextPromptModal
 
 LLAMA_SERVER_FLAGS: dict[str, tuple[str, str]] = {
     # 필수/핵심
-    "model-file":       ("GGUF 파일명 (MODEL_DIR 기준 상대경로)", "my-model-Q4_K_M.gguf"),
+    "model-file":       ("GGUF 파일명 (hf_file 미설정 시 -hff 로 사용)", "my-model-Q4_K_M.gguf"),
     "alias":            ("/v1/models 에 노출될 모델 이름",       "my-model"),
     # 컨텍스트 / 레이어
     "ctx-size":         ("컨텍스트 길이 (tokens)",                "32768"),

@@ -2,8 +2,7 @@
 
 Mirrors the vllm backend pattern: `stream_container_up()` is an async
 generator yielding ("log", str) / ("rc", int) events, `container_down()`
-returns (rc, message). Replaces the legacy shell scripts in
-scripts/llamacpp/ (switch.sh, stop.sh, _common.sh).
+returns (rc, message).
 
 Also hosts the llama.cpp side of the unified dev-build pipeline
 (get_dev_build_defaults, _stream_build_dev_image, _dev_image_matches).
@@ -928,7 +927,6 @@ async def stream_container_up(
             yield ("rc", 1)
             return
 
-        # Persist last-active profile (parity with switch.sh).
         try:
             (PROJECT_ROOT / ".current-profile.llamacpp").write_text(profile_name)
         except OSError as exc:

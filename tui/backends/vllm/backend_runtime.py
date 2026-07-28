@@ -934,22 +934,6 @@ async def stream_container_up(
             "up",
             "-d",
         ]
-        # Pull policy — three distinct cases:
-        #   * pull=True or `:nightly`
-        #       → `--pull always`. Nightly is intentionally rolling; pull=True
-        #         is reserved for any future "force re-pull" UI action.
-        #   * Caller passed an explicit tag (Official Release resolves to a
-        #     DockerHub semver here, or the user typed a Custom Tag)
-        #       → `--pull missing`. If that tag is already local we reuse it
-        #         silently; if it's not local, compose fetches it once. This
-        #         matches the user's mental model of "pick the version" — not
-        #         "force re-download". Critically, Official Release no longer
-        #         re-pulls a manifest the user already has.
-        #   * No explicit tag (Local Latest, resolved from local images)
-        #       → `--pull never`. The user picked from images they already
-        #         have, so a missing image is a real error, not an excuse to
-        #         silently re-download.
-        # `:latest` is rejected above and never reaches this point.
         if pull or version_tag == "nightly":
             compose_cmd.extend(["--pull", "always"])
         elif tag:
@@ -1001,12 +985,10 @@ async def _verify_vllm_version(container_name: str, expected_tag: str):
 
     expected = _parse_stable_version_tag(expected_tag)
     if expected is None:
-        # Only verify for versioned tags — `latest`/`nightly` wouldn't be reached
-        # under the new Local-Latest logic anyway.
+        # `nightly` reaches here from the Start screen and has no version to
+        # compare against.
         return
 
-    # Query the running container. Give vllm a moment to print its banner, but
-    # don't block the UI — we fall back silently on timeout.
     rc, out = await run_command(
         "docker",
         "exec",
