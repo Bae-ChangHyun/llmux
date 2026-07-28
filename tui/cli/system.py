@@ -18,16 +18,22 @@ def gpu(
     """Print nvidia-smi summary (one row per GPU)."""
     from tui.common.docker import get_gpu_info
 
+    from tui.common.docker import gpu_probe_failed
+
     gpus = run_async(get_gpu_info())
     rows = [asdict(g) for g in gpus]
+    # A CPU-only host legitimately has zero GPUs; only a present-but-broken
+    # nvidia-smi is an error.
+    failed = not rows and run_async(gpu_probe_failed())
     if json_out:
         emit_json(rows)
-        # An empty list means nvidia-smi returned nothing; a consumer cannot
-        # tell that apart from "this host has no GPU" without the exit code.
-        raise typer.Exit(code=0 if rows else 1)
+        raise typer.Exit(code=1 if failed else 0)
     if not rows:
-        print("(no GPUs detected — is nvidia-smi installed?)")
-        raise typer.Exit(code=1)
+        print(
+            "(nvidia-smi is installed but failed — check the driver)" if failed
+            else "(no GPUs detected — is nvidia-smi installed?)"
+        )
+        raise typer.Exit(code=1 if failed else 0)
     emit_table(
         rows,
         columns=["index", "name", "memory_used", "memory_total", "utilization", "temperature"],

@@ -43,6 +43,21 @@ async def run_command(*args: str, timeout: float = 10) -> tuple[int, str]:
     return proc.returncode or 0, stdout.decode("utf-8", errors="replace")
 
 
+async def gpu_probe_failed() -> bool:
+    """True only when nvidia-smi exists but cannot be queried.
+
+    A host without nvidia-smi is CPU-only — an empty GPU list is the correct
+    answer there. A host that *has* the binary but errors out has a broken
+    driver/toolkit, and callers must not report that as "0 GPUs".
+    """
+    import shutil
+
+    if shutil.which("nvidia-smi") is None:
+        return False
+    rc, _ = await run_command("nvidia-smi", "--list-gpus", timeout=5)
+    return rc != 0
+
+
 async def get_gpu_info() -> list[GpuInfo]:
     rc, out = await run_command(
         "nvidia-smi",
