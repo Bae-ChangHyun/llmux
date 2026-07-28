@@ -18,14 +18,22 @@ def gpu(
     """Print nvidia-smi summary (one row per GPU)."""
     from tui.common.docker import get_gpu_info
 
+    from tui.common.docker import gpu_probe_failed
+
     gpus = run_async(get_gpu_info())
     rows = [asdict(g) for g in gpus]
+    # A CPU-only host legitimately has zero GPUs; only a present-but-broken
+    # nvidia-smi is an error.
+    failed = not rows and run_async(gpu_probe_failed())
     if json_out:
         emit_json(rows)
-        return
+        raise typer.Exit(code=1 if failed else 0)
     if not rows:
-        print("(no GPUs detected — is nvidia-smi installed?)")
-        return
+        print(
+            "(nvidia-smi is installed but failed — check the driver)" if failed
+            else "(no GPUs detected — is nvidia-smi installed?)"
+        )
+        raise typer.Exit(code=1 if failed else 0)
     emit_table(
         rows,
         columns=["index", "name", "memory_used", "memory_total", "utilization", "temperature"],
@@ -96,9 +104,12 @@ def mem_estimate(
                 "per_gpu_gb": round(per_gpu_gb, 2),
                 "gpus": fit_rows,
                 "any_over": any_over,
+                "estimated": est_gb > 0,
             }
         )
-        raise typer.Exit(code=1 if any_over else 0)
+        # est_gb == 0 means the estimate never parsed (gated model, network
+        # failure, ...). Reporting any_over=false there would read as "it fits".
+        raise typer.Exit(code=0 if (est_gb > 0 and not any_over) else 1)
 
     print(estimate)
     if not gpus:
@@ -106,7 +117,7 @@ def mem_estimate(
         return
     if est_gb <= 0:
         print("(no parseable size in estimate — skipping per-GPU fit view)")
-        return
+        raise typer.Exit(code=1)
     if n_gpus > 1:
         print(f"TP={n_gpus}: {per_gpu_gb:.1f} GB/GPU")
     for r in fit_rows:

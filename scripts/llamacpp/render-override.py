@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-render-override.py — profile + config 를 읽어 docker-compose.override.yaml 을 생성.
+render-override.py — profile + config 를 읽어 프로필별 compose override 를 생성.
 
 입력:
-  - profiles.yaml 의 llamacpp/<profile> (CONFIG_NAME, MODEL_FILE 등)
-  - config/llamacpp/<CONFIG_NAME>.yaml  (llama-server 플래그)
+  - profiles.yaml 의 llamacpp/<profile> (config_name, model_file, hf_repo, hf_file)
+  - config/llamacpp/<config_name>.yaml  (llama-server 플래그)
 
 출력:
-  - docker-compose.override.yaml  (services.llama-server.command 블록)
+  - .runtime/llamacpp/override-<profile>.yaml  (services.llama-server.command 블록)
 
 사용:
   python3 scripts/llamacpp/render-override.py <profile-name>
@@ -33,7 +33,6 @@ from tui.common import profile_store  # noqa: E402
 # 쓴다 — 둘이 서로 다른 루트를 가리키면 엉뚱한 config 로 override 를 렌더한다.
 ROOT = profile_store.PROJECT_ROOT
 CONFIG_DIR = ROOT / "config" / "llamacpp"
-COMPOSE_DIR = ROOT / "compose" / "llamacpp"
 RUNTIME_DIR = ROOT / ".runtime" / "llamacpp"
 
 _SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -78,19 +77,19 @@ def render_command(
         raise ValueError("hf_file / model_file is empty — need a specific .gguf filename")
     args.extend(["-hf", resolved_repo])
     args.extend(["-hff", resolved_file])
-    # 옛 model-file 키가 cfg 에 남아 있으면 무시 (위에서 이미 pop 했지만 안전).
     cfg.pop("model-file", None)
 
-    # WebUI 는 강제 off. 사용자가 webui 활성화하려 해도 무시.
-    cfg.pop("no-webui", None)
-    cfg.pop("webui", None)
-    # --metrics 는 위에서 이미 강제 주입 — config 에 남아 있으면 중복 플래그가 된다.
-    cfg.pop("metrics", None)
-    # --host/--port 도 위에서 강제 주입. compose 가 컨테이너 포트를 매핑하므로
-    # config 값이 들어오면 중복 인자가 되고, 컨테이너 내부 포트를 바꾸면
-    # 포트 매핑·healthcheck 와 어긋난다.
-    cfg.pop("host", None)
-    cfg.pop("port", None)
+    # llmux owns these: --host/--port are fixed because compose maps the
+    # container port and the healthcheck probes it; --metrics backs the live
+    # tok/s poll; the WebUI is off. A config that sets them would produce
+    # duplicate args, so they are dropped — loudly, since the user wrote them.
+    for key in ("no-webui", "webui", "metrics", "host", "port"):
+        if key in cfg:
+            print(
+                f"warning: config key '{key}' is managed by llmux and was ignored",
+                file=sys.stderr,
+            )
+            cfg.pop(key, None)
 
     # A scalar string is the natural way to write a single value (the flag
     # help even shows one), so promote it instead of iterating it char by char

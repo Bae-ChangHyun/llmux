@@ -44,8 +44,8 @@ def _common_env() -> dict[str, str]:
 
 def get_dev_build_defaults() -> tuple[str, str]:
     common = _common_env()
-    repo_url = common.get("VLLM_REPO_URL", DEFAULT_VLLM_REPO_URL) or DEFAULT_VLLM_REPO_URL
-    branch = common.get("VLLM_BRANCH", "main") or "main"
+    repo_url = common.get("VLLM_REPO_URL", "").strip() or VLLM_DEV_SPEC.default_repo_url
+    branch = common.get("VLLM_BRANCH", "").strip() or VLLM_DEV_SPEC.default_branch
     return repo_url, branch
 
 
@@ -194,9 +194,8 @@ def _env_file_args(profile: Profile) -> list[str]:
 async def _container_exists(container_name: str) -> bool | None:
     """True/False if the probe succeeded, None if `docker ps` failed/timed out.
 
-    Collapsing a failed probe to False (the old behavior) let a slow daemon be
-    reported as "container gone" — `container_down` then claimed success while
-    the container kept running.
+    Collapsing a failed probe to False would let a slow daemon read as
+    "container gone" and `container_down` claim success while it kept running.
     """
     rc, out = await run_command("docker", "ps", "-a", "--format", "{{.Names}}", timeout=10)
     if rc != 0:
@@ -367,12 +366,15 @@ async def get_container_statuses() -> list[ContainerStatus]:
     rc, out = await run_command(
         "docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}", timeout=10
     )
+    if rc != 0:
+        raise RuntimeError(
+            "docker ps failed or timed out — container state is unknown"
+        )
     container_info: dict[str, str] = {}
-    if rc == 0:
-        for line in out.strip().splitlines():
-            parts = line.split("\t", 1)
-            if len(parts) == 2:
-                container_info[parts[0]] = parts[1]
+    for line in out.strip().splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) == 2:
+            container_info[parts[0]] = parts[1]
 
     statuses = []
     for name in profiles:
@@ -457,15 +459,9 @@ async def check_port_conflict(profile: Profile) -> str | None:
                 return f"container '{container_name}'"
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # SO_REUSEADDR is required here: our own _post_start_validation hits
-    # /v1/models on this same port after every successful `up`, which leaves
-    # a TIME-WAIT entry on 127.0.0.1:<port> for ~60s. Without SO_REUSEADDR a
-    # plain bind() refuses TIME-WAIT ports and we'd falsely report
-    # "another local process on 127.0.0.1:<port>" on every `up→down→up`
-    # cycle within that window. An actively LISTENING socket on the port
-    # still fails the bind (that's the real conflict we care about), so
-    # this only relaxes the spurious TIME-WAIT false positive — do not
-    # remove without re-introducing the bug.
+    # SO_REUSEADDR: our own readiness probe leaves a TIME_WAIT entry on this
+    # port for ~60s, and a plain bind() refuses those. A port a process is
+    # actively LISTENING on still fails — that is the conflict we look for.
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         sock.bind(("127.0.0.1", int(profile.port)))
@@ -770,11 +766,9 @@ async def stream_container_up(
         # VLLM_IMAGE explicitly, and an empty value makes compose's
         # `${VLLM_IMAGE:-...}` fall through to the default.
         #
-        # Must run AFTER _ensure_profile_config: that helper persists the
-        # profile (save_profile) when it auto-links a config, so clearing the
-        # tag any earlier would write image_tag="" into profiles.yaml and
-        # destroy the user's pin permanently — a one-off override must not
-        # mutate saved state.
+        # Must run AFTER _ensure_profile_config: that helper calls
+        # save_profile(), so clearing the tag earlier would persist
+        # image_tag="" and destroy the user's pin.
         had_pin = bool((profile.image_tag or "").strip())
         profile.image_tag = ""
         if had_pin:
@@ -800,16 +794,20 @@ async def stream_container_up(
         # image `vllm-dev:<safe_branch>`, so a raw `feat/foo` here would look
         # up an invalid reference that can never match.
         image_tag = dev_build.sanitize_docker_tag(tag or resolved_branch)
-        rc, _ = await run_command("docker", "image", "inspect", f"vllm-dev:{image_tag}", timeout=20)
+        rc, _ = await run_command(
+            "docker", "image", "inspect",
+            f"{VLLM_DEV_SPEC.image_prefix}:{image_tag}", timeout=20,
+        )
         needs_build = rc != 0
         if not tag and not needs_build:
             needs_build = not await _dev_image_matches(image_tag, resolved_repo_url, resolved_branch)
 
         if needs_build:
             if tag:
-                yield ("log", f"Error: Image vllm-dev:{image_tag} not found")
+                yield ("log", f"Error: Image {VLLM_DEV_SPEC.image_prefix}:{image_tag} not found")
                 rc, out = await run_command(
-                    "docker", "images", "vllm-dev", "--format", "  {{.Tag}}", timeout=20
+                    "docker", "images", VLLM_DEV_SPEC.image_prefix,
+                    "--format", "  {{.Tag}}", timeout=20,
                 )
                 if rc == 0 and out.strip():
                     yield ("log", "Available images:")
@@ -829,7 +827,7 @@ async def stream_container_up(
                 if event[0] == "rc" and event[1] != 0:
                     return
 
-        yield ("log", f"Using image: vllm-dev:{image_tag}")
+        yield ("log", f"Using image: {VLLM_DEV_SPEC.image_prefix}:{image_tag}")
         env = _compose_env(profile, use_dev=True, image_tag=image_tag)
         compose_cmd = [
             "docker",
@@ -883,7 +881,15 @@ async def stream_container_up(
             "never",
         ]
     else:
-        version_tag = tag or await get_local_latest_tag()
+        if tag:
+            version_tag = tag
+        else:
+            try:
+                version_tag = await get_local_latest_tag()
+            except RuntimeError as exc:
+                yield ("log", f"Error: could not list local images — {exc}")
+                yield ("rc", 1)
+                return
         if version_tag == "latest":
             # Refuse the `:latest` alias outright. It doesn't describe the image's
             # real contents and clicking "Local Latest" / "Official Release" should
@@ -931,22 +937,6 @@ async def stream_container_up(
             "up",
             "-d",
         ]
-        # Pull policy — three distinct cases:
-        #   * pull=True or `:nightly`
-        #       → `--pull always`. Nightly is intentionally rolling; pull=True
-        #         is reserved for any future "force re-pull" UI action.
-        #   * Caller passed an explicit tag (Official Release resolves to a
-        #     DockerHub semver here, or the user typed a Custom Tag)
-        #       → `--pull missing`. If that tag is already local we reuse it
-        #         silently; if it's not local, compose fetches it once. This
-        #         matches the user's mental model of "pick the version" — not
-        #         "force re-download". Critically, Official Release no longer
-        #         re-pulls a manifest the user already has.
-        #   * No explicit tag (Local Latest, resolved from local images)
-        #       → `--pull never`. The user picked from images they already
-        #         have, so a missing image is a real error, not an excuse to
-        #         silently re-download.
-        # `:latest` is rejected above and never reaches this point.
         if pull or version_tag == "nightly":
             compose_cmd.extend(["--pull", "always"])
         elif tag:
@@ -998,12 +988,10 @@ async def _verify_vllm_version(container_name: str, expected_tag: str):
 
     expected = _parse_stable_version_tag(expected_tag)
     if expected is None:
-        # Only verify for versioned tags — `latest`/`nightly` wouldn't be reached
-        # under the new Local-Latest logic anyway.
+        # `nightly` reaches here from the Start screen and has no version to
+        # compare against.
         return
 
-    # Query the running container. Give vllm a moment to print its banner, but
-    # don't block the UI — we fall back silently on timeout.
     rc, out = await run_command(
         "docker",
         "exec",
@@ -1060,7 +1048,9 @@ async def container_down(profile_name: str) -> tuple[int, str]:
         "--format={{.Config.Image}}",
         timeout=20,
     )
-    use_dev = image_rc == 0 and image.strip().startswith("vllm-dev:")
+    use_dev = image_rc == 0 and image.strip().startswith(
+        f"{VLLM_DEV_SPEC.image_prefix}:"
+    )
     env = _compose_env(
         profile,
         use_dev=use_dev,
@@ -1079,19 +1069,23 @@ async def container_down(profile_name: str) -> tuple[int, str]:
     if rc == 0:
         return 0, f"{profile_name} stopped successfully!"
 
+    compose_err = next(
+        (line for line in reversed(out.strip().splitlines()) if line.strip()),
+        f"rc={rc}",
+    )
     stop_rc, stop_out = await run_command("docker", "stop", profile.container_name, timeout=30)
     if stop_rc != 0:
         return stop_rc, stop_out
     rm_rc, rm_out = await run_command("docker", "rm", profile.container_name, timeout=30)
     if rm_rc != 0:
         return rm_rc, rm_out
-    # Best-effort: tear down the compose network too. Without this, repeated
-    # `compose down` failures leave `<profile>_default` networks accumulating
-    # under `docker network ls`. Errors are ignored — the network may not
-    # exist (compose never created it) or may still be in use by an external
-    # container, and neither case is fatal for the stop operation.
+    # Errors ignored — the network may not exist, or may still hold an external
+    # container; neither is fatal for the stop itself.
     await run_command("docker", "network", "rm", f"{profile.name}_default", timeout=10)
-    return 0, f"{profile_name} stopped successfully!"
+    return 0, (
+        f"{profile_name} stopped via docker stop/rm "
+        f"(compose down failed: {compose_err})"
+    )
 
 
 async def stream_container_logs(container_name: str, *, tail: int = 100):

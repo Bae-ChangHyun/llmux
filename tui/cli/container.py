@@ -10,6 +10,7 @@ import typer
 from tui.cli._runtime import (
     BACKENDS,
     detect_backend,
+    docker_logs_follow,
     docker_logs_once,
     emit_json,
     emit_table,
@@ -22,7 +23,10 @@ from tui.common import profile_store
 app = typer.Typer(help="Container lifecycle (start, stop, logs, status).", no_args_is_help=True)
 
 
-# ---- up ---------------------------------------------------------------------
+class _StatusProbeFailed(RuntimeError):
+    """`docker ps` failed, so container state is unknown rather than stopped."""
+
+
 
 @app.command("up")
 def up(
@@ -150,7 +154,6 @@ def up(
     raise typer.Exit(code=rc)
 
 
-# ---- down -------------------------------------------------------------------
 
 @app.command("down")
 def down(
@@ -174,7 +177,6 @@ def down(
     raise typer.Exit(code=rc)
 
 
-# ---- logs -------------------------------------------------------------------
 
 @app.command("logs")
 def logs(
@@ -195,44 +197,16 @@ def logs(
     sp = profile_store.load_profile(profile, bk)
     container_name = sp.container_name or sp.name
 
-    if not follow:
-        # Go through the shared async helper so follow and no-follow paths
-        # share one `docker logs --tail N` wrapper across both backends and the
-        # TUI's log streamer.
-        rc = run_async(docker_logs_once(container_name, tail=tail))
-        raise typer.Exit(code=rc)
-
-    if bk == "vllm":
-        from tui.backends.vllm.backend_runtime import stream_container_logs as _gen
-
-        async def _drive():
-            # Agreed contract: stream_container_logs(container_name, *, tail).
-            async for line in _gen(container_name, tail=tail):
-                print(line, flush=True)
-            return 0
-    else:
-        from tui.backends.llamacpp.backend import stream_logs as _gen
-
-        async def _drive():
-            # Agreed contract: stream_logs(container_name, *, tail) — llama.cpp
-            # matches the vLLM keyword-only signature so `--tail` is honored
-            # for the follow path on both backends.
-            async for evt in _gen(container_name, tail=tail):
-                if isinstance(evt, tuple):
-                    if evt[0] == "log":
-                        print(evt[1], flush=True)
-                else:
-                    print(evt, flush=True)
-            return 0
-
+    # Both paths go through the shared wrapper so the exit code is the child
+    # `docker logs` status on either side of --follow.
+    runner = docker_logs_follow if follow else docker_logs_once
     try:
-        rc = asyncio.run(_drive())
+        rc = run_async(runner(container_name, tail=tail))
     except KeyboardInterrupt:
         rc = 130
     raise typer.Exit(code=rc)
 
 
-# ---- benchmark --------------------------------------------------------------
 
 @app.command("benchmark")
 def benchmark(
@@ -322,7 +296,6 @@ def benchmark(
     )
 
 
-# ---- stats ------------------------------------------------------------------
 
 @app.command("stats")
 def stats(
@@ -372,7 +345,11 @@ def stats(
                 from tui.backends.llamacpp.backend_runtime import (
                     get_container_statuses,
                 )
-            for s in await get_container_statuses():
+            try:
+                statuses = await get_container_statuses()
+            except RuntimeError as exc:
+                raise _StatusProbeFailed(f"{bk}: {exc}") from exc
+            for s in statuses:
                 if s.running and s.port:
                     out.append(
                         {"backend": bk, "profile": s.profile_name, "port": s.port}
@@ -451,9 +428,11 @@ def stats(
         run_async(_drive())
     except KeyboardInterrupt:
         raise typer.Exit(code=130)
+    except _StatusProbeFailed as exc:
+        typer.echo(f"container status probe failed — {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
-# ---- ps ---------------------------------------------------------------------
 
 @app.command("ps")
 def ps(
@@ -485,7 +464,10 @@ def ps(
                     get_container_statuses,
                 )
 
-            statuses = await get_container_statuses()
+            try:
+                statuses = await get_container_statuses()
+            except RuntimeError as exc:
+                raise _StatusProbeFailed(f"{bk}: {exc}") from exc
             for s in statuses:
                 rows.append(
                     {
@@ -500,7 +482,11 @@ def ps(
                     }
                 )
 
-    run_async(_collect())
+    try:
+        run_async(_collect())
+    except _StatusProbeFailed as exc:
+        typer.echo(f"container status probe failed — {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
     if running_only:
         rows = [r for r in rows if r["running"]]
@@ -515,7 +501,6 @@ def ps(
     )
 
 
-# ---- render-env -------------------------------------------------------------
 
 @app.command("render-env")
 def render_env(

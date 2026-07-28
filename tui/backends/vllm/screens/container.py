@@ -33,10 +33,6 @@ from tui.backends.vllm.backend import (
 from tui.common.i18n import t
 
 
-# ---------------------------------------------------------------------------
-# Version option IDs (stable keys for logic, labels updated dynamically)
-# ---------------------------------------------------------------------------
-
 VER_PINNED = "pinned_image"
 VER_LOCAL = "local_latest"
 VER_OFFICIAL = "official"
@@ -44,10 +40,9 @@ VER_NIGHTLY = "nightly"
 VER_DEV = "dev_build"
 VER_CUSTOM = "custom_tag"
 
-
-# ---------------------------------------------------------------------------
-# ContainerUpScreen
-# ---------------------------------------------------------------------------
+# Registry lookups retry on a timer; stop after this many so an unreachable
+# DockerHub stops looking like "still loading" forever.
+_VERSION_LOOKUP_RETRIES = 3
 
 
 class ContainerUpScreen(Screen):
@@ -171,6 +166,7 @@ class ContainerUpScreen(Screen):
         self._gpu_timer = None
         self._local_tag: str = ""
         self._release_version: str = ""
+        self._version_retries: int = 0
         self._dev_repo_url, self._dev_branch = get_dev_build_defaults()
 
     def compose(self) -> ComposeResult:
@@ -258,12 +254,10 @@ class ContainerUpScreen(Screen):
     def on_mount(self) -> None:
         self._fetch_version_info()
         self._fetch_gpu_info()
-        # Focus the radio set for arrow key navigation
         try:
             self.query_one("#version-radio", RadioSet).focus()
         except Exception:
             pass
-        # Auto-refresh GPU bar every 3 seconds
         self._gpu_timer = self.set_interval(3, self._fetch_gpu_info)
 
     @work(exclusive=False)
@@ -273,12 +267,22 @@ class ContainerUpScreen(Screen):
         except Exception:
             return
 
-        # Local latest
-        local_tag = await get_local_latest_tag()
+        local_probe_failed = False
+        try:
+            local_tag = await get_local_latest_tag()
+        except RuntimeError as exc:
+            local_probe_failed = True
+            local_tag = "none"
+            self.notify(t(f"Local image lookup failed: {exc}",
+                          f"로컬 이미지 조회 실패: {exc}"),
+                        severity="error", timeout=8)
         self._local_tag = "" if local_tag == "none" else local_tag
         try:
             btn = radio_set.query_one(f"#{VER_LOCAL}", RadioButton)
-            if local_tag == "none":
+            if local_probe_failed:
+                btn.label = t("Local Latest  (lookup failed)", "로컬 최신  (조회 실패)")
+                btn.disabled = True
+            elif local_tag == "none":
                 btn.label = t("Local Latest  (no images)", "로컬 최신  (이미지 없음)")
                 btn.disabled = True
             else:
@@ -287,26 +291,30 @@ class ContainerUpScreen(Screen):
         except Exception:
             pass
 
-        # Official release
         release_ver = await get_dockerhub_release_version()
         self._release_version = release_ver if release_ver != "unknown" else ""
         try:
             btn = radio_set.query_one(f"#{VER_OFFICIAL}", RadioButton)
             if self._release_version:
                 btn.label = t(f"Official Release  ({self._release_version})", f"공식 릴리스  ({self._release_version})")
-                btn.disabled = False
+            elif self._version_retries >= _VERSION_LOOKUP_RETRIES:
+                btn.label = t("Official Release  (DockerHub unreachable)",
+                              "공식 릴리스  (DockerHub 조회 실패)")
             else:
                 btn.label = t("Official Release  (loading...)", "공식 릴리스  (불러오는 중...)")
-                btn.disabled = False
+            btn.disabled = False
         except Exception:
             pass
 
-        # Nightly
         nightly_date = await get_dockerhub_nightly_date()
         try:
             btn = radio_set.query_one(f"#{VER_NIGHTLY}", RadioButton)
             if nightly_date == "unknown":
-                btn.label = t("Nightly  (loading...)", "나이틀리  (불러오는 중...)")
+                btn.label = (
+                    t("Nightly  (DockerHub unreachable)", "나이틀리  (DockerHub 조회 실패)")
+                    if self._version_retries >= _VERSION_LOOKUP_RETRIES
+                    else t("Nightly  (loading...)", "나이틀리  (불러오는 중...)")
+                )
             elif nightly_date == "available":
                 btn.label = t("Nightly", "나이틀리")
             else:
@@ -317,15 +325,22 @@ class ContainerUpScreen(Screen):
         try:
             # Don't steal the selection from a pinned profile — VER_PINNED is
             # its default and stays valid regardless of what's on DockerHub.
-            if not self._local_tag and not self._profile.image_tag:
-                if self._release_version:
-                    radio_set.query_one(f"#{VER_OFFICIAL}", RadioButton).value = True
-                else:
-                    radio_set.query_one(f"#{VER_NIGHTLY}", RadioButton).value = True
+            # With no release info there is nothing to auto-select: picking
+            # Nightly here would hand the user an unvetted rolling build while
+            # they believe they chose a stable one.
+            if (
+                not self._local_tag
+                and not self._profile.image_tag
+                and self._release_version
+            ):
+                radio_set.query_one(f"#{VER_OFFICIAL}", RadioButton).value = True
         except Exception:
             pass
+
         if not self._release_version or nightly_date == "unknown":
-            self.set_timer(5, self._fetch_version_info)
+            if self._version_retries < _VERSION_LOOKUP_RETRIES:
+                self._version_retries += 1
+                self.set_timer(5, self._fetch_version_info)
 
     @work(exclusive=False)
     async def _fetch_gpu_info(self) -> None:
@@ -409,7 +424,6 @@ class ContainerUpScreen(Screen):
 
     @work(exclusive=True)
     async def _do_start(self) -> None:
-        # Determine version from radio selection
         radio_set = self.query_one("#version-radio", RadioSet)
         pressed = radio_set.pressed_button
         default_id = VER_PINNED if self._profile.image_tag else VER_LOCAL
@@ -424,7 +438,6 @@ class ContainerUpScreen(Screen):
 
         if selected_id == VER_PINNED:
             # Empty tag + the profile's own image_tag → runtime's pinned branch.
-            # Same behavior as before this option existed, just now explicit.
             pass
         elif selected_id == VER_LOCAL:
             if not self._local_tag:
@@ -490,7 +503,6 @@ class ContainerUpScreen(Screen):
             )
             return
 
-        # Switch to startup log view
         try:
             self.query_one("#startup-area").styles.display = "block"
             self.query_one("#version-scroll").styles.display = "none"
@@ -548,11 +560,6 @@ class ContainerUpScreen(Screen):
             ),
             timeout=2,
         )
-
-
-# ---------------------------------------------------------------------------
-# LogScreen
-# ---------------------------------------------------------------------------
 
 
 class LogScreen(Screen):

@@ -22,7 +22,15 @@ log = logging.getLogger(__name__)
 def _resolve_project_root() -> Path:
     env_root = os.environ.get("LLMUX_ROOT", "").strip()
     if env_root:
-        return Path(env_root).expanduser().resolve()
+        root = Path(env_root).expanduser().resolve()
+        # A typo'd LLMUX_ROOT resolves fine and then reads as an empty install
+        # (no profiles, no configs) instead of a bad setting.
+        if not (root / "compose").is_dir():
+            raise RuntimeError(
+                f"LLMUX_ROOT={env_root} does not look like an llmux checkout "
+                f"({root / 'compose'} is missing)."
+            )
+        return root
     cwd = Path.cwd()
     if (cwd / "profiles.example.yaml").exists() and (cwd / "compose").is_dir():
         return cwd
@@ -137,7 +145,10 @@ def _load_yaml() -> dict:
         return {"version": 1, "defaults": DEFAULTS, "profiles": []}
     raw = yaml.safe_load(PROFILES_YAML.read_text()) or {}
     if not isinstance(raw, dict):
-        raw = {}
+        raise ValueError(
+            f"{PROFILES_YAML} must be a mapping, got {type(raw).__name__} — "
+            "a list or scalar here would silently read as zero profiles."
+        )
     raw.setdefault("version", 1)
     raw.setdefault("defaults", DEFAULTS)
     raw.setdefault("profiles", [])
@@ -203,9 +214,8 @@ def _to_profile(entry: dict, defaults: dict[str, Any] | None = None) -> StoredPr
     name = merged["name"]
 
     def _as_int(field_name: str, raw: Any) -> int:
-        # A hand-edited `port: abc` used to raise a bare ValueError deep inside
-        # int(), taking down every read path. Re-raise with the profile + field
-        # so list_profiles can skip just this entry and say why.
+        # Re-raise with the profile + field so list_profiles can skip just
+        # this entry and say why, instead of a bare ValueError from int().
         try:
             return int(raw)
         except (TypeError, ValueError):

@@ -34,9 +34,7 @@ async def gpu_conflict_messages(
     the caller logs alongside genuine overlap warnings, so it can't abort a
     startup.
     """
-    # Lazy import — profile_store pulls in yaml at import time, which is
-    # heavier than the alternative of one extra import inside the rare
-    # conflict-check path.
+    # Lazy import: profile_store pulls in yaml at import time.
     from tui.common import profile_store
 
     rc, out = await run_command("docker", "ps", "--format", "{{.Names}}", timeout=10)

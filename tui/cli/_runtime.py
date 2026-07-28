@@ -112,7 +112,6 @@ def emit_table(rows: Iterable[dict], columns: list[str]) -> None:
         print("  ".join(str(r.get(c, "")).ljust(widths[c]) for c in columns))
 
 
-# ── Shared orchestration helpers ────────────────────────────────────────────
 
 
 async def gather_conflict_warnings(profile_name: str, backend: str) -> list[str]:
@@ -203,3 +202,36 @@ async def docker_logs_once(container_name: str, *, tail: int) -> int:
             print(line.decode("utf-8", errors="replace").rstrip("\n"), flush=True)
     await proc.wait()
     return proc.returncode or 0
+
+
+async def docker_logs_follow(container_name: str, *, tail: int) -> int:
+    """Stream `docker logs -f` and return its exit code.
+
+    The CLI needs the child's status: with `stderr=STDOUT`, a missing container
+    prints "Error: No such container" as a log line and the stream simply ends,
+    so a hardcoded 0 would report success for a container that never existed.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "docker", "logs", "-f", "--tail", str(tail), container_name,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        if proc.stdout is not None:
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                print(line.decode("utf-8", errors="replace").rstrip("\n"), flush=True)
+        await proc.wait()
+        return proc.returncode or 0
+    finally:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+            try:
+                await proc.wait()
+            except (asyncio.CancelledError, ProcessLookupError, OSError):
+                pass

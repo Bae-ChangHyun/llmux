@@ -24,6 +24,7 @@ from tui.backends.llamacpp.backend import (
     Config,
     Profile,
     list_config_names,
+    HfListingUnavailable,
     list_hf_repo_files,
     list_profile_names,
     load_config,
@@ -148,7 +149,6 @@ class QuickSetupScreen(ModalScreen[str]):
         with Vertical():
             yield Static(t("Quick Setup — HF repo → profile + config", "빠른 설정 — HF repo → profile + config"), classes="title")
             with VerticalScroll():
-                # --- HF repo ---
                 yield Label(t("HuggingFace repo (e.g. unsloth/Qwen3-30B-A3B-GGUF)", "HuggingFace repo (예: unsloth/Qwen3-30B-A3B-GGUF)"))
                 yield Input(placeholder=t("org/repo-GGUF or URL", "org/repo-GGUF 또는 URL"), id="repo-input")
                 yield Button(t("Fetch files", "파일 가져오기"), id="fetch-btn")
@@ -162,7 +162,6 @@ class QuickSetupScreen(ModalScreen[str]):
                 )
                 yield Static("", id="moe-hint")
 
-                # --- 기본 ---
                 yield Label(t("Profile name (blank = auto from filename)", "Profile 이름 (비우면 파일명에서 자동 생성)"))
                 yield Input(placeholder="auto", id="name-input")
 
@@ -175,7 +174,6 @@ class QuickSetupScreen(ModalScreen[str]):
                 yield Label(t("GPU ID (e.g. 0 or 0,1)", "GPU ID (예: 0 또는 0,1)"))
                 yield Input(placeholder="0", value="0", id="gpu-input")
 
-                # --- llama.cpp 공통 파라미터 ---
                 with Collapsible(
                     title=t("llama.cpp common parameters", "llama.cpp 공통 파라미터"),
                     collapsed=False,
@@ -219,7 +217,6 @@ class QuickSetupScreen(ModalScreen[str]):
                         yield Label(t("Jinja chat template (needed for /v1/chat/completions)", "Jinja chat template (/v1/chat/completions 에 필요)"))
                         yield Switch(value=True, id="jinja-switch")
 
-                # --- MoE Expert Offload ---
                 with Collapsible(
                     title=t("MoE Expert Offload (optional)", "MoE Expert Offload (선택)"),
                     collapsed=True,
@@ -229,14 +226,16 @@ class QuickSetupScreen(ModalScreen[str]):
                         t(
                             "[dim]MoE models (Qwen3-A3B, Mixtral, etc.) activate only a subset of "
                             "the total parameters per token. [b]Keeping expert weights in CPU RAM and "
-                            "streaming only the active experts to the GPU[/b] fits a 35B MoE on a 16GB GPU.\n"
-                            "e.g. [b]qwen3.6-35b-a3b UD-Q4_K_XL[/b] → 36 tok/s at VRAM 7.5GB + RAM 15GB.\n\n"
+                            "streaming only the active experts to the GPU[/b] can fit a 35B MoE on a 16GB GPU.\n"
+                            "e.g. [b]qwen3.6-35b-a3b UD-Q4_K_XL[/b] → VRAM 7.5GB + RAM 15GB; throughput "
+                            "depends heavily on RAM bandwidth (~36 tok/s measured on an RTX 4080 SUPER).\n\n"
                             "If the filename has an 'A3B' / 'A7B' pattern it is auto-detected and the default regex is filled in. "
                             "Leave blank for no expert offload (dense models usually don't need it).[/dim]",
                             "[dim]MoE 모델 (Qwen3-A3B, Mixtral 등) 은 전체 파라미터 중 일부만 "
                             "매 토큰 활성화됩니다. [b]Expert 가중치를 CPU RAM 에 두고 "
                             "활성 expert 만 GPU 로 스트리밍[/b] 하면 16GB GPU 에 35B MoE 도 올라갑니다.\n"
-                            "예: [b]qwen3.6-35b-a3b UD-Q4_K_XL[/b] → VRAM 7.5GB + RAM 15GB 로 36 tok/s.\n\n"
+                            "예: [b]qwen3.6-35b-a3b UD-Q4_K_XL[/b] → VRAM 7.5GB + RAM 15GB. 속도는 RAM 대역폭에 "
+                            "크게 좌우됩니다 (RTX 4080 SUPER 기준 약 36 tok/s).\n\n"
                             "파일명에 'A3B', 'A7B' 패턴이 있으면 자동 감지 후 기본 정규식을 채워드립니다. "
                             "비우면 expert offload 안 함 (Dense 모델은 보통 필요 없음).[/dim]",
                         ),
@@ -248,7 +247,6 @@ class QuickSetupScreen(ModalScreen[str]):
                         id="ot-input",
                     )
 
-                # --- 기존 config 복사 ---
                 yield Label(t("Copy extra params from an existing config (optional)", "기존 config 에서 추가 파라미터 복사 (선택)"))
                 yield Select(
                     self._build_config_options(),
@@ -267,7 +265,6 @@ class QuickSetupScreen(ModalScreen[str]):
             for name in list_config_names()
         ]
 
-    # ----- Fetch GGUF files -----
 
     @on(Button.Pressed, "#fetch-btn")
     def _on_fetch(self) -> None:
@@ -283,14 +280,22 @@ class QuickSetupScreen(ModalScreen[str]):
 
     @work(exclusive=True, group="hf-fetch")
     async def _fetch_files(self, repo: str) -> None:
-        files = await list_hf_repo_files(repo)
+        info = self.query_one("#gguf-info", Static)
+        try:
+            files = await list_hf_repo_files(repo)
+        except HfListingUnavailable as exc:
+            info.update(t(f"[red]Could not reach huggingface.co: {exc}[/red]",
+                          f"[red]huggingface.co 조회 실패: {exc}[/red]"))
+            self.query_one("#gguf-select", Select).set_options(
+                [(t("(lookup failed)", "(조회 실패)"), "__none__")]
+            )
+            return
         gguf_items = [
             f for f in files
             if isinstance(f, dict)
             and f.get("type") == "file"
             and str(f.get("path", "")).lower().endswith(".gguf")
         ]
-        info = self.query_one("#gguf-info", Static)
         select = self.query_one("#gguf-select", Select)
         if not gguf_items:
             info.update(t("[red]No GGUF files (or private repo — check HF_TOKEN)[/red]", "[red]GGUF 파일 없음 (또는 private repo — HF_TOKEN 확인)[/red]"))
@@ -307,10 +312,8 @@ class QuickSetupScreen(ModalScreen[str]):
         select.set_options(opts)
         select.value = opts[0][1]
         info.update(t(f"[green]{len(opts)} GGUF files[/green]", f"[green]{len(opts)} 개 GGUF 파일[/green]"))
-        # 첫 파일로 MoE 감지
         self._update_moe_hint(opts[0][1])
 
-    # ----- GGUF 선택 변화 시 MoE 감지 -----
 
     @on(Select.Changed, "#gguf-select")
     def _on_gguf_changed(self, event: Select.Changed) -> None:
@@ -332,7 +335,6 @@ class QuickSetupScreen(ModalScreen[str]):
                     f"expert offload 권장 (아래 'MoE Expert Offload' 섹션 참고)[/dim]",
                 )
             )
-            # 사용자가 수동으로 값을 지운 게 아니면 기본값 채움
             if not ot_input.value.strip():
                 ot_input.value = _DEFAULT_OT
             moe_collapsible.collapsed = False
@@ -344,7 +346,6 @@ class QuickSetupScreen(ModalScreen[str]):
                 )
             )
 
-    # ----- Create -----
 
     @on(Button.Pressed, "#cancel-btn")
     def on_cancel(self) -> None:
@@ -391,7 +392,6 @@ class QuickSetupScreen(ModalScreen[str]):
         flash_attn = self.query_one("#flash-attn-switch", Switch).value
         jinja = self.query_one("#jinja-switch", Switch).value
 
-        # --- 필수 검증 ---
         if not repo or not _REPO_RE.match(repo):
             self.notify(t("A valid HF repo is required", "유효한 HF repo 필요"), severity="error")
             return
@@ -408,7 +408,6 @@ class QuickSetupScreen(ModalScreen[str]):
             self.notify(t("Port must be 1024–65535", "Port 는 1024–65535"), severity="error")
             return
 
-        # --- 이름 자동 생성 ---
         if not name_raw:
             base = repo.rsplit("/", 1)[-1]
             base = re.sub(r"[-_]?GGUF$", "", base, flags=re.I)
@@ -443,7 +442,6 @@ class QuickSetupScreen(ModalScreen[str]):
             i += 1
             final_name = f"{name_raw}-{i}"
 
-        # --- 추가 파라미터 복사 (베이스) ---
         params: dict[str, Any] = {}
         disabled_params: dict[str, Any] = {}
         copy_sel = self.query_one("#copy-config-select", Select)
@@ -452,11 +450,9 @@ class QuickSetupScreen(ModalScreen[str]):
             params.update(src.params)
             disabled_params = dict(src.disabled_params)
 
-        # --- 핵심 플래그 강제 설정 ---
         params["model-file"] = gguf_file
         params.setdefault("alias", final_name)
 
-        # --- 선택 파라미터: 빈값이면 저장하지 않음 ---
         def _set_int(key: str, raw: str, label: str) -> bool:
             if not raw:
                 params.pop(key, None)

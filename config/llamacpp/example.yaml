@@ -7,7 +7,8 @@
 
 # ═══ 필수 ═══
 
-# GGUF 파일명 (models/ 기준 상대경로). --model /models/<파일명> 로 렌더됨.
+# GGUF 파일명. 프로필의 hf_repo/hf_file 이 비어 있을 때만 파일명으로 쓰이며,
+# llama-server 가 `-hff <파일명>` 으로 HF 캐시에 직접 받는다 (호스트 마운트 아님).
 model-file: your-model.gguf
 
 # ═══ 자주 쓰는 플래그 ═══

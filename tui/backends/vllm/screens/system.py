@@ -99,25 +99,20 @@ class SystemScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        # GPU table columns
         gpu_table = self.query_one("#gpu-table", DataTable)
         gpu_table.add_columns("GPU", "Name", "Memory Used", "Memory Total", "Utilization", "Temperature")
 
-        # Official images table columns
         official_table = self.query_one("#official-images", DataTable)
         official_table.add_columns("Tag", "Size", "Created")
 
-        # Dev images table columns
         dev_table = self.query_one("#dev-images", DataTable)
         dev_table.add_columns("Tag", "Size", "Created")
 
-        # Initial data load
         self._refresh_gpu()
         self._refresh_images()
         self._refresh_containers()
         self._refresh_disk()
 
-        # Auto-refresh GPU every 3 seconds
         self._gpu_timer = self.set_interval(3, self._refresh_gpu)
 
     def on_screen_suspend(self) -> None:
@@ -129,7 +124,6 @@ class SystemScreen(Screen):
         if self._gpu_timer is not None:
             self._gpu_timer.resume()
 
-    # ----- GPU Tab -----
 
     @work(exclusive=True, group="gpu")
     async def _refresh_gpu(self) -> None:
@@ -143,7 +137,6 @@ class SystemScreen(Screen):
             table.add_row("--", "No GPU info available", "--", "--", "--", "--")
             return
         for gpu in gpus:
-            # Color code utilization
             try:
                 util_val = int(gpu.utilization)
             except (ValueError, TypeError):
@@ -155,7 +148,6 @@ class SystemScreen(Screen):
             else:
                 util_display = f"[green]{gpu.utilization}%[/]"
 
-            # Color code temperature
             try:
                 temp_val = int(gpu.temperature)
             except (ValueError, TypeError):
@@ -176,14 +168,17 @@ class SystemScreen(Screen):
                 temp_display,
             )
 
-    # ----- Docker Images Tab -----
 
     @work(exclusive=True, group="images")
     async def _refresh_images(self) -> None:
-        official = await get_docker_images()
-        dev = await get_dev_images()
-        self._update_image_table("#official-images", official)
-        self._update_image_table("#dev-images", dev)
+        for table_id, fetch in (
+            ("#official-images", get_docker_images),
+            ("#dev-images", get_dev_images),
+        ):
+            try:
+                self._update_image_table(table_id, await fetch())
+            except Exception as exc:
+                self._image_table_error(table_id, exc)
 
     def _update_image_table(self, table_id: str, images: list[DockerImage]) -> None:
         table = self.query_one(table_id, DataTable)
@@ -194,7 +189,13 @@ class SystemScreen(Screen):
         for img in images:
             table.add_row(img.tag, img.size, img.created)
 
-    # ----- Containers Tab -----
+    def _image_table_error(self, table_id: str, exc: Exception) -> None:
+        table = self.query_one(table_id, DataTable)
+        table.clear()
+        table.add_row(t("[red](query failed)[/]", "[red](조회 실패)[/]"), "--", "--")
+        self.notify(t(f"Image list failed: {exc}", f"이미지 조회 실패: {exc}"),
+                    severity="error", timeout=8)
+
 
     @work(exclusive=True, group="containers")
     async def _refresh_containers(self) -> None:
@@ -231,7 +232,6 @@ class SystemScreen(Screen):
             for line in filtered:
                 log.write(line)
 
-    # ----- Disk Tab -----
 
     @work(exclusive=True, group="disk")
     async def _refresh_disk(self) -> None:
@@ -260,7 +260,6 @@ class SystemScreen(Screen):
         else:
             log.write(t(f"[yellow]Could not stat {hf_cache} (does it exist?)[/]", f"[yellow]{hf_cache} 를 확인할 수 없습니다 (존재하나요?)[/]"))
 
-    # ----- Actions -----
 
     def action_go_back(self) -> None:
         # pop_screen matches the llama.cpp side and the rest of the modal
@@ -275,7 +274,6 @@ class SystemScreen(Screen):
         self._refresh_disk()
         self.notify(t("Refreshing all system info...", "모든 시스템 정보 새로고침 중..."))
 
-    # ----- Button handlers -----
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-refresh-images":

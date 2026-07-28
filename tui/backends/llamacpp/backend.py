@@ -42,20 +42,13 @@ SCRIPTS_DIR = PROJECT_ROOT / "scripts" / "llamacpp"
 COMMON_ENV = PROJECT_ROOT / ".env.common"
 CURRENT_PROFILE_FILE = PROJECT_ROOT / ".current-profile.llamacpp"
 
-
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
+LLAMACPP_OFFICIAL_REPO = "ghcr.io/ggml-org/llama.cpp"
+LLAMACPP_OFFICIAL_IMAGE = f"{LLAMACPP_OFFICIAL_REPO}:server-cuda"
 
 
 def validate_name(name: str) -> bool:
     """compose-safe lowercase name. Also prevents argv/path injection."""
     return bool(re.match(r"^[a-z0-9][a-z0-9_-]*$", name))
-
-
-# ---------------------------------------------------------------------------
-# .env / YAML helpers
-# ---------------------------------------------------------------------------
 
 
 def _host_expand(path: str) -> str:
@@ -74,15 +67,23 @@ def _get_model_dir() -> Path:
     return Path(_host_expand(raw))
 
 
-def _get_hf_cache_dir() -> Path:
+def hf_cache_setting() -> str:
+    """Raw HF_CACHE_PATH from .env.common, or "" when unset.
+
+    Callers that display cache contents must say so: an unset value silently
+    points every lookup at ~/.cache/huggingface, which makes a typo'd key look
+    like "no models downloaded".
+    """
     env_common = ROOT / ".env.common"
-    default = Path.home() / ".cache" / "huggingface"
     if not env_common.exists():
-        return default
-    env = _parse_env_file(env_common)
-    raw = env.get("HF_CACHE_PATH")
+        return ""
+    return _parse_env_file(env_common).get("HF_CACHE_PATH", "").strip()
+
+
+def _get_hf_cache_dir() -> Path:
+    raw = hf_cache_setting()
     if not raw:
-        return default
+        return Path.home() / ".cache" / "huggingface"
     return Path(_host_expand(raw))
 
 
@@ -144,11 +145,6 @@ def list_cached_gguf() -> list[dict[str, Any]]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Dataclasses
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class Profile:
     name: str
@@ -194,11 +190,6 @@ class Config:
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.params.get(key, default)
-
-
-# ---------------------------------------------------------------------------
-# Profile CRUD + scanning
-# ---------------------------------------------------------------------------
 
 
 def _to_profile(stored: profile_store.StoredProfile) -> Profile:
@@ -318,11 +309,6 @@ def read_current_profile() -> str | None:
     return CURRENT_PROFILE_FILE.read_text().strip() or None
 
 
-# ---------------------------------------------------------------------------
-# Config CRUD
-# ---------------------------------------------------------------------------
-
-
 def list_config_names() -> list[str]:
     if not CONFIG_DIR.exists():
         return []
@@ -385,16 +371,11 @@ def format_config_param_value(value: Any) -> str:
     return str(value)
 
 
-# ---------------------------------------------------------------------------
-# llama-server flag discovery (선택적: docker run llama-server --help)
-# ---------------------------------------------------------------------------
-
-
 async def extract_llama_server_flags() -> set[str]:
     """llama-server --help 를 docker 로 실행해 --foo-bar 플래그들 파싱.
     실패 시 빈 set 반환."""
     env = _parse_env_file(ROOT / ".env.common")
-    image = env.get("LLAMACPP_IMAGE", "ghcr.io/ggml-org/llama.cpp:server-cuda")
+    image = env.get("LLAMACPP_IMAGE", "") or LLAMACPP_OFFICIAL_IMAGE
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -422,11 +403,6 @@ async def extract_llama_server_flags() -> set[str]:
         if 2 <= len(flag) <= 40:
             flags.add(flag)
     return flags
-
-
-# ---------------------------------------------------------------------------
-# Log streaming
-# ---------------------------------------------------------------------------
 
 
 async def stream_logs(container_name: str, *, tail: int = 100):
@@ -469,11 +445,6 @@ def strip_ansi(s: str) -> str:
 from tui.common.http import chat_completion_bench as chat_completion  # noqa: F401 — re-exported
 
 
-# ---------------------------------------------------------------------------
-# GPU / Docker image inspection
-# ---------------------------------------------------------------------------
-
-
 from tui.common.docker import (  # noqa: F401 — re-exported for backward compat
     GpuInfo,
     format_gpu_bar,
@@ -491,25 +462,24 @@ class DockerImage:
     created: str
 
 
-async def get_docker_images(repo: str = "ghcr.io/ggml-org/llama.cpp") -> list[DockerImage]:
+async def get_docker_images(repo: str = LLAMACPP_OFFICIAL_REPO) -> list[DockerImage]:
+    """Local images for `repo`. Raises if the probe fails — an empty list must
+    mean "no such image", never "docker could not be reached"."""
     rc, out = await run_command(
         "docker", "images", repo,
         "--format", "{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}",
         timeout=10,
     )
     if rc != 0:
-        return []
+        raise RuntimeError(
+            f"docker images {repo} failed or timed out: {out.strip() or 'no output'}"
+        )
     images: list[DockerImage] = []
     for line in out.strip().splitlines():
         parts = line.split("\t")
         if len(parts) >= 4 and parts[1] != "<none>":
             images.append(DockerImage(*parts[:4]))
     return images
-
-
-# ---------------------------------------------------------------------------
-# HuggingFace repo helpers (QuickSetup 용)
-# ---------------------------------------------------------------------------
 
 
 _HF_TREE_PAGE_CAP = 10
@@ -531,6 +501,10 @@ def _parse_link_next(header: str) -> str:
     return ""
 
 
+class HfListingUnavailable(RuntimeError):
+    """The HF file listing could not be fetched — distinct from "no files"."""
+
+
 async def list_hf_repo_files(repo: str) -> list[dict]:
     """HF API 로 repo 의 파일 목록 가져오기. GGUF 파일만 필터링하지는 않음.
 
@@ -544,7 +518,8 @@ async def list_hf_repo_files(repo: str) -> list[dict]:
     loop = asyncio.get_running_loop()
 
     def _do():
-        url = f"https://huggingface.co/api/models/{repo}/tree/main?recursive=true"
+        endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
+        url = f"{endpoint}/api/models/{repo}/tree/main?recursive=true"
         headers = {"User-Agent": "llmux"}
         token = _parse_env_file(ROOT / ".env.common").get("HF_TOKEN", "").strip()
         if token and not token.startswith("your_"):
@@ -577,5 +552,4 @@ async def list_hf_repo_files(repo: str) -> list[dict]:
     try:
         return await loop.run_in_executor(None, _do)
     except Exception as exc:
-        log.warning("HF tree listing for %s failed: %s", repo, exc)
-        return []
+        raise HfListingUnavailable(f"{repo}: {exc}") from exc

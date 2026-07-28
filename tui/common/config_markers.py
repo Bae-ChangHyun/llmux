@@ -24,10 +24,8 @@ _MARKER_RE = re.compile(r"^#\s*llmux:disabled\s+([^:]+):\s?(.*)$")
 
 
 def _inline(value: Any) -> str:
-    # A marker is exactly one line, so the serialization must never wrap: the
-    # default width=80 used to line-break long strings / big lists, and taking
-    # only the first physical line silently truncated the value (and corrupted
-    # list/dict types on re-enable). width=10**9 disables wrapping.
+    # A marker is exactly one line, so width=10**9 disables wrapping — a
+    # wrapped value would be truncated at its first physical line.
     dumped = yaml.safe_dump(
         value,
         default_flow_style=True,
@@ -86,10 +84,16 @@ def dump_active_config(existing_text: str | None, data: dict[str, Any]) -> str:
     ry.width = 10**9
     try:
         existing = ry.load(active)
-    except Exception:  # noqa: BLE001 — malformed prior file: don't block the save
-        return plain()
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"the existing config could not be parsed ({exc}); saving would "
+            "drop every comment in it. Fix or delete the file first."
+        ) from exc
     if not isinstance(existing, dict):
-        return plain()
+        raise RuntimeError(
+            "the existing config is not a mapping; saving would drop every "
+            "comment in it. Fix or delete the file first."
+        )
 
     for key in [k for k in existing if k not in data]:
         del existing[key]

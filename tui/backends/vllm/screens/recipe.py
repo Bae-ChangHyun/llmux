@@ -78,7 +78,6 @@ class RecipeReviewScreen(ModalScreen[dict | None]):
         self._gpu_total_gb = gpu_total_gb
         self._local_vllm_version = local_vllm_version
 
-    # ----- variant helpers -----
 
     def _fits(self, v: RecipeVariant) -> bool | None:
         if self._gpu_total_gb is None or v.vram_minimum_gb is None:
@@ -115,7 +114,6 @@ class RecipeReviewScreen(ModalScreen[dict | None]):
             label += f"\n[dim]{v.description}[/dim]"
         return label
 
-    # ----- compose -----
 
     def compose(self) -> ComposeResult:
         r = self._recipe
@@ -182,7 +180,6 @@ class RecipeReviewScreen(ModalScreen[dict | None]):
             f"레시피 요구 vLLM ≥ {rv} · 로컬 최신 이미지는 {lv}",
         )
 
-    # ----- live preview -----
 
     def _selected_variant(self) -> RecipeVariant | None:
         if not self._recipe.variants:
@@ -197,12 +194,19 @@ class RecipeReviewScreen(ModalScreen[dict | None]):
 
     def _enabled_features(self) -> list[str]:
         out = []
+        missing = []
         for f in self._recipe.features:
             try:
                 if self.query_one(f"#feat-{f.name}", Switch).value:
                     out.append(f.name)
             except Exception:
-                pass
+                missing.append(f.name)
+        if missing:
+            self.notify(
+                t(f"Could not read feature toggles: {', '.join(missing)}",
+                  f"기능 토글을 읽지 못했습니다: {', '.join(missing)}"),
+                severity="error",
+            )
         return out
 
     def _current(self) -> tuple[str, dict]:
@@ -226,7 +230,6 @@ class RecipeReviewScreen(ModalScreen[dict | None]):
     def _on_feature(self, event: Switch.Changed) -> None:
         self._refresh_preview()
 
-    # ----- actions -----
 
     @on(Button.Pressed, "#create-btn")
     def _on_create(self, event: Button.Pressed) -> None:

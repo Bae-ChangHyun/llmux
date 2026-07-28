@@ -24,11 +24,6 @@ from tui.common import profile_store
 from tui.common.i18n import t
 
 
-# ---------------------------------------------------------------------------
-# ProfileFormScreen
-# ---------------------------------------------------------------------------
-
-
 def _default_port() -> str:
     """Backend default port, honoring a `defaults:` override in profiles.yaml."""
     from tui.common import profile_store
@@ -249,7 +244,6 @@ class ProfileFormScreen(ModalScreen[str | None]):
         config_name = str(config_select.value) if config_select.value != Select.BLANK else ""
         model_id = self.query_one("#model-id-input", Input).value.strip()
 
-        # --- Validation ---
         if not name:
             self.notify(t("Profile name is required.", "프로필 이름은 필수입니다."),
                         severity="error")
@@ -335,11 +329,9 @@ class ProfileFormScreen(ModalScreen[str | None]):
             self.notify(tag_err, severity="error")
             return
 
-        # --- Rename first, so the save below lands on the new entry ---
         if renaming and not await self._rename_to(name):
             return
 
-        # --- Build and save ---
         if self._edit_mode and self._profile is not None:
             profile = self._profile
             profile.container_name = container or name
@@ -369,7 +361,6 @@ class ProfileFormScreen(ModalScreen[str | None]):
         self.notify(t(f"Saved: {name}", f"저장됨: {name}"), severity="information")
         self._saved_name = name
 
-        # New profile → switch to edit mode after first save
         if not self._edit_mode:
             self._edit_mode = True
             self._profile = profile
@@ -441,11 +432,6 @@ class ProfileFormScreen(ModalScreen[str | None]):
             scroll.scroll_home()
         elif direction == "end":
             scroll.scroll_end()
-
-
-# ---------------------------------------------------------------------------
-# ProfileDeleteScreen
-# ---------------------------------------------------------------------------
 
 
 class ProfileDeleteScreen(ModalScreen[bool]):

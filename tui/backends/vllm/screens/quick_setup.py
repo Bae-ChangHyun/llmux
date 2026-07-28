@@ -148,7 +148,6 @@ class QuickSetupScreen(ModalScreen[str]):
         except Exception:
             pass
 
-    # ----- vLLM recipe import -----
 
     @on(Button.Pressed, "#fetch-recipe-btn")
     def _on_fetch_recipe(self, event: Button.Pressed) -> None:
@@ -166,12 +165,19 @@ class QuickSetupScreen(ModalScreen[str]):
     @work(exclusive=True, group="recipe-fetch")
     async def _fetch_recipe(self, model_id: str) -> None:
         from tui.common.docker import get_gpu_info
-        from tui.common.recipes import fetch_recipe
+        from tui.common.recipes import RecipeUnavailable, fetch_recipe
 
         status = self.query_one("#recipe-status", Static)
         status.update(t(f"[dim]Fetching recipe for {model_id}…[/dim]",
                         f"[dim]{model_id} 레시피 받는 중…[/dim]"))
-        recipe = await fetch_recipe(model_id)
+        try:
+            recipe = await fetch_recipe(model_id)
+        except RecipeUnavailable as exc:
+            status.update(
+                t(f"[red]Could not reach the recipe index: {exc}[/red]",
+                  f"[red]레시피 조회 실패: {exc}[/red]"),
+            )
+            return
         if recipe is None:
             status.update(
                 t(f"[yellow]No vLLM recipe found for {model_id}[/yellow]",
@@ -259,7 +265,6 @@ class QuickSetupScreen(ModalScreen[str]):
         gpu_mem = self.query_one("#gpu-mem-input", Input).value.strip()
         lora = self.query_one("#lora-switch", Switch).value
 
-        # Derive name from model
         name_part = model.rsplit("/", 1)[-1]
         safe_name = re.sub(r"[^a-zA-Z0-9-]", "-", name_part).lower().strip("-")
 
@@ -268,7 +273,6 @@ class QuickSetupScreen(ModalScreen[str]):
                         severity="error")
             return
 
-        # Validate port
         try:
             port_num = int(port)
             if not 1024 <= port_num <= 65535:
@@ -278,7 +282,6 @@ class QuickSetupScreen(ModalScreen[str]):
                         severity="error")
             return
 
-        # Validate GPU Memory Utilization
         if gpu_mem:
             try:
                 gpu_mem_val = float(gpu_mem)
@@ -289,13 +292,11 @@ class QuickSetupScreen(ModalScreen[str]):
                             severity="error")
                 return
 
-        # Validate GPU
         if not gpu or not re.match(r"^[0-9]+(,[0-9]+)*$", gpu):
             self.notify(t("GPU ID is required (e.g., 0 or 0,1)", "GPU ID 는 필수입니다 (예: 0 또는 0,1)"),
                         severity="error")
             return
 
-        # Calculate tensor parallel from GPU count
         gpu_count = len(gpu.split(","))
 
         from tui.backends.vllm.backend import (
@@ -318,7 +319,6 @@ class QuickSetupScreen(ModalScreen[str]):
             suffix += 1
             safe_name = f"{original_name}-{suffix}"
 
-        # Save config
         config = Config(
             name=safe_name,
             model=model,
@@ -328,7 +328,6 @@ class QuickSetupScreen(ModalScreen[str]):
         )
         save_config(config)
 
-        # Save profile
         profile = Profile(
             name=safe_name,
             container_name=safe_name,

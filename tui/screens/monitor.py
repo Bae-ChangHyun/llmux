@@ -20,11 +20,14 @@ from textual.widgets import Footer, Header, Static
 from tui.common import docker as common_docker
 from tui.common.adapter import DashboardRow
 from tui.common.i18n import t
-from tui.common.monitor_render import MonitorState, render_dashboard
+from tui.common.monitor_render import (
+    INTERVAL_STEP,
+    MAX_INTERVAL,
+    MIN_INTERVAL,
+    MonitorState,
+    render_dashboard,
+)
 from tui.common.plain_monitor import sample_entries
-
-_MIN_INTERVAL = 0.25
-_MAX_INTERVAL = 5.0
 
 
 class MonitorScreen(Screen):
@@ -55,7 +58,8 @@ class MonitorScreen(Screen):
         self._polling = False
         self._timer = None
         self._rendered = None
-        self._last = {"entries": [], "gpus": [], "pcie": {}, "lag": 0.0, "ready": False}
+        self._last = {"entries": [], "gpus": [], "pcie": {}, "lag": 0.0,
+                      "ready": False, "notices": []}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -78,8 +82,11 @@ class MonitorScreen(Screen):
             gpus = await common_docker.get_gpu_info()
             pcie = await common_docker.get_pcie_stats()
             lag_ms = (monotonic() - t0) * 1000
-            entries = await sample_entries(self._focus, self._states, monotonic(), lag_ms)
-            self._last.update(entries=entries, gpus=gpus, pcie=pcie, lag=lag_ms, ready=True)
+            entries, notices = await sample_entries(
+                self._focus, self._states, monotonic(), lag_ms
+            )
+            self._last.update(entries=entries, gpus=gpus, pcie=pcie, lag=lag_ms,
+                              ready=True, notices=notices)
             self._repaint()
         finally:
             self._polling = False
@@ -91,6 +98,7 @@ class MonitorScreen(Screen):
             self._last["entries"], self._last["gpus"], self._last["pcie"],
             self.size.width or 100, paused=self._paused, interval=self._interval,
             uptime=monotonic() - self._started, lag_ms=self._last["lag"],
+            notices=self._last["notices"],
         )
         self.query_one("#mon", Static).update(self._rendered)
 
@@ -109,12 +117,12 @@ class MonitorScreen(Screen):
         self._repaint()
 
     def action_faster(self) -> None:
-        self._interval = max(_MIN_INTERVAL, round(self._interval - 0.25, 2))
+        self._interval = max(MIN_INTERVAL, round(self._interval - INTERVAL_STEP, 2))
         self._restart_timer()
         self._repaint()
 
     def action_slower(self) -> None:
-        self._interval = min(_MAX_INTERVAL, round(self._interval + 0.25, 2))
+        self._interval = min(MAX_INTERVAL, round(self._interval + INTERVAL_STEP, 2))
         self._restart_timer()
         self._repaint()
 

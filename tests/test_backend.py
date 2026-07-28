@@ -8,14 +8,15 @@ import unittest
 
 import yaml
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from tui.backends.llamacpp import backend as lbackend
 from tui.backends.llamacpp import backend_runtime as lbackend_rt
 from tui.backends.vllm import backend
 from tui.backends.vllm import backend_inspect
+from tui.common import ssl_ctx
 from tui.backends.vllm.backend_inspect import (
-    _get_ssl_context,
     _pick_preferred_tag,
     get_dockerhub_nightly_date,
     get_dockerhub_release_version,
@@ -497,8 +498,8 @@ class ProfileStoreYamlTests(unittest.TestCase):
 
 
 class AuditFindingsProfileStoreTests(unittest.TestCase):
-    """Regressions for the profiles.yaml write-path / dedup / global-uniqueness
-    audit fixes (findings #1, #2, #4)."""
+    """Regressions for the profiles.yaml write path: dedup and global name
+    uniqueness."""
 
     @staticmethod
     def _write_yaml(root: Path, body: str) -> Path:
@@ -917,7 +918,7 @@ class EnsureCommonEnvTests(unittest.TestCase):
 
     def test_valid_absolute_path_succeeds(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as tmp:
-            tmp.write("HF_CACHE_PATH=/abs/cache\n")
+            tmp.write("HF_CACHE_PATH=/abs/cache\nVLLM_USE_V2_MODEL_RUNNER=1\n")
             tmp_path = Path(tmp.name)
         self.addCleanup(tmp_path.unlink, missing_ok=True)
 
@@ -926,6 +927,18 @@ class EnsureCommonEnvTests(unittest.TestCase):
             ok, messages = _ensure_common_env(profile)
         self.assertTrue(ok)
         self.assertEqual(messages, [])
+
+    def test_unset_v2_model_runner_warns_but_succeeds(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as tmp:
+            tmp.write("HF_CACHE_PATH=/abs/cache\n")
+            tmp_path = Path(tmp.name)
+        self.addCleanup(tmp_path.unlink, missing_ok=True)
+
+        profile = backend.Profile(name="p")
+        with patch("tui.backends.vllm.backend_runtime.COMMON_ENV", tmp_path):
+            ok, messages = _ensure_common_env(profile)
+        self.assertTrue(ok)
+        self.assertTrue(any("VLLM_USE_V2_MODEL_RUNNER" in m for m in messages))
 
     def test_lora_requires_lora_base_path(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as tmp:
@@ -1165,13 +1178,6 @@ class DockerHubTagLookupTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SslContextBuilderTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._original = backend_inspect._ssl_context
-        backend_inspect._ssl_context = None
-
-    def tearDown(self) -> None:
-        backend_inspect._ssl_context = self._original
-
     def test_picks_existing_cafile_from_candidates(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as tmp:
             # Minimal valid CA bundle: an empty file is enough for
@@ -1180,20 +1186,20 @@ class SslContextBuilderTests(unittest.TestCase):
             cafile = Path(tmp.name)
         self.addCleanup(cafile.unlink, missing_ok=True)
 
-        with patch.object(
-            backend_inspect, "_SYSTEM_CA_CANDIDATES", (str(cafile),)
+        with patch.object(ssl_ctx, "_cached", None), patch.object(
+            ssl_ctx, "_CA_CANDIDATES", (str(cafile),)
         ), patch.dict("sys.modules", {"certifi": None}):
-            ctx = _get_ssl_context()
+            ctx = ssl_ctx.get_ssl_context()
 
-        self.assertIsNotNone(ctx)
-        # Result is cached on the module; second call returns the same instance.
-        self.assertIs(_get_ssl_context(), ctx)
+            self.assertIsNotNone(ctx)
+            # Result is cached on the module; second call returns the same one.
+            self.assertIs(ssl_ctx.get_ssl_context(), ctx)
 
     def test_falls_back_to_default_when_no_candidate_exists(self) -> None:
-        with patch.object(
-            backend_inspect, "_SYSTEM_CA_CANDIDATES", ("/nonexistent/ca.pem",)
+        with patch.object(ssl_ctx, "_cached", None), patch.object(
+            ssl_ctx, "_CA_CANDIDATES", ("/nonexistent/ca.pem",)
         ), patch.dict("sys.modules", {"certifi": None}):
-            ctx = _get_ssl_context()
+            ctx = ssl_ctx.get_ssl_context()
 
         self.assertIsNotNone(ctx)
 
@@ -1414,9 +1420,8 @@ class _ExistingStore:
         return None
 
 
-class R18RoundTests(unittest.IsolatedAsyncioTestCase):
-    """D1 (container_down probe failure), D3 (async GPU conflict empty guard),
-    D4 (llama.cpp downloaded needs hf_repo), D5 (vLLM profile-not-found)."""
+class ProbeFailureAndGuardTests(unittest.IsolatedAsyncioTestCase):
+    """Failed probes and empty inputs must not read as definite answers."""
 
     async def test_container_exists_returns_none_when_probe_fails(self) -> None:
         from tui.backends.vllm import backend_runtime as rt
@@ -1441,6 +1446,37 @@ class R18RoundTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotEqual(rc, 0)
         self.assertIn("could not determine", msg)
+
+    async def test_llamacpp_container_exists_returns_none_when_probe_fails(self) -> None:
+        from tui.backends.llamacpp import backend_runtime as rt
+
+        async def failing_ps(*_a, **_k):
+            return 1, ""
+
+        with patch.object(rt, "_docker_run", failing_ps):
+            self.assertIsNone(await rt._container_exists("c"))
+
+    async def test_llamacpp_container_down_does_not_report_success_on_probe_failure(
+        self,
+    ) -> None:
+        from tui.backends.llamacpp import backend as lb
+        from tui.backends.llamacpp import backend_runtime as rt
+
+        profile = lb.Profile(name="p", container_name="p", port=8080)
+        stored = SimpleNamespace(name="p", backend="llamacpp")
+
+        async def failing_ps(*_a, **_k):
+            return 1, ""
+
+        with patch.object(rt, "load_profile", lambda _n: profile), \
+             patch.object(rt.profile_store, "load_profile", lambda _n, _b: stored), \
+             patch.object(rt.profile_store, "render_env", lambda _s: None), \
+             patch.object(rt, "_override_path", lambda _n: Path("/nonexistent.yaml")), \
+             patch.object(rt, "_docker_run", failing_ps):
+            rc, msg = await rt.container_down("p")
+
+        self.assertNotEqual(rc, 0)
+        self.assertIn("확인할 수 없음", msg)
 
     async def test_async_gpu_conflict_empty_gpu_set_is_silent(self) -> None:
         from tui.common import conflicts
@@ -2136,7 +2172,7 @@ class LlamacppCheckPortConflictTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LlamacppStreamContainerUpTests(unittest.IsolatedAsyncioTestCase):
-    """Dev-tag rebuild policy (F1) and config auto-generation (F5)."""
+    """Dev-tag rebuild policy and config auto-generation."""
 
     def _fakes(self, tmp: Path, *, config_name: str, exists: bool, matches: bool):
         from tui.common import profile_store as ps
@@ -2176,7 +2212,7 @@ class LlamacppStreamContainerUpTests(unittest.IsolatedAsyncioTestCase):
             @staticmethod
             def save_profile(s):
                 # Snapshot image_tag at save time — a transient override must
-                # never be persisted (same class of bug as vLLM's F2).
+                # never be persisted.
                 state["saved"].append(s.image_tag)
 
         async def fake_build(*a, **kw):
@@ -2391,6 +2427,9 @@ class LlamacppRenderOverrideTests(unittest.TestCase):
         # so LLMUX_ROOT has to be set before the script loads.
         script = Path(__file__).resolve().parents[1] / "scripts" / "llamacpp" / "render-override.py"
         with tempfile.TemporaryDirectory() as tmp:
+            # LLMUX_ROOT must point at a checkout — compose/ lives there and the
+            # resolver rejects a root without it.
+            (Path(tmp) / "compose").mkdir()
             probe = (
                 "import importlib.util\n"
                 f"spec = importlib.util.spec_from_file_location('ro', {str(script)!r})\n"
@@ -3043,7 +3082,7 @@ class VllmContainerStatusImageTests(unittest.IsolatedAsyncioTestCase):
         )
 
         async def fake_run_command(*_a, **_k):
-            return 1, ""  # no docker → stopped, but image must still be filled
+            return 0, ""  # probe ok, no container → stopped; image still filled
 
         with patch.dict(
             rt.get_container_statuses.__globals__,
@@ -3057,6 +3096,27 @@ class VllmContainerStatusImageTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(statuses), 1)
         self.assertEqual(statuses[0].image, "vllm-dev:mine")
+
+    async def test_status_probe_failure_raises_instead_of_reporting_stopped(self) -> None:
+        from tui.backends.llamacpp import backend_runtime as lrt
+        from tui.backends.vllm import backend_runtime as rt
+
+        async def failing(*_a, **_k):
+            return 1, ""
+
+        with patch.dict(
+            rt.get_container_statuses.__globals__,
+            {"list_profile_names": lambda: ["p"], "run_command": failing},
+        ):
+            with self.assertRaises(RuntimeError):
+                await rt.get_container_statuses()
+
+        with patch.dict(
+            lrt.get_container_statuses.__globals__,
+            {"list_profile_names": lambda: ["p"], "_docker_run": failing},
+        ):
+            with self.assertRaises(RuntimeError):
+                await lrt.get_container_statuses()
 
 
 class DevBuildCustomTagTests(unittest.IsolatedAsyncioTestCase):
@@ -3531,7 +3591,7 @@ class PlainMonitorTests(unittest.IsolatedAsyncioTestCase):
         opens. Only an explicitly named, non-running profile is rejected."""
         from unittest.mock import patch, AsyncMock
         from tui.common import plain_monitor as mod
-        with patch.object(mod, "_running_rows", AsyncMock(return_value=[])), \
+        with patch.object(mod, "_running_rows", AsyncMock(return_value=([], []))), \
              patch.object(mod, "run_plain_monitor", AsyncMock(return_value=None)) as run:
             rc = await mod._resolve_and_run(None)
             self.assertEqual(rc, 0)
@@ -3540,6 +3600,15 @@ class PlainMonitorTests(unittest.IsolatedAsyncioTestCase):
     async def test_resolve_rejects_non_running_name(self) -> None:
         from unittest.mock import patch, AsyncMock
         from tui.common import plain_monitor as mod
-        with patch.object(mod, "_running_rows", AsyncMock(return_value=[self._row("a")])):
+        with patch.object(mod, "_running_rows", AsyncMock(return_value=([self._row("a")], []))):
             rc = await mod._resolve_and_run("nope")
             self.assertEqual(rc, 1)
+
+    async def test_resolve_does_not_claim_not_running_when_scan_failed(self) -> None:
+        from unittest.mock import patch, AsyncMock
+        from tui.common import plain_monitor as mod
+        with patch.object(
+            mod, "_running_rows", AsyncMock(return_value=([], ["docker down"]))
+        ):
+            rc = await mod._resolve_and_run("a")
+        self.assertEqual(rc, 2)

@@ -23,10 +23,14 @@ from tui.common import docker as common_docker
 from tui.common.adapter import DashboardRow
 from tui.common.i18n import t
 from tui.common.metrics import fetch_snapshot
-from tui.common.monitor_render import ModelEntry, MonitorState, render_dashboard
-
-_MIN_INTERVAL = 0.25
-_MAX_INTERVAL = 5.0
+from tui.common.monitor_render import (
+    INTERVAL_STEP,
+    MAX_INTERVAL,
+    MIN_INTERVAL,
+    ModelEntry,
+    MonitorState,
+    render_dashboard,
+)
 
 
 def _key_ready() -> bool:
@@ -39,35 +43,41 @@ def _toggle_lang() -> None:
     os.environ["LLMUX_LANG"] = "en" if os.environ.get("LLMUX_LANG") == "ko" else "ko"
 
 
-async def _running_rows() -> list[DashboardRow]:
+async def _running_rows() -> tuple[list[DashboardRow], list[str]]:
     from tui.backends.llamacpp.adapter import LlamacppAdapter
     from tui.backends.vllm.adapter import VllmAdapter
 
+    from tui.common.i18n import t
+
+    errors: list[str] = []
     try:
         running = await common_docker.running_container_names()
-    except Exception:
-        running = set()
+    except Exception as exc:
+        return [], [t(f"Docker status scan failed: {exc}",
+                      f"Docker 상태 스캔 실패: {exc}")]
     rows: list[DashboardRow] = []
     for adapter in (VllmAdapter(), LlamacppAdapter()):
+        label = type(adapter).__name__.replace("Adapter", "")
         try:
             rows.extend(adapter.rows(running))
-        except Exception:
-            pass
-    return [r for r in rows if r.running]
+        except Exception as exc:
+            errors.append(t(f"{label} scan failed: {exc}",
+                            f"{label} 스캔 실패: {exc}"))
+    return [r for r in rows if r.running], errors
 
 
 async def sample_entries(
     focus: str | None, states: dict[str, MonitorState], now: float, lag_ms: float
-) -> list[ModelEntry]:
-    rows = await _running_rows()
+) -> tuple[list[ModelEntry], list[str]]:
+    rows, errors = await _running_rows()
     if focus:
-        rows = [r for r in rows if r.profile_name == focus] or rows
+        rows = [r for r in rows if r.profile_name == focus]
     entries: list[ModelEntry] = []
     for row in rows:
         snap = await fetch_snapshot(row.port) if row.port else None
         state = states.setdefault(row.profile_name, MonitorState())
         entries.append(ModelEntry(row, snap, state, state.update(snap, now, lag_ms)))
-    return entries
+    return entries, errors
 
 
 async def run_plain_monitor(focus: str | None = None, interval: float = 1.0) -> None:
@@ -90,7 +100,8 @@ async def run_plain_monitor(focus: str | None = None, interval: float = 1.0) -> 
         fd = None
         old_attrs = None
 
-    last: dict = {"entries": [], "gpus": [], "pcie": {}, "lag": 0.0, "ready": False}
+    last: dict = {"entries": [], "gpus": [], "pcie": {}, "lag": 0.0, "ready": False,
+                  "notices": []}
     try:
         with Live(console=console, screen=True, auto_refresh=False) as live:
             while True:
@@ -99,13 +110,17 @@ async def run_plain_monitor(focus: str | None = None, interval: float = 1.0) -> 
                     gpus = await common_docker.get_gpu_info()
                     pcie = await common_docker.get_pcie_stats()
                     lag_ms = (monotonic() - t0) * 1000
-                    entries = await sample_entries(focus, states, monotonic(), lag_ms)
-                    last.update(entries=entries, gpus=gpus, pcie=pcie, lag=lag_ms, ready=True)
+                    entries, notices = await sample_entries(
+                        focus, states, monotonic(), lag_ms
+                    )
+                    last.update(entries=entries, gpus=gpus, pcie=pcie, lag=lag_ms,
+                                ready=True, notices=notices)
                 if last["ready"]:
                     live.update(render_dashboard(
                         last["entries"], last["gpus"], last["pcie"], console.size.width,
                         paused=paused, interval=interval,
                         uptime=monotonic() - started, lag_ms=last["lag"],
+                        notices=last["notices"],
                     ))
                     live.refresh()
 
@@ -123,9 +138,9 @@ async def run_plain_monitor(focus: str | None = None, interval: float = 1.0) -> 
                             for st in states.values():
                                 st.reset_peaks()
                         elif ch in ("+", "="):
-                            interval = max(_MIN_INTERVAL, round(interval - 0.25, 2))
+                            interval = max(MIN_INTERVAL, round(interval - INTERVAL_STEP, 2))
                         elif ch in ("-", "_"):
-                            interval = min(_MAX_INTERVAL, round(interval + 0.25, 2))
+                            interval = min(MAX_INTERVAL, round(interval + INTERVAL_STEP, 2))
                         elif ch in ("l", "L"):
                             _toggle_lang()
                         break
@@ -143,7 +158,13 @@ async def run_plain_monitor(focus: str | None = None, interval: float = 1.0) -> 
 
 async def _resolve_and_run(profile: str | None) -> int:
     if profile:
-        rows = await _running_rows()
+        rows, errors = await _running_rows()
+        if errors:
+            for line in errors:
+                print(line, file=sys.stderr)
+            print(t(f"Cannot tell whether '{profile}' is running.",
+                    f"'{profile}' 의 실행 여부를 확인할 수 없습니다."), file=sys.stderr)
+            return 2
         if not any(r.profile_name == profile for r in rows):
             names = ", ".join(r.profile_name for r in rows) or "—"
             print(t(f"'{profile}' is not running. Running: {names}",

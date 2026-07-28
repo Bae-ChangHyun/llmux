@@ -133,4 +133,12 @@ def validate_common_env(
             return False, [
                 f"Error: LORA_BASE_PATH must be an absolute path. Current value: {lora_base_path}"
             ]
-    return True, []
+    messages: list[str] = []
+    if "VLLM_USE_V2_MODEL_RUNNER" not in common:
+        # compose defaults it to 1, which rejects thinking_token_budget requests
+        # with HTTP 400 — indistinguishable from "the model doesn't support it".
+        messages.append(
+            "Warning: VLLM_USE_V2_MODEL_RUNNER is not set in .env.common; "
+            "compose will use 1. Set it to 0 if you need thinking_token_budget."
+        )
+    return True, messages

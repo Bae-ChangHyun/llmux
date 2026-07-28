@@ -7,6 +7,8 @@ from typing import Optional
 
 import typer
 
+from tui.backends.llamacpp.backend import LLAMACPP_OFFICIAL_REPO
+from tui.backends.vllm.backend_inspect import VLLM_OFFICIAL_REPO
 from tui.cli._runtime import emit_json, emit_table, run_async, stream_async
 
 app = typer.Typer(help="Docker image inventory + dev image build.", no_args_is_help=True)
@@ -33,6 +35,7 @@ def list_images(
     )
 
     rows: list[dict] = []
+    failures: list[str] = []
 
     async def _collect():
         for img in await get_docker_images(repo=repo):
@@ -49,39 +52,46 @@ def list_images(
         if remote:
             release = await get_dockerhub_release_version()
             nightly = await get_dockerhub_nightly_date()
-            rows.append(
-                {
-                    "source": "remote",
-                    "repository": "vllm/vllm-openai",
-                    "tag": release,
-                    "size": "",
-                    "created": "stable",
-                }
-            )
-            rows.append(
-                {
-                    "source": "remote",
-                    "repository": "vllm/vllm-openai",
-                    "tag": "nightly",
-                    "size": "",
-                    "created": nightly,
-                }
-            )
+            # "unknown" means the registry lookup failed. Emitting it as a tag
+            # would hand `docker pull vllm/vllm-openai:unknown` to any script
+            # that reads this output.
+            if release == "unknown":
+                failures.append("DockerHub stable-release lookup failed")
+            else:
+                rows.append({
+                    "source": "remote", "repository": "vllm/vllm-openai",
+                    "tag": release, "size": "", "created": "stable",
+                })
+            if nightly == "unknown":
+                failures.append("DockerHub nightly-date lookup failed")
+            else:
+                rows.append({
+                    "source": "remote", "repository": "vllm/vllm-openai",
+                    "tag": "nightly", "size": "", "created": nightly,
+                })
 
-    run_async(_collect())
+    try:
+        run_async(_collect())
+    except RuntimeError as exc:
+        typer.echo(f"image query failed — {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
     if json_out:
         emit_json(rows)
-        return
-    emit_table(rows, columns=["source", "repository", "tag", "size", "created"])
+    else:
+        emit_table(rows, columns=["source", "repository", "tag", "size", "created"])
+    if failures:
+        for line in failures:
+            typer.echo(line, err=True)
+        raise typer.Exit(code=1)
 
 
 _PULL_DEFAULTS = {
     # (default repo, default tag). vLLM has no canonical "current" tag — users
     # almost always pin a version — so we don't default a tag there. llama.cpp
     # ships a single official server image tagged `server-cuda`.
-    "vllm": ("vllm/vllm-openai", ""),
-    "llamacpp": ("ghcr.io/ggml-org/llama.cpp", "server-cuda"),
+    "vllm": (VLLM_OFFICIAL_REPO, ""),
+    "llamacpp": (LLAMACPP_OFFICIAL_REPO, "server-cuda"),
 }
 
 

@@ -12,4 +12,4 @@ services:
     # backend_runtime layers this file on top of docker-compose.yaml via
     # `docker compose -f base -f dev -f override`, so the merge handles the
     # rest of the service definition. We only need to override the image.
-    image: llamacpp-dev:${LLAMACPP_DEV_TAG:-${LLAMACPP_BRANCH:-master}}
+    image: llamacpp-dev:${LLAMACPP_DEV_TAG:?LLAMACPP_DEV_TAG is required — llmux resolves the dev tag before compose runs}

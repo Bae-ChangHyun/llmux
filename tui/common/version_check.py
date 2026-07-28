@@ -19,10 +19,11 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import ssl
 import subprocess
 import time
 import urllib.request
+
+from tui.common.ssl_ctx import get_ssl_context
 
 from tui.common.profile_store import PROJECT_ROOT
 
@@ -31,17 +32,6 @@ _CACHE_TTL = 24 * 60 * 60  # seconds — one check per day
 _HTTP_TIMEOUT = 4  # seconds per GitHub API call
 _USER_AGENT = "llmux-version-check"
 
-# CA bundle locations to try, in order. Some Python builds (uv-managed CPython
-# on RHEL/CentOS) default to a `/etc/ssl/cert.pem` that does not exist, which
-# breaks HTTPS to api.github.com with CERTIFICATE_VERIFY_FAILED.
-_CA_CANDIDATES = (
-    "/etc/pki/tls/certs/ca-bundle.crt",
-    "/etc/ssl/certs/ca-certificates.crt",
-    "/etc/ssl/cert.pem",
-)
-
-
-# ── git helpers ──────────────────────────────────────────────────────────────
 def _git(*args: str, timeout: int = 15) -> tuple[int, str]:
     """Run `git -C PROJECT_ROOT <args>`; return (returncode, stdout+stderr).
 
@@ -83,7 +73,6 @@ def _repo_slug() -> str | None:
     return None
 
 
-# ── 24h cache ────────────────────────────────────────────────────────────────
 def _cache_is_fresh() -> bool:
     try:
         data = json.loads(_CACHE_FILE.read_text())
@@ -100,30 +89,11 @@ def _write_cache() -> None:
         pass
 
 
-# ── GitHub API ───────────────────────────────────────────────────────────────
-def _ssl_context() -> ssl.SSLContext:
-    candidates: list[str] = []
-    try:
-        import certifi  # type: ignore[import-not-found]
-
-        candidates.append(certifi.where())
-    except Exception:  # noqa: BLE001 — certifi is optional
-        pass
-    candidates.extend(_CA_CANDIDATES)
-    for cafile in candidates:
-        if cafile and os.path.exists(cafile):
-            try:
-                return ssl.create_default_context(cafile=cafile)
-            except Exception:  # noqa: BLE001 — try the next candidate
-                continue
-    return ssl.create_default_context()
-
-
 def _api_get(url: str) -> dict | None:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
         with urllib.request.urlopen(
-            req, timeout=_HTTP_TIMEOUT, context=_ssl_context()
+            req, timeout=_HTTP_TIMEOUT, context=get_ssl_context()
         ) as resp:
             payload = json.loads(resp.read().decode("utf-8", errors="replace"))
         return payload if isinstance(payload, dict) else None
@@ -151,7 +121,6 @@ def _release_commit(slug: str, tag: str) -> str | None:
     return str(sha) if sha else None
 
 
-# ── local comparison ─────────────────────────────────────────────────────────
 def _is_behind(release_sha: str) -> bool | None:
     """True when HEAD does not yet contain `release_sha`; None if undecidable.
 
@@ -187,7 +156,6 @@ def _local_clean_main() -> bool:
     return rc == 0 and status.strip() == ""
 
 
-# ── public entry point ───────────────────────────────────────────────────────
 def check_for_update() -> None:
     """Best-effort: notify (and on a clean `main`, optionally apply) a newer
     llmux release. Honors the 24h cache, silent offline, never raises — except

@@ -3,7 +3,7 @@
 Three startup modes (vs vllm's five — llama.cpp has a single official
 ghcr.io tag so "Local Latest / Official / Nightly" collapses into one):
 
-  - Default Image      ghcr.io/ggml-org/llama.cpp:server-cuda (LLAMACPP_IMAGE)
+  - Default Image      the official ghcr image (LLAMACPP_IMAGE overrides it)
   - Dev Build          llamacpp-dev:<branch> — builds on demand from
                        LLAMACPP_REPO_URL @ LLAMACPP_BRANCH (.env.common
                        defaults, editable here)
@@ -38,6 +38,7 @@ from tui.backends.llamacpp.backend_runtime import (
     get_dev_build_defaults,
     stream_container_up,
 )
+from tui.backends.llamacpp.backend import LLAMACPP_OFFICIAL_IMAGE
 from tui.common.dev_build import list_local_dev_images
 from tui.common.i18n import t
 
@@ -181,8 +182,7 @@ class ContainerUpScreen(Screen):
                     )
                 )
 
-            # Surface ANY pinned image, not just `llamacpp-dev:` ones — a
-            # profile pinned to e.g. `ghcr.io/foo/bar:v1` was equally silent.
+            # Surface ANY pinned image, not just `llamacpp-dev:` ones.
             pinned = self._profile.image_tag
             if pinned:
                 yield Static(
@@ -205,16 +205,14 @@ class ContainerUpScreen(Screen):
                     id="version-help",
                 )
                 with RadioSet(id="version-radio"):
-                    # A pinned profile defaulted to "Default Image", i.e. the
-                    # default selection silently *discarded* the user's pin.
                     if pinned:
                         yield RadioButton(
                             t(f"Pinned Image  ({pinned})", f"고정 이미지  ({pinned})"), id=VER_PINNED, value=True
                         )
                     yield RadioButton(
                         t(
-                            "Default Image  (ghcr.io/ggml-org/llama.cpp:server-cuda)",
-                            "기본 이미지  (ghcr.io/ggml-org/llama.cpp:server-cuda)",
+                            f"Default Image  ({LLAMACPP_OFFICIAL_IMAGE})",
+                            f"기본 이미지  ({LLAMACPP_OFFICIAL_IMAGE})",
                         ),
                         id=VER_DEFAULT,
                         value=not pinned,
@@ -382,8 +380,7 @@ class ContainerUpScreen(Screen):
         branch = ""
 
         if selected_id == VER_PINNED:
-            # All-zero → the runtime honors profile.image_tag. Same behavior as
-            # a pinned profile always had, just now the selected, visible one.
+            # All-zero → the runtime honors profile.image_tag.
             pass
         elif selected_id == VER_DEV:
             use_dev = True
@@ -421,7 +418,6 @@ class ContainerUpScreen(Screen):
             )
             return
 
-        # Switch to log view
         try:
             self.query_one("#startup-area").styles.display = "block"
             self.query_one("#version-scroll").styles.display = "none"

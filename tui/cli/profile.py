@@ -36,7 +36,6 @@ def _profile_to_row(p: profile_store.StoredProfile) -> dict:
     }
 
 
-# ---- list / show -------------------------------------------------------------
 
 @app.command("list")
 def list_profiles(
@@ -80,7 +79,6 @@ def show_profile(
         print(f"{k}: {v}")
 
 
-# ---- new / edit / delete -----------------------------------------------------
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -147,10 +145,8 @@ def _reject_cross_backend_options(
 ) -> None:
     """Refuse options the target backend has no field for.
 
-    StoredProfile is a superset of both backends, and `_profile_to_entry` only
-    persists the fields belonging to the profile's own backend — so
-    `profile new -b llamacpp --model org/x` used to report success and quietly
-    drop the model. Fail loudly instead.
+    `_profile_to_entry` persists only the fields belonging to the profile's own
+    backend, so an option from the other backend would be dropped on write.
     """
     if backend == "llamacpp":
         offenders = [flag for flag, given in vllm_only.items() if given]
@@ -174,8 +170,7 @@ def _require_config_exists(
     """Fail loudly when an option names a config that isn't there.
 
     Both backends' `load_config()` return an empty Config for a missing file,
-    so a typo used to sail through and produce a config with none of the
-    params the user meant to copy.
+    so a typo would otherwise produce a config with none of the copied params.
     """
     if backend == "vllm":
         from tui.backends.vllm.backend_common import CONFIG_DIR
@@ -192,8 +187,8 @@ def _require_config_exists(
 def _reject_example_config(config_name: str, *, from_profile_name: bool) -> None:
     """`example.yaml` is the tracked template — a profile linked to it writes
     its params into a git-tracked file. The TUI filters `example` out of every
-    config picker; the CLI used to link it silently, including when the profile
-    was simply *named* `example` and picked up the default link.
+    config picker; this is the CLI's equivalent, including the case where the
+    profile is simply *named* `example` and picks up the default link.
     """
     if config_name != "example":
         return
@@ -631,7 +626,6 @@ def delete_profile(
     print(f"Deleted profile '{name}' (backend={bk})")
 
 
-# ---- quick-setup -------------------------------------------------------------
 
 _LLAMACPP_REPO_RE = re.compile(r"^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$")
 
@@ -915,6 +909,7 @@ def _quick_setup_llamacpp(
     from tui.backends.llamacpp.backend import (
         Config as LcppConfig,
         list_config_names as l_clist,
+        HfListingUnavailable,
         list_hf_repo_files,
         list_profile_names as l_list,
         load_config as l_load_config,
@@ -923,10 +918,17 @@ def _quick_setup_llamacpp(
     )
 
     # Validate the GGUF filename against the live repo listing when reachable.
-    # If the HF API call fails (network down, private repo, rate-limit) we
-    # don't hard-fail — the TUI also lets you proceed once you've selected a
-    # file, and a headless caller may already know what's in the repo.
-    files = run_async(list_hf_repo_files(repo))
+    # A failed lookup does not hard-fail (a headless caller may already know
+    # what's in the repo) but it must say the check was skipped — otherwise a
+    # typo'd --hf-file sails through and only surfaces at download time.
+    try:
+        files = run_async(list_hf_repo_files(repo))
+    except HfListingUnavailable as exc:
+        typer.echo(
+            f"Warning: could not list {repo} ({exc}) — skipping --hf-file validation.",
+            err=True,
+        )
+        files = []
     gguf_files = [
         str(f.get("path", ""))
         for f in files
@@ -974,7 +976,6 @@ def _quick_setup_llamacpp(
         suffix += 1
         final_name = f"{name}-{suffix}"
 
-    # --- Build llama.cpp config params (mirrors QuickSetupScreen.on_create) ---
     params: dict = {}
     disabled_params: dict = {}
     if copy_config_from:

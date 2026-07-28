@@ -149,7 +149,6 @@ def _metric_value(line: str) -> float | None:
 
 
 def _bucket_le(line: str) -> float | None:
-    """Extract the `le` label from a histogram `_bucket` line, or None."""
     lo = line.find('le="')
     if lo < 0:
         return None

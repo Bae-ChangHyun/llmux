@@ -13,6 +13,7 @@ The recipe args are flat CLI fragments (``["--tool-call-parser", "hermes"]``);
 from __future__ import annotations
 
 import asyncio
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
@@ -100,11 +101,16 @@ def _parse(raw: dict, model_id: str) -> Recipe:
     )
 
 
-async def fetch_recipe(model_id: str, timeout: int = 15) -> Recipe | None:
-    """Fetch + parse the recipe for `model_id`, or None when there is none.
+class RecipeUnavailable(RuntimeError):
+    """The recipe could not be fetched — distinct from "there is no recipe"."""
 
-    None covers a missing recipe (404), a network failure, or a malformed file —
-    the caller shows "no recipe found" either way and falls back to a blank form.
+
+async def fetch_recipe(model_id: str, timeout: int = 15) -> Recipe | None:
+    """Fetch + parse the recipe for `model_id`.
+
+    Returns None only when upstream has no recipe (404). A network failure or a
+    malformed file raises RecipeUnavailable, so callers never tell the user
+    "no recipe found" for a model whose recipe they simply couldn't reach.
     """
     if not model_id or "/" not in model_id:
         return None
@@ -116,10 +122,14 @@ async def fetch_recipe(model_id: str, timeout: int = 15) -> Recipe | None:
             req = urllib.request.Request(url, headers={"User-Agent": "llmux"})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 raw = yaml.safe_load(r.read().decode("utf-8", errors="replace"))
-        except Exception:
-            return None
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise RecipeUnavailable(f"{url} → HTTP {exc.code}") from exc
+        except Exception as exc:
+            raise RecipeUnavailable(f"{url} → {exc}") from exc
         if not isinstance(raw, dict):
-            return None
+            raise RecipeUnavailable(f"{url} → malformed recipe file")
         return _parse(raw, model_id)
 
     return await loop.run_in_executor(None, _do)

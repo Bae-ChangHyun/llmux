@@ -2,8 +2,7 @@
 
 Mirrors the vllm backend pattern: `stream_container_up()` is an async
 generator yielding ("log", str) / ("rc", int) events, `container_down()`
-returns (rc, message). Replaces the legacy shell scripts in
-scripts/llamacpp/ (switch.sh, stop.sh, _common.sh).
+returns (rc, message).
 
 Also hosts the llama.cpp side of the unified dev-build pipeline
 (get_dev_build_defaults, _stream_build_dev_image, _dev_image_matches).
@@ -140,14 +139,16 @@ async def _do_build_dev_image(
 
     if not resolved_arch and not use_multi_arch:
         caps = await dev_build.detect_local_gpu_caps()
-        if caps:
-            resolved_arch = dev_build.format_arch_cmake(caps)
-            log_lines.append(f"Detected GPUs (compute_cap): {', '.join(caps)}")
-            log_lines.append(f"Building with CUDA_DOCKER_ARCH={resolved_arch} (fast)")
-        else:
-            log_lines.append(
-                "Could not auto-detect GPU (nvidia-smi unavailable) — falling back to multi-arch"
-            )
+        if not caps:
+            # Matches vLLM: a multi-arch build takes hours, so don't start one
+            # as a consolation prize for a failed probe. --multi-arch opts in.
+            yield ("log", "Error: could not detect GPU (nvidia-smi unavailable). "
+                          "Pass --cuda-arch <arch> or --multi-arch to build anyway.")
+            yield ("rc", 1)
+            return
+        resolved_arch = dev_build.format_arch_cmake(caps)
+        log_lines.append(f"Detected GPUs (compute_cap): {', '.join(caps)}")
+        log_lines.append(f"Building with CUDA_DOCKER_ARCH={resolved_arch} (fast)")
 
     extra_build_args: list[tuple[str, str]] = []
     if resolved_arch:
@@ -168,11 +169,6 @@ async def _do_build_dev_image(
 
 async def _dev_image_matches(image_tag: str, repo_url: str, branch: str) -> bool:
     return await dev_build.image_matches(LLAMACPP_DEV_SPEC, image_tag, repo_url, branch)
-
-
-# ---------------------------------------------------------------------------
-# Subprocess helpers (kept local to avoid cross-backend coupling)
-# ---------------------------------------------------------------------------
 
 
 async def _run(*args: str, env: dict[str, str] | None = None, timeout: float = 60) -> tuple[int, str]:
@@ -236,11 +232,6 @@ async def _stream(args: list[str], *, env: dict[str, str] | None = None):
         raise
 
 
-# ---------------------------------------------------------------------------
-# Compose argument builders
-# ---------------------------------------------------------------------------
-
-
 def _override_path(profile_name: str) -> Path:
     return RUNTIME_DIR / f"override-{profile_name}.yaml"
 
@@ -297,11 +288,6 @@ def _compose_base_args(profile: Profile) -> list[str]:
     return args
 
 
-# ---------------------------------------------------------------------------
-# Render helpers
-# ---------------------------------------------------------------------------
-
-
 async def _render_override(profile_name: str) -> tuple[int, str]:
     """Re-render .runtime/llamacpp/override-<name>.yaml.
 
@@ -315,11 +301,6 @@ async def _render_override(profile_name: str) -> tuple[int, str]:
         str(SCRIPTS_DIR / "render-override.py"),
         profile_name,
     )
-
-
-# ---------------------------------------------------------------------------
-# Safety pre-flight (mirrors vllm: GPU-overlap warning + port-conflict abort)
-# ---------------------------------------------------------------------------
 
 
 async def _gpu_conflict_messages(profile: Profile) -> list[str]:
@@ -365,12 +346,9 @@ async def check_port_conflict(profile: Profile) -> str | None:
                 return f"container '{container_name}'"
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # SO_REUSEADDR makes the probe ignore stale TIME_WAIT entries on the port.
-    # Without it every successful `up` poisons the next one for ~60s: our own
-    # /v1/models readiness probe leaves a TIME_WAIT 4-tuple on the loopback
-    # side, and a plain bind() refuses to claim a TIME_WAIT'd address. With
-    # SO_REUSEADDR the bind still fails for ports a process is actively
-    # LISTENING on (the case we want to catch), but skips the cooldown.
+    # SO_REUSEADDR: our own readiness probe leaves a TIME_WAIT entry on this
+    # port for ~60s, and a plain bind() refuses those. A port a process is
+    # actively LISTENING on still fails — that is the conflict we look for.
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         sock.bind(("127.0.0.1", int(port)))
@@ -379,11 +357,6 @@ async def check_port_conflict(profile: Profile) -> str | None:
     finally:
         sock.close()
     return None
-
-
-# ---------------------------------------------------------------------------
-# Container status (mirrors vllm.get_container_statuses)
-# ---------------------------------------------------------------------------
 
 
 async def get_container_statuses() -> list[ContainerStatus]:
@@ -397,12 +370,15 @@ async def get_container_statuses() -> list[ContainerStatus]:
     rc, out = await _docker_run(
         "docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}", timeout=10
     )
+    if rc != 0:
+        raise RuntimeError(
+            "docker ps failed or timed out — container state is unknown"
+        )
     container_info: dict[str, str] = {}
-    if rc == 0:
-        for line in out.strip().splitlines():
-            parts = line.split("\t", 1)
-            if len(parts) == 2:
-                container_info[parts[0]] = parts[1]
+    for line in out.strip().splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) == 2:
+            container_info[parts[0]] = parts[1]
 
     statuses: list[ContainerStatus] = []
     for name in names:
@@ -459,11 +435,6 @@ async def get_container_statuses() -> list[ContainerStatus]:
             )
         )
     return statuses
-
-
-# ---------------------------------------------------------------------------
-# Post-start health validation (mirrors vllm _post_start_validation)
-# ---------------------------------------------------------------------------
 
 
 async def _models_endpoint_ready(port: str | int, timeout: int = 3) -> bool:
@@ -566,6 +537,7 @@ async def _post_start_validation(
             )
             return
         status, _, health = state.strip().partition("\t")
+        status = status or "unknown"
 
         if status in {"restarting", "exited", "dead"} or health == "unhealthy":
             _, tail = await _docker_run(
@@ -672,11 +644,6 @@ async def _post_start_validation(
         await asyncio.sleep(poll_interval)
 
 
-# ---------------------------------------------------------------------------
-# Public API: start
-# ---------------------------------------------------------------------------
-
-
 async def stream_container_up(
     profile_name: str,
     *,
@@ -736,11 +703,8 @@ async def stream_container_up(
     # start" promise was false on llama.cpp: an unlinked profile just failed in
     # render-override.
     #
-    # This runs BEFORE the image-override block on purpose: save_profile()
-    # persists `stored` to profiles.yaml, and the block below assigns the
-    # one-off resolved_image_tag onto `stored`. Saving after that would write a
-    # transient Dev Build / Custom Tag / Default Image selection into the user's
-    # saved profile.
+    # Must run BEFORE the image-override block: save_profile() persists
+    # `stored`, and that block assigns a one-off tag onto it.
     if not stored.config_name:
         stored.config_name = profile_name
         profile.config_name = profile_name
@@ -755,12 +719,29 @@ async def stream_container_up(
     config_path = CONFIG_DIR / f"{stored.config_name}.yaml"
     if not config_path.exists():
         try:
-            save_config(Config(name=stored.config_name, params={"alias": stored.config_name}))
+            save_config(Config(
+                name=stored.config_name,
+                params={
+                    "alias": stored.config_name,
+                    "ctx-size": 8192,
+                    "n-gpu-layers": 99,
+                },
+            ))
         except Exception as exc:  # noqa: BLE001
             yield ("log", f"✗ 기본 config 생성 실패: {exc}")
             yield ("rc", 1)
             return
-        yield ("log", f"▸ 기본 config 생성: {config_path}")
+        yield ("log", f"▸ 기본 config 생성: {config_path} (ctx-size/n-gpu-layers 기본값 — 확인 후 조정하세요)")
+    else:
+        existing = load_config(stored.config_name)
+        if not existing.params:
+            yield ("log", f"✗ config '{stored.config_name}' 가 비어 있습니다 ({config_path}).")
+            yield ("log", "  ctx-size / n-gpu-layers 등을 채운 뒤 다시 시작하세요.")
+            yield ("rc", 1)
+            return
+        missing = [k for k in ("ctx-size", "n-gpu-layers") if k not in existing.params]
+        if missing:
+            yield ("log", f"⚠ config '{stored.config_name}' 에 {', '.join(missing)} 없음 — llama-server 기본값이 적용됩니다.")
 
     # Apply TUI-side image override (a Dev Build / Custom Tag / Default Image
     # selection trumps whatever's pinned on the profile). This is identical to
@@ -874,6 +855,11 @@ async def stream_container_up(
         yield ("log", out.strip() or "✗ override 렌더 실패")
         yield ("rc", rc)
         return
+    # The renderer drops config keys llmux manages and warns on stderr; without
+    # this the warning would never reach the user on the success path.
+    for line in out.splitlines():
+        if line.startswith("warning:"):
+            yield ("log", f"⚠ {line[len('warning:'):].strip()}")
 
     yield ("log", f"▸ '{profile_name}' 프로필로 기동")
     env = _compose_env(profile)
@@ -925,7 +911,6 @@ async def stream_container_up(
             yield ("rc", 1)
             return
 
-        # Persist last-active profile (parity with switch.sh).
         try:
             (PROJECT_ROOT / ".current-profile.llamacpp").write_text(profile_name)
         except OSError as exc:
@@ -938,47 +923,68 @@ async def stream_container_up(
         return
 
 
-# ---------------------------------------------------------------------------
-# Public API: stop
-# ---------------------------------------------------------------------------
+async def _container_exists(container_name: str) -> bool | None:
+    """True/False if the probe succeeded, None if `docker ps` failed/timed out."""
+    rc, out = await _docker_run(
+        "docker", "ps", "-a", "--format", "{{.Names}}", timeout=10
+    )
+    if rc != 0:
+        return None
+    return container_name in out.strip().splitlines()
 
 
 async def container_down(profile_name: str) -> tuple[int, str]:
-    """Mirrors stop.sh: prefer compose down (clean network teardown), fall back
-    to docker rm -f for orphaned containers without an override file."""
+    """compose down (clean network teardown), falling back to docker rm -f for
+    orphaned containers without an override file."""
     stored = profile_store.load_profile(profile_name, "llamacpp")
     if stored is None:
         return 1, f"✗ 프로필 없음: llamacpp/{profile_name}"
 
     profile = load_profile(profile_name)
 
-    # Re-render env so compose has the right CONTAINER_NAME / LLAMA_PORT.
+    render_warning = ""
     try:
         profile_store.render_env(stored)
-    except Exception:  # noqa: BLE001 — best-effort; the rm -f fallback still works
-        pass
+    except Exception as exc:  # noqa: BLE001 — the rm -f path still works, but say so
+        render_warning = f" (⚠ env 렌더 실패: {exc})"
 
+    compose_err = ""
     override = _override_path(profile_name)
     if override.exists():
         env = _compose_env(profile)
         cmd = [*_compose_base_args(profile), "down"]
         rc, out = await _run(*cmd, env=env, timeout=120)
         if rc == 0:
-            return 0, f"✓ '{profile_name}' 중지 완료"
-        # fallthrough to docker rm -f if compose down fails
+            return 0, f"✓ '{profile_name}' 중지 완료{render_warning}"
+        compose_err = next(
+            (line for line in reversed(out.strip().splitlines()) if line.strip()),
+            f"rc={rc}",
+        )
 
-    rc_inspect, names = await _docker_run("docker", "ps", "-a", "--format", "{{.Names}}", timeout=10)
-    if rc_inspect == 0 and profile.container_name in names.splitlines():
-        rc_rm, out_rm = await _docker_run("docker", "rm", "-f", profile.container_name, timeout=30)
+    exists = await _container_exists(profile.container_name)
+    if exists is None:
+        return 1, (
+            f"✗ '{profile_name}' 컨테이너 상태를 확인할 수 없음 "
+            "(docker ps 실패 또는 타임아웃) — 중지 여부 불명"
+        )
+
+    if exists:
+        rc_rm, out_rm = await _docker_run(
+            "docker", "rm", "-f", profile.container_name, timeout=30
+        )
         if rc_rm != 0:
             return rc_rm, out_rm.strip() or "✗ docker rm -f 실패"
-        # Mirror the vLLM fallback: best-effort tear down the compose network so
-        # repeated stop fallbacks don't leave `<profile>_default` networks
-        # accumulating. Errors ignored — network may not exist or may still be
-        # in use by an external attachment.
+        # Errors ignored — the network may not exist, or may still hold an
+        # external container; neither is fatal for the stop itself.
         await _docker_run(
             "docker", "network", "rm", f"{profile.name}_default", timeout=10
         )
-        return 0, f"✓ '{profile_name}' 중지 완료 (rm -f)"
+        detail = f" (compose down 실패: {compose_err})" if compose_err else ""
+        return 0, f"✓ '{profile_name}' 중지 완료 (rm -f){detail}{render_warning}"
 
-    return 0, f"({profile_name}) 컨테이너 없음 — 이미 중지됨"
+    if compose_err:
+        return 1, (
+            f"✗ '{profile_name}' compose down 실패 후 컨테이너를 찾을 수 없음: "
+            f"{compose_err}{render_warning}"
+        )
+    return 0, f"({profile_name}) 컨테이너 없음 — 이미 중지됨{render_warning}"

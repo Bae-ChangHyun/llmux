@@ -70,7 +70,16 @@ def sanitize_docker_tag(name: str) -> str:
 _sanitize_docker_tag = sanitize_docker_tag
 
 
-_DEV_IMAGE_PREFIXES = ("vllm-dev:", "llamacpp-dev:")
+def _dev_image_prefixes() -> tuple[str, ...]:
+    """Registered dev-image prefixes, from the specs that own them."""
+    from tui.backends.llamacpp.backend_runtime import LLAMACPP_DEV_SPEC
+    from tui.backends.vllm.backend_runtime import VLLM_DEV_SPEC
+
+    return tuple(
+        f"{spec.image_prefix}:" for spec in (VLLM_DEV_SPEC, LLAMACPP_DEV_SPEC)
+    )
+
+
 _TAG_PART_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
 
 
@@ -86,7 +95,7 @@ def image_tag_error(value: str) -> str:
     value = value.strip()
     if not value:
         return ""
-    for prefix in _DEV_IMAGE_PREFIXES:
+    for prefix in _dev_image_prefixes():
         if value.startswith(prefix):
             tag = value[len(prefix):]
             if not tag:
@@ -120,11 +129,6 @@ def image_tag_error(value: str) -> str:
             "(start with a letter/digit/underscore, then letters/digits/._-)"
         )
     return ""
-
-
-# ---------------------------------------------------------------------------
-# subprocess helpers (small, local — avoids cross-backend coupling)
-# ---------------------------------------------------------------------------
 
 
 async def _run(*args: str, cwd: Path | None = None, timeout: float = 30) -> tuple[int, str]:
@@ -183,11 +187,6 @@ async def _stream(
         except (asyncio.CancelledError, ProcessLookupError, OSError):
             pass
         raise
-
-
-# ---------------------------------------------------------------------------
-# git clone/update
-# ---------------------------------------------------------------------------
 
 
 async def clone_or_update(spec: DevBuildSpec, repo_url: str, branch: str):
@@ -249,11 +248,6 @@ async def clone_or_update(spec: DevBuildSpec, repo_url: str, branch: str):
         yield ("rc", rc)
         return
     yield ("commit", sha.strip())
-
-
-# ---------------------------------------------------------------------------
-# docker build
-# ---------------------------------------------------------------------------
 
 
 async def stream_build(
@@ -358,11 +352,6 @@ async def stream_build(
         yield event
 
 
-# ---------------------------------------------------------------------------
-# image inspection helpers
-# ---------------------------------------------------------------------------
-
-
 async def detect_local_gpu_caps() -> list[str]:
     """Return unique compute_cap strings from `nvidia-smi`, sorted.
 
@@ -428,13 +417,18 @@ class DevImage:
 
 
 async def list_local_dev_images(spec: DevBuildSpec) -> list[DevImage]:
+    """Local dev images. Raises if the probe fails — an empty list must mean
+    "none built", never "docker could not be reached"."""
     rc, out = await _run(
         "docker", "images", spec.image_prefix,
         "--format", "{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}",
         timeout=10,
     )
     if rc != 0:
-        return []
+        raise RuntimeError(
+            f"docker images {spec.image_prefix} failed or timed out: "
+            f"{out.strip() or 'no output'}"
+        )
     images: list[DevImage] = []
     for line in out.strip().splitlines():
         parts = line.split("\t")
