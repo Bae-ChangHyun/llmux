@@ -22,10 +22,12 @@ def gpu(
     rows = [asdict(g) for g in gpus]
     if json_out:
         emit_json(rows)
-        return
+        # An empty list means nvidia-smi returned nothing; a consumer cannot
+        # tell that apart from "this host has no GPU" without the exit code.
+        raise typer.Exit(code=0 if rows else 1)
     if not rows:
         print("(no GPUs detected — is nvidia-smi installed?)")
-        return
+        raise typer.Exit(code=1)
     emit_table(
         rows,
         columns=["index", "name", "memory_used", "memory_total", "utilization", "temperature"],
@@ -96,9 +98,12 @@ def mem_estimate(
                 "per_gpu_gb": round(per_gpu_gb, 2),
                 "gpus": fit_rows,
                 "any_over": any_over,
+                "estimated": est_gb > 0,
             }
         )
-        raise typer.Exit(code=1 if any_over else 0)
+        # est_gb == 0 means the estimate never parsed (gated model, network
+        # failure, ...). Reporting any_over=false there would read as "it fits".
+        raise typer.Exit(code=0 if (est_gb > 0 and not any_over) else 1)
 
     print(estimate)
     if not gpus:

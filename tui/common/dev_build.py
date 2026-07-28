@@ -428,13 +428,18 @@ class DevImage:
 
 
 async def list_local_dev_images(spec: DevBuildSpec) -> list[DevImage]:
+    """Local dev images. Raises if the probe fails — an empty list must mean
+    "none built", never "docker could not be reached"."""
     rc, out = await _run(
         "docker", "images", spec.image_prefix,
         "--format", "{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}",
         timeout=10,
     )
     if rc != 0:
-        return []
+        raise RuntimeError(
+            f"docker images {spec.image_prefix} failed or timed out: "
+            f"{out.strip() or 'no output'}"
+        )
     images: list[DevImage] = []
     for line in out.strip().splitlines():
         parts = line.split("\t")

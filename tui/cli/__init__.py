@@ -52,8 +52,10 @@ def _maybe_run_onboarding() -> None:
         if not _interactive_session():
             return
         run_onboarding()
-    except Exception:  # noqa: BLE001 — onboarding is best-effort, never fatal
-        pass
+    except Exception as exc:  # noqa: BLE001 — never fatal, but never silent
+        import sys
+
+        print(f"Warning: onboarding did not complete ({exc}).", file=sys.stderr)
 
 
 def _maybe_check_for_update() -> None:
@@ -72,8 +74,10 @@ def _maybe_check_for_update() -> None:
         check_for_update()
     except SystemExit:
         raise
-    except Exception:  # noqa: BLE001 — best-effort, never fatal
-        pass
+    except Exception as exc:  # noqa: BLE001 — never fatal, but never silent
+        import sys
+
+        print(f"Warning: update check failed ({exc}).", file=sys.stderr)
 
 
 def llmux_version() -> str:

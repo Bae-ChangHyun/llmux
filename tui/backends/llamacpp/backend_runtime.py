@@ -139,14 +139,16 @@ async def _do_build_dev_image(
 
     if not resolved_arch and not use_multi_arch:
         caps = await dev_build.detect_local_gpu_caps()
-        if caps:
-            resolved_arch = dev_build.format_arch_cmake(caps)
-            log_lines.append(f"Detected GPUs (compute_cap): {', '.join(caps)}")
-            log_lines.append(f"Building with CUDA_DOCKER_ARCH={resolved_arch} (fast)")
-        else:
-            log_lines.append(
-                "Could not auto-detect GPU (nvidia-smi unavailable) — falling back to multi-arch"
-            )
+        if not caps:
+            # Matches vLLM: a multi-arch build takes hours, so don't start one
+            # as a consolation prize for a failed probe. --multi-arch opts in.
+            yield ("log", "Error: could not detect GPU (nvidia-smi unavailable). "
+                          "Pass --cuda-arch <arch> or --multi-arch to build anyway.")
+            yield ("rc", 1)
+            return
+        resolved_arch = dev_build.format_arch_cmake(caps)
+        log_lines.append(f"Detected GPUs (compute_cap): {', '.join(caps)}")
+        log_lines.append(f"Building with CUDA_DOCKER_ARCH={resolved_arch} (fast)")
 
     extra_build_args: list[tuple[str, str]] = []
     if resolved_arch:
@@ -568,6 +570,7 @@ async def _post_start_validation(
             )
             return
         status, _, health = state.strip().partition("\t")
+        status = status or "unknown"
 
         if status in {"restarting", "exited", "dead"} or health == "unhealthy":
             _, tail = await _docker_run(
@@ -757,12 +760,29 @@ async def stream_container_up(
     config_path = CONFIG_DIR / f"{stored.config_name}.yaml"
     if not config_path.exists():
         try:
-            save_config(Config(name=stored.config_name, params={"alias": stored.config_name}))
+            save_config(Config(
+                name=stored.config_name,
+                params={
+                    "alias": stored.config_name,
+                    "ctx-size": 8192,
+                    "n-gpu-layers": 99,
+                },
+            ))
         except Exception as exc:  # noqa: BLE001
             yield ("log", f"✗ 기본 config 생성 실패: {exc}")
             yield ("rc", 1)
             return
-        yield ("log", f"▸ 기본 config 생성: {config_path}")
+        yield ("log", f"▸ 기본 config 생성: {config_path} (ctx-size/n-gpu-layers 기본값 — 확인 후 조정하세요)")
+    else:
+        existing = load_config(stored.config_name)
+        if not existing.params:
+            yield ("log", f"✗ config '{stored.config_name}' 가 비어 있습니다 ({config_path}).")
+            yield ("log", "  ctx-size / n-gpu-layers 등을 채운 뒤 다시 시작하세요.")
+            yield ("rc", 1)
+            return
+        missing = [k for k in ("ctx-size", "n-gpu-layers") if k not in existing.params]
+        if missing:
+            yield ("log", f"⚠ config '{stored.config_name}' 에 {', '.join(missing)} 없음 — llama-server 기본값이 적용됩니다.")
 
     # Apply TUI-side image override (a Dev Build / Custom Tag / Default Image
     # selection trumps whatever's pinned on the profile). This is identical to
@@ -876,6 +896,11 @@ async def stream_container_up(
         yield ("log", out.strip() or "✗ override 렌더 실패")
         yield ("rc", rc)
         return
+    # The renderer drops config keys llmux manages and warns on stderr; without
+    # this the warning would never reach the user on the success path.
+    for line in out.splitlines():
+        if line.startswith("warning:"):
+            yield ("log", f"⚠ {line[len('warning:'):].strip()}")
 
     yield ("log", f"▸ '{profile_name}' 프로필로 기동")
     env = _compose_env(profile)

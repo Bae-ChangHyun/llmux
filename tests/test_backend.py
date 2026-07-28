@@ -918,7 +918,7 @@ class EnsureCommonEnvTests(unittest.TestCase):
 
     def test_valid_absolute_path_succeeds(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as tmp:
-            tmp.write("HF_CACHE_PATH=/abs/cache\n")
+            tmp.write("HF_CACHE_PATH=/abs/cache\nVLLM_USE_V2_MODEL_RUNNER=1\n")
             tmp_path = Path(tmp.name)
         self.addCleanup(tmp_path.unlink, missing_ok=True)
 
@@ -927,6 +927,18 @@ class EnsureCommonEnvTests(unittest.TestCase):
             ok, messages = _ensure_common_env(profile)
         self.assertTrue(ok)
         self.assertEqual(messages, [])
+
+    def test_unset_v2_model_runner_warns_but_succeeds(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as tmp:
+            tmp.write("HF_CACHE_PATH=/abs/cache\n")
+            tmp_path = Path(tmp.name)
+        self.addCleanup(tmp_path.unlink, missing_ok=True)
+
+        profile = backend.Profile(name="p")
+        with patch("tui.backends.vllm.backend_runtime.COMMON_ENV", tmp_path):
+            ok, messages = _ensure_common_env(profile)
+        self.assertTrue(ok)
+        self.assertTrue(any("VLLM_USE_V2_MODEL_RUNNER" in m for m in messages))
 
     def test_lora_requires_lora_base_path(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as tmp:
@@ -2423,6 +2435,9 @@ class LlamacppRenderOverrideTests(unittest.TestCase):
         # so LLMUX_ROOT has to be set before the script loads.
         script = Path(__file__).resolve().parents[1] / "scripts" / "llamacpp" / "render-override.py"
         with tempfile.TemporaryDirectory() as tmp:
+            # LLMUX_ROOT must point at a checkout — compose/ lives there and the
+            # resolver rejects a root without it.
+            (Path(tmp) / "compose").mkdir()
             probe = (
                 "import importlib.util\n"
                 f"spec = importlib.util.spec_from_file_location('ro', {str(script)!r})\n"

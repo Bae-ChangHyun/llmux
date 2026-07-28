@@ -77,19 +77,19 @@ def render_command(
         raise ValueError("hf_file / model_file is empty — need a specific .gguf filename")
     args.extend(["-hf", resolved_repo])
     args.extend(["-hff", resolved_file])
-    # 옛 model-file 키가 cfg 에 남아 있으면 무시 (위에서 이미 pop 했지만 안전).
     cfg.pop("model-file", None)
 
-    # WebUI 는 강제 off. 사용자가 webui 활성화하려 해도 무시.
-    cfg.pop("no-webui", None)
-    cfg.pop("webui", None)
-    # --metrics 는 위에서 이미 강제 주입 — config 에 남아 있으면 중복 플래그가 된다.
-    cfg.pop("metrics", None)
-    # --host/--port 도 위에서 강제 주입. compose 가 컨테이너 포트를 매핑하므로
-    # config 값이 들어오면 중복 인자가 되고, 컨테이너 내부 포트를 바꾸면
-    # 포트 매핑·healthcheck 와 어긋난다.
-    cfg.pop("host", None)
-    cfg.pop("port", None)
+    # llmux owns these: --host/--port are fixed because compose maps the
+    # container port and the healthcheck probes it; --metrics backs the live
+    # tok/s poll; the WebUI is off. A config that sets them would produce
+    # duplicate args, so they are dropped — loudly, since the user wrote them.
+    for key in ("no-webui", "webui", "metrics", "host", "port"):
+        if key in cfg:
+            print(
+                f"warning: config key '{key}' is managed by llmux and was ignored",
+                file=sys.stderr,
+            )
+            cfg.pop(key, None)
 
     # A scalar string is the natural way to write a single value (the flag
     # help even shows one), so promote it instead of iterating it char by char

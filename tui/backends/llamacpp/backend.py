@@ -42,6 +42,9 @@ SCRIPTS_DIR = PROJECT_ROOT / "scripts" / "llamacpp"
 COMMON_ENV = PROJECT_ROOT / ".env.common"
 CURRENT_PROFILE_FILE = PROJECT_ROOT / ".current-profile.llamacpp"
 
+LLAMACPP_OFFICIAL_REPO = "ghcr.io/ggml-org/llama.cpp"
+LLAMACPP_OFFICIAL_IMAGE = f"{LLAMACPP_OFFICIAL_REPO}:server-cuda"
+
 
 # ---------------------------------------------------------------------------
 # Validation
@@ -74,15 +77,23 @@ def _get_model_dir() -> Path:
     return Path(_host_expand(raw))
 
 
-def _get_hf_cache_dir() -> Path:
+def hf_cache_setting() -> str:
+    """Raw HF_CACHE_PATH from .env.common, or "" when unset.
+
+    Callers that display cache contents must say so: an unset value silently
+    points every lookup at ~/.cache/huggingface, which makes a typo'd key look
+    like "no models downloaded".
+    """
     env_common = ROOT / ".env.common"
-    default = Path.home() / ".cache" / "huggingface"
     if not env_common.exists():
-        return default
-    env = _parse_env_file(env_common)
-    raw = env.get("HF_CACHE_PATH")
+        return ""
+    return _parse_env_file(env_common).get("HF_CACHE_PATH", "").strip()
+
+
+def _get_hf_cache_dir() -> Path:
+    raw = hf_cache_setting()
     if not raw:
-        return default
+        return Path.home() / ".cache" / "huggingface"
     return Path(_host_expand(raw))
 
 
@@ -394,7 +405,7 @@ async def extract_llama_server_flags() -> set[str]:
     """llama-server --help 를 docker 로 실행해 --foo-bar 플래그들 파싱.
     실패 시 빈 set 반환."""
     env = _parse_env_file(ROOT / ".env.common")
-    image = env.get("LLAMACPP_IMAGE", "ghcr.io/ggml-org/llama.cpp:server-cuda")
+    image = env.get("LLAMACPP_IMAGE", "") or LLAMACPP_OFFICIAL_IMAGE
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -491,14 +502,18 @@ class DockerImage:
     created: str
 
 
-async def get_docker_images(repo: str = "ghcr.io/ggml-org/llama.cpp") -> list[DockerImage]:
+async def get_docker_images(repo: str = LLAMACPP_OFFICIAL_REPO) -> list[DockerImage]:
+    """Local images for `repo`. Raises if the probe fails — an empty list must
+    mean "no such image", never "docker could not be reached"."""
     rc, out = await run_command(
         "docker", "images", repo,
         "--format", "{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}",
         timeout=10,
     )
     if rc != 0:
-        return []
+        raise RuntimeError(
+            f"docker images {repo} failed or timed out: {out.strip() or 'no output'}"
+        )
     images: list[DockerImage] = []
     for line in out.strip().splitlines():
         parts = line.split("\t")
@@ -529,6 +544,10 @@ def _parse_link_next(header: str) -> str:
             if key.strip() == "rel" and value.strip().strip('"') == "next":
                 return url[1:-1]
     return ""
+
+
+class HfListingUnavailable(RuntimeError):
+    """The HF file listing could not be fetched — distinct from "no files"."""
 
 
 async def list_hf_repo_files(repo: str) -> list[dict]:
@@ -577,5 +596,4 @@ async def list_hf_repo_files(repo: str) -> list[dict]:
     try:
         return await loop.run_in_executor(None, _do)
     except Exception as exc:
-        log.warning("HF tree listing for %s failed: %s", repo, exc)
-        return []
+        raise HfListingUnavailable(f"{repo}: {exc}") from exc

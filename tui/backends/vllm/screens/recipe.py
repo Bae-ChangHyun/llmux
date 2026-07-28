@@ -197,12 +197,19 @@ class RecipeReviewScreen(ModalScreen[dict | None]):
 
     def _enabled_features(self) -> list[str]:
         out = []
+        missing = []
         for f in self._recipe.features:
             try:
                 if self.query_one(f"#feat-{f.name}", Switch).value:
                     out.append(f.name)
             except Exception:
-                pass
+                missing.append(f.name)
+        if missing:
+            self.notify(
+                t(f"Could not read feature toggles: {', '.join(missing)}",
+                  f"기능 토글을 읽지 못했습니다: {', '.join(missing)}"),
+                severity="error",
+            )
         return out
 
     def _current(self) -> tuple[str, dict]:

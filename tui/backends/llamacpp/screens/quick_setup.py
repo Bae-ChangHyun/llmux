@@ -24,6 +24,7 @@ from tui.backends.llamacpp.backend import (
     Config,
     Profile,
     list_config_names,
+    HfListingUnavailable,
     list_hf_repo_files,
     list_profile_names,
     load_config,
@@ -283,14 +284,22 @@ class QuickSetupScreen(ModalScreen[str]):
 
     @work(exclusive=True, group="hf-fetch")
     async def _fetch_files(self, repo: str) -> None:
-        files = await list_hf_repo_files(repo)
+        info = self.query_one("#gguf-info", Static)
+        try:
+            files = await list_hf_repo_files(repo)
+        except HfListingUnavailable as exc:
+            info.update(t(f"[red]Could not reach huggingface.co: {exc}[/red]",
+                          f"[red]huggingface.co 조회 실패: {exc}[/red]"))
+            self.query_one("#gguf-select", Select).set_options(
+                [(t("(lookup failed)", "(조회 실패)"), "__none__")]
+            )
+            return
         gguf_items = [
             f for f in files
             if isinstance(f, dict)
             and f.get("type") == "file"
             and str(f.get("path", "")).lower().endswith(".gguf")
         ]
-        info = self.query_one("#gguf-info", Static)
         select = self.query_one("#gguf-select", Select)
         if not gguf_items:
             info.update(t("[red]No GGUF files (or private repo — check HF_TOKEN)[/red]", "[red]GGUF 파일 없음 (또는 private repo — HF_TOKEN 확인)[/red]"))

@@ -22,6 +22,7 @@ from tui.backends.llamacpp.backend import (
     GpuInfo,
     ROOT,
     _get_hf_cache_dir,
+    hf_cache_setting,
     _get_model_dir,
     get_disk_usage,
     get_docker_images,
@@ -33,6 +34,7 @@ from tui.backends.llamacpp.backend import (
 )
 from tui.backends.llamacpp.backend_runtime import LLAMACPP_DEV_SPEC
 from tui.common import profile_store
+from tui.backends.llamacpp.backend import LLAMACPP_OFFICIAL_REPO
 from tui.common.dev_build import list_local_dev_images
 from tui.common.i18n import t
 
@@ -79,7 +81,7 @@ class SystemScreen(Screen):
             with TabPane(t("Docker Images", "Docker 이미지"), id="images-tab"):
                 with VerticalScroll(id="images-scroll"):
                     yield Static(
-                        t("Official Images (ghcr.io/ggml-org/llama.cpp)", "공식 이미지 (ghcr.io/ggml-org/llama.cpp)"),
+                        t(f"Official Images ({LLAMACPP_OFFICIAL_REPO})", f"공식 이미지 ({LLAMACPP_OFFICIAL_REPO})"),
                         classes="section-title",
                     )
                     yield DataTable(id="llama-images")
@@ -161,12 +163,18 @@ class SystemScreen(Screen):
 
     @work(exclusive=True, group="sys-images")
     async def _refresh_images(self) -> None:
-        official = await get_docker_images("ghcr.io/ggml-org/llama.cpp")
-        dev = await list_local_dev_images(LLAMACPP_DEV_SPEC)
-        self._update_image_table("#llama-images", official)
         # `DevImage` from tui.common.dev_build has matching .tag/.size/.created
         # attributes, so the same fill helper works for both tables.
-        self._update_image_table("#dev-images", dev)
+        for table_id, fetch in (
+            ("#llama-images",
+             lambda: get_docker_images(LLAMACPP_OFFICIAL_REPO)),
+            ("#dev-images",
+             lambda: list_local_dev_images(LLAMACPP_DEV_SPEC)),
+        ):
+            try:
+                self._update_image_table(table_id, await fetch())
+            except Exception as exc:
+                self._image_table_error(table_id, exc)
 
     def _update_image_table(self, table_id: str, images) -> None:
         table = self.query_one(table_id, DataTable)
@@ -176,6 +184,13 @@ class SystemScreen(Screen):
             return
         for img in images:
             table.add_row(img.tag, img.size, img.created)
+
+    def _image_table_error(self, table_id: str, exc: Exception) -> None:
+        table = self.query_one(table_id, DataTable)
+        table.clear()
+        table.add_row(t("[red](query failed)[/]", "[red](조회 실패)[/]"), "--", "--")
+        self.notify(t(f"Image list failed: {exc}", f"이미지 조회 실패: {exc}"),
+                    severity="error", timeout=8)
 
     # ----- Containers -----
 
@@ -242,6 +257,13 @@ class SystemScreen(Screen):
             log.write("")
 
         # HF hub 캐시 — llama-server 가 `-hf` 로 받는 실제 저장 위치
+        if not hf_cache_setting():
+            log.write(t(
+                "[yellow]HF_CACHE_PATH is not set in .env.common — showing the "
+                "default location, which may not be where models were downloaded.[/]",
+                "[yellow].env.common 에 HF_CACHE_PATH 가 없습니다 — 기본 경로를 "
+                "표시하며, 실제 다운로드 위치와 다를 수 있습니다.[/]",
+            ))
         cached = list_cached_gguf()
         log.write(t(f"[b]HF cache GGUF ({len(cached)})[/b]  [dim]{_get_hf_cache_dir()}[/dim]", f"[b]HF cache GGUF ({len(cached)} 개)[/b]  [dim]{_get_hf_cache_dir()}[/dim]"))
         if cached:
@@ -256,10 +278,14 @@ class SystemScreen(Screen):
         log.write("")
 
         # df -h
-        used, avail, pct = await get_disk_usage(str(model_dir if model_dir.exists() else ROOT))
+        probe_path = model_dir if model_dir.exists() else ROOT
+        used, avail, pct = await get_disk_usage(str(probe_path))
+        log.write(t("[b]Disk usage[/b]", "[b]디스크 사용량[/b]"))
         if used:
-            log.write(t("[b]Disk usage[/b]", "[b]디스크 사용량[/b]"))
             log.write(t(f"  Used: {used}  Free: {avail}  ({pct})", f"  사용: {used}  남음: {avail}  ({pct})"))
+        else:
+            log.write(t(f"  [yellow]Could not stat {probe_path} (does it exist?)[/]",
+                        f"  [yellow]{probe_path} 조회 실패 (경로가 존재하나요?)[/]"))
 
     # ----- Actions -----
 

@@ -166,12 +166,19 @@ class QuickSetupScreen(ModalScreen[str]):
     @work(exclusive=True, group="recipe-fetch")
     async def _fetch_recipe(self, model_id: str) -> None:
         from tui.common.docker import get_gpu_info
-        from tui.common.recipes import fetch_recipe
+        from tui.common.recipes import RecipeUnavailable, fetch_recipe
 
         status = self.query_one("#recipe-status", Static)
         status.update(t(f"[dim]Fetching recipe for {model_id}…[/dim]",
                         f"[dim]{model_id} 레시피 받는 중…[/dim]"))
-        recipe = await fetch_recipe(model_id)
+        try:
+            recipe = await fetch_recipe(model_id)
+        except RecipeUnavailable as exc:
+            status.update(
+                t(f"[red]Could not reach the recipe index: {exc}[/red]",
+                  f"[red]레시피 조회 실패: {exc}[/red]"),
+            )
+            return
         if recipe is None:
             status.update(
                 t(f"[yellow]No vLLM recipe found for {model_id}[/yellow]",

@@ -2,7 +2,7 @@
 # 이 파일의 키들은 vllm serve 의 CLI 플래그와 1:1 대응.
 # 사용 가능한 모든 키: https://docs.vllm.ai/en/latest/serving/engine_args.html
 
-model: Qwen/Qwen3-8B               # HuggingFace repo id 또는 로컬 경로
+model: your-org/your-model         # HuggingFace repo id 또는 로컬 경로 (예: Qwen/Qwen3-8B)
 
 # ---- 메모리 / 병렬 ----
 gpu-memory-utilization: 0.90       # 0.0–1.0, GPU 당 vLLM 이 쓸 VRAM 비율

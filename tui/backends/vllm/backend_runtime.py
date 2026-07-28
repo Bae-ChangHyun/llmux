@@ -886,7 +886,15 @@ async def stream_container_up(
             "never",
         ]
     else:
-        version_tag = tag or await get_local_latest_tag()
+        if tag:
+            version_tag = tag
+        else:
+            try:
+                version_tag = await get_local_latest_tag()
+            except RuntimeError as exc:
+                yield ("log", f"Error: could not list local images — {exc}")
+                yield ("rc", 1)
+                return
         if version_tag == "latest":
             # Refuse the `:latest` alias outright. It doesn't describe the image's
             # real contents and clicking "Local Latest" / "Official Release" should

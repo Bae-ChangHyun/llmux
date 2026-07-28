@@ -3,7 +3,7 @@
 Three startup modes (vs vllm's five — llama.cpp has a single official
 ghcr.io tag so "Local Latest / Official / Nightly" collapses into one):
 
-  - Default Image      ghcr.io/ggml-org/llama.cpp:server-cuda (LLAMACPP_IMAGE)
+  - Default Image      the official ghcr image (LLAMACPP_IMAGE overrides it)
   - Dev Build          llamacpp-dev:<branch> — builds on demand from
                        LLAMACPP_REPO_URL @ LLAMACPP_BRANCH (.env.common
                        defaults, editable here)
@@ -38,6 +38,7 @@ from tui.backends.llamacpp.backend_runtime import (
     get_dev_build_defaults,
     stream_container_up,
 )
+from tui.backends.llamacpp.backend import LLAMACPP_OFFICIAL_IMAGE
 from tui.common.dev_build import list_local_dev_images
 from tui.common.i18n import t
 
@@ -213,8 +214,8 @@ class ContainerUpScreen(Screen):
                         )
                     yield RadioButton(
                         t(
-                            "Default Image  (ghcr.io/ggml-org/llama.cpp:server-cuda)",
-                            "기본 이미지  (ghcr.io/ggml-org/llama.cpp:server-cuda)",
+                            f"Default Image  ({LLAMACPP_OFFICIAL_IMAGE})",
+                            f"기본 이미지  ({LLAMACPP_OFFICIAL_IMAGE})",
                         ),
                         id=VER_DEFAULT,
                         value=not pinned,

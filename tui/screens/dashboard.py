@@ -896,11 +896,14 @@ class DashboardScreen(Screen):
                         )
                     parts.append(f"GPU{g.index} {bar} {label}")
                 gpu_line = " [dim]│[/dim] ".join(parts)
-                result_bar.update(
+                text = (
                     f"  📦 [bold]{model_short}[/bold] {result}{tp_note}\n"
                     f"     {gpu_line}"
                 )
             else:
-                result_bar.update(f"  📦 [bold]{model_short}[/bold]  {result}")
-        except Exception:
-            pass
+                text = f"  📦 [bold]{model_short}[/bold]  {result}"
+        except Exception as exc:
+            # A GPU reporting `[N/A]` memory used to leave the bar stuck on
+            # "Estimating..." forever, hiding an estimate we already had.
+            text = f"  📦 [bold]{model_id}[/bold]  {result}  [yellow](GPU fit unavailable: {exc})[/yellow]"
+        result_bar.update(text)

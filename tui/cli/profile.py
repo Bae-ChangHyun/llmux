@@ -915,6 +915,7 @@ def _quick_setup_llamacpp(
     from tui.backends.llamacpp.backend import (
         Config as LcppConfig,
         list_config_names as l_clist,
+        HfListingUnavailable,
         list_hf_repo_files,
         list_profile_names as l_list,
         load_config as l_load_config,
@@ -923,10 +924,17 @@ def _quick_setup_llamacpp(
     )
 
     # Validate the GGUF filename against the live repo listing when reachable.
-    # If the HF API call fails (network down, private repo, rate-limit) we
-    # don't hard-fail — the TUI also lets you proceed once you've selected a
-    # file, and a headless caller may already know what's in the repo.
-    files = run_async(list_hf_repo_files(repo))
+    # A failed lookup does not hard-fail (a headless caller may already know
+    # what's in the repo) but it must say the check was skipped — otherwise a
+    # typo'd --hf-file sails through and only surfaces at download time.
+    try:
+        files = run_async(list_hf_repo_files(repo))
+    except HfListingUnavailable as exc:
+        typer.echo(
+            f"Warning: could not list {repo} ({exc}) — skipping --hf-file validation.",
+            err=True,
+        )
+        files = []
     gguf_files = [
         str(f.get("path", ""))
         for f in files

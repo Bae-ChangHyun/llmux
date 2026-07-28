@@ -46,7 +46,13 @@ def _load_yaml(backend: str, name: str) -> dict:
     if not path.exists():
         raise typer.BadParameter(f"config not found: {path}", param_hint="NAME")
     raw = yaml.safe_load(path.read_text()) or {}
-    return raw if isinstance(raw, dict) else {}
+    if not isinstance(raw, dict):
+        raise typer.BadParameter(
+            f"{path} is not a mapping ({type(raw).__name__}) — it would read as "
+            "an empty config.",
+            param_hint="NAME",
+        )
+    return raw
 
 
 def _config_path(backend: str, name: str) -> Path:
@@ -539,9 +545,13 @@ def config_from_recipe(
     --variant (or let it auto-pick the highest-quality one that fits the GPU).
     """
     from tui.cli._runtime import run_async
-    from tui.common.recipes import build_config, fetch_recipe
+    from tui.common.recipes import RecipeUnavailable, build_config, fetch_recipe
 
-    recipe = run_async(fetch_recipe(model_id))
+    try:
+        recipe = run_async(fetch_recipe(model_id))
+    except RecipeUnavailable as exc:
+        typer.echo(f"could not reach the recipe index — {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     if recipe is None:
         raise typer.BadParameter(
             f"no vLLM recipe found for {model_id} (see recipes.vllm.ai)",
@@ -581,6 +591,8 @@ def config_from_recipe(
     data: dict = {"model": model, "gpu-memory-utilization": "0.9"}
     data.update(params)
     saved = _backend_save_config("vllm", cfg_name, data, {})
+    if chosen:
+        print(f"variant: {chosen.name} (model {model})")
     print(saved)
 
 
@@ -608,11 +620,28 @@ def _pick_recipe_variant(recipe, variant_name: str):
             gpu_gb = max(int(g.memory_total) / 1024 for g in gpus)
         except (TypeError, ValueError):
             gpu_gb = None
-    if gpu_gb is not None:
-        for v in recipe.variants:
-            if v.vram_minimum_gb is not None and v.vram_minimum_gb <= gpu_gb:
-                return v
-    return min(recipe.variants, key=lambda v: v.vram_minimum_gb or 1e9)
+    if gpu_gb is None:
+        # Falling through to the smallest variant would quietly hand an 80GB
+        # host an FP8/AWQ build and print only the saved path.
+        raise typer.BadParameter(
+            "could not read GPU memory (is nvidia-smi on PATH?) — pass "
+            f"--variant explicitly; available: {', '.join(by_name)}",
+            param_hint="--variant",
+        )
+    for v in recipe.variants:
+        if v.vram_minimum_gb is not None and v.vram_minimum_gb <= gpu_gb:
+            return v
+    smallest = min(
+        recipe.variants,
+        key=lambda v: v.vram_minimum_gb if v.vram_minimum_gb is not None else 1e9,
+    )
+    typer.echo(
+        f"Warning: no variant fits {gpu_gb:.0f}GB of VRAM; falling back to "
+        f"{smallest.name!r} (needs "
+        f"{smallest.vram_minimum_gb or '?'}GB).",
+        err=True,
+    )
+    return smallest
 
 
 def _derive_config_name(model_id: str) -> str:

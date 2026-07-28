@@ -62,7 +62,12 @@ def _get_ssl_context() -> ssl.SSLContext:
     return _ssl_context
 
 
-async def get_docker_images(repo: str = "vllm/vllm-openai") -> list[DockerImage]:
+VLLM_OFFICIAL_REPO = "vllm/vllm-openai"
+
+
+async def get_docker_images(repo: str = VLLM_OFFICIAL_REPO) -> list[DockerImage]:
+    """Local images for `repo`. Raises if the probe fails — an empty list must
+    mean "no such image", never "docker could not be reached"."""
     rc, out = await run_command(
         "docker",
         "images",
@@ -72,7 +77,9 @@ async def get_docker_images(repo: str = "vllm/vllm-openai") -> list[DockerImage]
         timeout=10,
     )
     if rc != 0:
-        return []
+        raise RuntimeError(
+            f"docker images {repo} failed or timed out: {out.strip() or 'no output'}"
+        )
     images = []
     for line in out.strip().splitlines():
         parts = line.split("\t")
@@ -127,12 +134,16 @@ async def get_local_latest_tag() -> str:
     rc, out = await run_command(
         "docker",
         "images",
-        "vllm/vllm-openai",
+        VLLM_OFFICIAL_REPO,
         "--format",
         "{{.ID}}\t{{.Tag}}",
         timeout=15,
     )
-    if rc != 0 or not out.strip():
+    if rc != 0:
+        raise RuntimeError(
+            f"docker images failed or timed out: {out.strip() or 'no output'}"
+        )
+    if not out.strip():
         return "none"
 
     image_tags: dict[str, list[str]] = {}
@@ -323,7 +334,7 @@ async def extract_vllm_params(image_tag: str = "") -> set[str]:
         "--rm",
         "--entrypoint",
         "python3",
-        f"vllm/vllm-openai:{image_tag}",
+        f"{VLLM_OFFICIAL_REPO}:{image_tag}",
         "-c",
         _EXTRACT_SCRIPT,
         timeout=30,

@@ -86,10 +86,16 @@ def dump_active_config(existing_text: str | None, data: dict[str, Any]) -> str:
     ry.width = 10**9
     try:
         existing = ry.load(active)
-    except Exception:  # noqa: BLE001 — malformed prior file: don't block the save
-        return plain()
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"the existing config could not be parsed ({exc}); saving would "
+            "drop every comment in it. Fix or delete the file first."
+        ) from exc
     if not isinstance(existing, dict):
-        return plain()
+        raise RuntimeError(
+            "the existing config is not a mapping; saving would drop every "
+            "comment in it. Fix or delete the file first."
+        )
 
     for key in [k for k in existing if k not in data]:
         del existing[key]

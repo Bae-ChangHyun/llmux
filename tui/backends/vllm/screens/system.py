@@ -180,10 +180,14 @@ class SystemScreen(Screen):
 
     @work(exclusive=True, group="images")
     async def _refresh_images(self) -> None:
-        official = await get_docker_images()
-        dev = await get_dev_images()
-        self._update_image_table("#official-images", official)
-        self._update_image_table("#dev-images", dev)
+        for table_id, fetch in (
+            ("#official-images", get_docker_images),
+            ("#dev-images", get_dev_images),
+        ):
+            try:
+                self._update_image_table(table_id, await fetch())
+            except Exception as exc:
+                self._image_table_error(table_id, exc)
 
     def _update_image_table(self, table_id: str, images: list[DockerImage]) -> None:
         table = self.query_one(table_id, DataTable)
@@ -193,6 +197,13 @@ class SystemScreen(Screen):
             return
         for img in images:
             table.add_row(img.tag, img.size, img.created)
+
+    def _image_table_error(self, table_id: str, exc: Exception) -> None:
+        table = self.query_one(table_id, DataTable)
+        table.clear()
+        table.add_row(t("[red](query failed)[/]", "[red](조회 실패)[/]"), "--", "--")
+        self.notify(t(f"Image list failed: {exc}", f"이미지 조회 실패: {exc}"),
+                    severity="error", timeout=8)
 
     # ----- Containers Tab -----
 

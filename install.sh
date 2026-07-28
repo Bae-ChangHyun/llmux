@@ -52,11 +52,21 @@ fi
 # (~/.llmux), surprising anyone developing the project. When llmux is already
 # installed, update that checkout in place instead and ignore $INSTALL_DIR.
 EXISTING_DIR=""
-if tool_dir=$(uv tool dir 2>/dev/null); then
-    receipt="$tool_dir/llmux/uv-receipt.toml"
-    if [ -f "$receipt" ]; then
-        EXISTING_DIR=$(sed -n 's/^[[:space:]]*requirements[[:space:]]*=.*editable[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
-            "$receipt" | head -n1)
+if ! tool_dir=$(uv tool dir); then
+    err "'uv tool dir' failed — cannot tell whether llmux is already installed."
+    err "Installing here would repoint an existing editable install at $INSTALL_DIR."
+    exit 1
+fi
+receipt="$tool_dir/llmux/uv-receipt.toml"
+if [ -f "$receipt" ]; then
+    EXISTING_DIR=$(sed -n 's/^[[:space:]]*requirements[[:space:]]*=.*editable[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$receipt" | head -n1)
+    if [ -z "$EXISTING_DIR" ]; then
+        err "llmux appears installed ($receipt) but the editable path could not be"
+        err "parsed — uv's receipt format may have changed. Continuing would"
+        err "repoint the command at $INSTALL_DIR. Run 'uv tool uninstall llmux'"
+        err "first, or set LLMUX_FORCE_RELOCATE=1 to install here anyway."
+        [ "${LLMUX_FORCE_RELOCATE:-}" = "1" ] || exit 1
     fi
 fi
 
@@ -77,7 +87,7 @@ if [ -n "$EXISTING_DIR" ] && [ "${LLMUX_FORCE_RELOCATE:-}" != "1" ]; then
         exit 1
     fi
     ( cd "$EXISTING_DIR" && uv tool install --editable . --force )
-    uv tool update-shell >/dev/null 2>&1 || true
+    uv tool update-shell >/dev/null 2>&1 || warn "uv tool update-shell failed — PATH may need a manual entry."
     echo
     ok "llmux updated at $EXISTING_DIR"
     exit 0
@@ -114,7 +124,7 @@ fi
 # takes effect with no reinstall. --force makes re-running this script a no-op.
 info "Installing dependencies and the llmux command ..."
 ( cd "$INSTALL_DIR" && uv tool install --editable . --force )
-uv tool update-shell >/dev/null 2>&1 || true
+uv tool update-shell >/dev/null 2>&1 || warn "uv tool update-shell failed — PATH may need a manual entry."
 
 # ── 5. next steps ────────────────────────────────────────────────────────────
 echo
