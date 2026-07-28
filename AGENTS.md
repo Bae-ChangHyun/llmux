@@ -24,6 +24,11 @@ output, and `llmux --version` prints the version — the CLI is meant to be
 driven from scripts, agents, and CI. Running `llmux` with no arguments launches
 the TUI (intended for humans).
 
+**Exit codes carry meaning.** A query that could not reach docker, the registry,
+or huggingface.co exits non-zero rather than reporting an empty result — `ps`
+never renders a container as `stopped` because the probe failed. Add
+`--log-level DEBUG` (or `LLMUX_LOG_LEVEL`) to see the underlying exception.
+
 ## Repo layout (high-level)
 
 - `tui/cli/` — Typer CLI (the headless entrypoint).
