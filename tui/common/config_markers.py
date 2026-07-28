@@ -24,10 +24,8 @@ _MARKER_RE = re.compile(r"^#\s*llmux:disabled\s+([^:]+):\s?(.*)$")
 
 
 def _inline(value: Any) -> str:
-    # A marker is exactly one line, so the serialization must never wrap: the
-    # default width=80 used to line-break long strings / big lists, and taking
-    # only the first physical line silently truncated the value (and corrupted
-    # list/dict types on re-enable). width=10**9 disables wrapping.
+    # A marker is exactly one line, so width=10**9 disables wrapping — a
+    # wrapped value would be truncated at its first physical line.
     dumped = yaml.safe_dump(
         value,
         default_flow_style=True,

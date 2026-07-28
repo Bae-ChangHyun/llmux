@@ -194,9 +194,8 @@ def _env_file_args(profile: Profile) -> list[str]:
 async def _container_exists(container_name: str) -> bool | None:
     """True/False if the probe succeeded, None if `docker ps` failed/timed out.
 
-    Collapsing a failed probe to False (the old behavior) let a slow daemon be
-    reported as "container gone" — `container_down` then claimed success while
-    the container kept running.
+    Collapsing a failed probe to False would let a slow daemon read as
+    "container gone" and `container_down` claim success while it kept running.
     """
     rc, out = await run_command("docker", "ps", "-a", "--format", "{{.Names}}", timeout=10)
     if rc != 0:
@@ -460,15 +459,9 @@ async def check_port_conflict(profile: Profile) -> str | None:
                 return f"container '{container_name}'"
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # SO_REUSEADDR is required here: our own _post_start_validation hits
-    # /v1/models on this same port after every successful `up`, which leaves
-    # a TIME-WAIT entry on 127.0.0.1:<port> for ~60s. Without SO_REUSEADDR a
-    # plain bind() refuses TIME-WAIT ports and we'd falsely report
-    # "another local process on 127.0.0.1:<port>" on every `up→down→up`
-    # cycle within that window. An actively LISTENING socket on the port
-    # still fails the bind (that's the real conflict we care about), so
-    # this only relaxes the spurious TIME-WAIT false positive — do not
-    # remove without re-introducing the bug.
+    # SO_REUSEADDR: our own readiness probe leaves a TIME_WAIT entry on this
+    # port for ~60s, and a plain bind() refuses those. A port a process is
+    # actively LISTENING on still fails — that is the conflict we look for.
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         sock.bind(("127.0.0.1", int(profile.port)))
@@ -773,11 +766,9 @@ async def stream_container_up(
         # VLLM_IMAGE explicitly, and an empty value makes compose's
         # `${VLLM_IMAGE:-...}` fall through to the default.
         #
-        # Must run AFTER _ensure_profile_config: that helper persists the
-        # profile (save_profile) when it auto-links a config, so clearing the
-        # tag any earlier would write image_tag="" into profiles.yaml and
-        # destroy the user's pin permanently — a one-off override must not
-        # mutate saved state.
+        # Must run AFTER _ensure_profile_config: that helper calls
+        # save_profile(), so clearing the tag earlier would persist
+        # image_tag="" and destroy the user's pin.
         had_pin = bool((profile.image_tag or "").strip())
         profile.image_tag = ""
         if had_pin:

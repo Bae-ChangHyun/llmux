@@ -46,19 +46,9 @@ LLAMACPP_OFFICIAL_REPO = "ghcr.io/ggml-org/llama.cpp"
 LLAMACPP_OFFICIAL_IMAGE = f"{LLAMACPP_OFFICIAL_REPO}:server-cuda"
 
 
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
-
-
 def validate_name(name: str) -> bool:
     """compose-safe lowercase name. Also prevents argv/path injection."""
     return bool(re.match(r"^[a-z0-9][a-z0-9_-]*$", name))
-
-
-# ---------------------------------------------------------------------------
-# .env / YAML helpers
-# ---------------------------------------------------------------------------
 
 
 def _host_expand(path: str) -> str:
@@ -155,11 +145,6 @@ def list_cached_gguf() -> list[dict[str, Any]]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Dataclasses
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class Profile:
     name: str
@@ -205,11 +190,6 @@ class Config:
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.params.get(key, default)
-
-
-# ---------------------------------------------------------------------------
-# Profile CRUD + scanning
-# ---------------------------------------------------------------------------
 
 
 def _to_profile(stored: profile_store.StoredProfile) -> Profile:
@@ -329,11 +309,6 @@ def read_current_profile() -> str | None:
     return CURRENT_PROFILE_FILE.read_text().strip() or None
 
 
-# ---------------------------------------------------------------------------
-# Config CRUD
-# ---------------------------------------------------------------------------
-
-
 def list_config_names() -> list[str]:
     if not CONFIG_DIR.exists():
         return []
@@ -396,11 +371,6 @@ def format_config_param_value(value: Any) -> str:
     return str(value)
 
 
-# ---------------------------------------------------------------------------
-# llama-server flag discovery (선택적: docker run llama-server --help)
-# ---------------------------------------------------------------------------
-
-
 async def extract_llama_server_flags() -> set[str]:
     """llama-server --help 를 docker 로 실행해 --foo-bar 플래그들 파싱.
     실패 시 빈 set 반환."""
@@ -433,11 +403,6 @@ async def extract_llama_server_flags() -> set[str]:
         if 2 <= len(flag) <= 40:
             flags.add(flag)
     return flags
-
-
-# ---------------------------------------------------------------------------
-# Log streaming
-# ---------------------------------------------------------------------------
 
 
 async def stream_logs(container_name: str, *, tail: int = 100):
@@ -480,11 +445,6 @@ def strip_ansi(s: str) -> str:
 from tui.common.http import chat_completion_bench as chat_completion  # noqa: F401 — re-exported
 
 
-# ---------------------------------------------------------------------------
-# GPU / Docker image inspection
-# ---------------------------------------------------------------------------
-
-
 from tui.common.docker import (  # noqa: F401 — re-exported for backward compat
     GpuInfo,
     format_gpu_bar,
@@ -520,11 +480,6 @@ async def get_docker_images(repo: str = LLAMACPP_OFFICIAL_REPO) -> list[DockerIm
         if len(parts) >= 4 and parts[1] != "<none>":
             images.append(DockerImage(*parts[:4]))
     return images
-
-
-# ---------------------------------------------------------------------------
-# HuggingFace repo helpers (QuickSetup 용)
-# ---------------------------------------------------------------------------
 
 
 _HF_TREE_PAGE_CAP = 10

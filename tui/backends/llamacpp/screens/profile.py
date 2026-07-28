@@ -24,11 +24,6 @@ from tui.common import profile_store
 from tui.common.i18n import t
 
 
-# ---------------------------------------------------------------------------
-# ProfileFormScreen
-# ---------------------------------------------------------------------------
-
-
 def _default_port() -> str:
     """Backend default port, honoring a `defaults:` override in profiles.yaml."""
     from tui.common import profile_store
@@ -234,7 +229,6 @@ class ProfileFormScreen(ModalScreen[str | None]):
             str(config_select.value) if config_select.value != Select.BLANK else ""
         )
 
-        # --- Validation ---
         if not name:
             self.notify(t("Profile name is required", "Profile 이름 필수"), severity="error")
             return
@@ -293,7 +287,6 @@ class ProfileFormScreen(ModalScreen[str | None]):
             self.notify(tag_err, severity="error")
             return
 
-        # --- Build ---
         # model_file defaults to hf_file when only the HF coordinates were
         # provided — mirrors what Quick Setup does so a hand-built profile
         # doesn't have to repeat the filename.
@@ -416,11 +409,6 @@ class ProfileFormScreen(ModalScreen[str | None]):
             scroll.scroll_home()
         elif direction == "end":
             scroll.scroll_end()
-
-
-# ---------------------------------------------------------------------------
-# ProfileDeleteScreen
-# ---------------------------------------------------------------------------
 
 
 class ProfileDeleteScreen(ModalScreen[bool]):

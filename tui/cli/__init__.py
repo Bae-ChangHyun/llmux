@@ -151,7 +151,6 @@ def top_cmd(
     raise typer.Exit(code=run_cli(profile))
 
 
-# ── Sub-apps ─────────────────────────────────────────────────────────────────
 from tui.cli import config as _config  # noqa: E402
 from tui.cli import container as _container  # noqa: E402
 from tui.cli import image as _image  # noqa: E402

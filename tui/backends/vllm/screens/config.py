@@ -68,11 +68,6 @@ KNOWN_VLLM_PARAMS: set[str] = set(_FALLBACK_VLLM_PARAMS)
 _PARAM_SUGGESTER = SuggestFromList(sorted(KNOWN_VLLM_PARAMS), case_sensitive=False)
 
 
-# ---------------------------------------------------------------------------
-# ConfigFormScreen
-# ---------------------------------------------------------------------------
-
-
 class ConfigFormScreen(ModalScreen[str | None]):
     """Modal form for creating or editing a config."""
 
@@ -256,7 +251,6 @@ class ConfigFormScreen(ModalScreen[str | None]):
 
     @work(exclusive=False)
     async def _load_vllm_params(self) -> None:
-        """Load vllm params from docker image and update suggestions."""
         global KNOWN_VLLM_PARAMS, _PARAM_SUGGESTER
         extracted = await extract_vllm_params()
         if extracted:
@@ -289,7 +283,6 @@ class ConfigFormScreen(ModalScreen[str | None]):
             classes="param-row" if enabled else "param-row -disabled",
         )
         container.mount(row)
-        # Scroll to show newly added row
         self.call_after_refresh(self._scroll_to_bottom)
 
     @on(Switch.Changed, ".param-switch")
@@ -324,7 +317,6 @@ class ConfigFormScreen(ModalScreen[str | None]):
         model = self.query_one("#model-input", Input).value.strip()
         gpu_mem = self.query_one("#gpu-mem-input", Input).value.strip()
 
-        # --- Validation ---
         if not name:
             self.notify(t("Config name is required.", "Config 이름은 필수입니다."),
                         severity="error")
@@ -360,7 +352,6 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 )
                 return
 
-        # --- Collect params (Switch on → active, off → disabled) ---
         extra_params: dict[str, Any] = {}
         disabled_params: dict[str, Any] = {}
         seen_keys: set[str] = set()
@@ -386,7 +377,6 @@ class ConfigFormScreen(ModalScreen[str | None]):
                     return
                 (extra_params if switch.value else disabled_params)[k] = parsed
 
-        # --- Warn about unknown params ---
         unknown = [k for k in extra_params if k not in KNOWN_VLLM_PARAMS]
         if unknown:
             self.notify(
@@ -398,7 +388,6 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 timeout=6,
             )
 
-        # --- Build and save ---
         cfg = Config(
             name=name,
             model=model,
@@ -418,7 +407,6 @@ class ConfigFormScreen(ModalScreen[str | None]):
         self.notify(t(f"Saved: {name}", f"저장됨: {name}"), severity="information")
         self._saved_name = name
 
-        # New config → switch to edit mode after first save
         if not self._edit_mode:
             self._edit_mode = True
             self._config_name = name
@@ -495,11 +483,6 @@ class ConfigFormScreen(ModalScreen[str | None]):
             scroll.scroll_home()
         elif direction == "end":
             scroll.scroll_end()
-
-
-# ---------------------------------------------------------------------------
-# ConfirmDeleteConfigScreen
-# ---------------------------------------------------------------------------
 
 
 class ConfirmDeleteConfigScreen(ModalScreen[bool]):
@@ -590,11 +573,6 @@ class ConfirmDeleteConfigScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-# ---------------------------------------------------------------------------
-# ConfigListScreen
-# ---------------------------------------------------------------------------
-
-
 class ConfigListScreen(Screen):
     """Full screen listing all configs in a DataTable."""
 
@@ -647,7 +625,6 @@ class ConfigListScreen(Screen):
         except Exception:
             return None
 
-    # ----- Actions -----
 
     def action_new_config(self) -> None:
         self.app.push_screen(ConfigFormScreen(), callback=self._on_form_closed)
@@ -764,7 +741,6 @@ class ConfigListScreen(Screen):
         if name is None:
             self.notify(t("No config selected.", "선택된 config 가 없습니다."), severity="warning")
             return
-        # Check if any profile references this config
         referencing = [
             p for p in list_profile_names()
             if load_profile(p).config_name == name

@@ -32,11 +32,6 @@ from tui.common.metrics import ThroughputTracker, fetch_token_counters
 from tui.common.widgets import BackendPickerModal, ConfirmModal
 
 
-# ---------------------------------------------------------------------------
-# UnifiedDashboard
-# ---------------------------------------------------------------------------
-
-
 class DashboardScreen(Screen):
     """두 backend 프로필을 단일 DataTable 로 통합 표시."""
 
@@ -133,10 +128,6 @@ class DashboardScreen(Screen):
             self._gpu_timer.resume()
         if getattr(self, "_tps_timer", None) is not None:
             self._tps_timer.resume()
-
-    # ------------------------------------------------------------------
-    # Data refresh
-    # ------------------------------------------------------------------
 
     @work(exclusive=True, group="dashboard-reload")
     async def _reload(self) -> None:
@@ -303,10 +294,6 @@ class DashboardScreen(Screen):
                 # _render_rows pass will pick the value up from self._tps.
                 pass
 
-    # ------------------------------------------------------------------
-    # Row selection helpers
-    # ------------------------------------------------------------------
-
     def _selected_row(self) -> DashboardRow | None:
         table = self.query_one("#profile-table", DataTable)
         if table.row_count == 0:
@@ -322,10 +309,6 @@ class DashboardScreen(Screen):
             if f"{r.backend}:{r.profile_name}" == key_val:
                 return r
         return None
-
-    # ------------------------------------------------------------------
-    # Action dispatch (Enter or explicit key)
-    # ------------------------------------------------------------------
 
     @on(DataTable.RowSelected, "#profile-table")
     def _on_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -361,10 +344,6 @@ class DashboardScreen(Screen):
                 self._dispatch_llamacpp(action, row, profile)
 
         self.app.push_screen(ActionModal(profile), after)
-
-    # ------------------------------------------------------------------
-    # Cross-backend conflict gate (port + GPU, 양 backend 교차)
-    # ------------------------------------------------------------------
 
     def _confirm_conflicts_before_start(self, row: DashboardRow, on_ok) -> None:
         """start 실행 전 다른 backend 포함 port/gpu 충돌 체크 (비동기 external 감지 포함)."""
@@ -421,7 +400,6 @@ class DashboardScreen(Screen):
             after,
         )
 
-    # ----- vLLM dispatch -----
 
     def _dispatch_vllm(self, action: str, row: DashboardRow) -> None:
         name = row.profile_name
@@ -531,7 +509,6 @@ class DashboardScreen(Screen):
         # next 2s tick, which feels stuck on a fast workflow.
         self._poll_gpu()
 
-    # ----- llama.cpp dispatch -----
 
     def _dispatch_llamacpp(
         self, action: str, row: DashboardRow, profile
@@ -621,10 +598,6 @@ class DashboardScreen(Screen):
         except Exception as exc:
             self.notify(t(f"✗ benchmark failed: {exc}", f"✗ 벤치마크 실패: {exc}"),
                         severity="error")
-
-    # ------------------------------------------------------------------
-    # Quick shortcuts (u / d / l / e / c / x)
-    # ------------------------------------------------------------------
 
     def action_start_container(self) -> None:
         row = self._selected_row()
@@ -723,10 +696,6 @@ class DashboardScreen(Screen):
                 "delete-profile", row, lbackend.load_profile(row.profile_name)
             )
 
-    # ------------------------------------------------------------------
-    # New profile / system / help / refresh
-    # ------------------------------------------------------------------
-
     def action_refresh(self) -> None:
         self._reload()
 
@@ -803,10 +772,6 @@ class DashboardScreen(Screen):
 
     def _after_mutation(self, result: object = None) -> None:
         self._reload()
-
-    # ------------------------------------------------------------------
-    # HF model memory estimation (common feature on main dashboard)
-    # ------------------------------------------------------------------
 
     def _mem_area_visible(self) -> bool:
         return self.query_one("#mem-search-area").styles.display != "none"
@@ -903,7 +868,7 @@ class DashboardScreen(Screen):
             else:
                 text = f"  📦 [bold]{model_short}[/bold]  {result}"
         except Exception as exc:
-            # A GPU reporting `[N/A]` memory used to leave the bar stuck on
-            # "Estimating..." forever, hiding an estimate we already had.
+            # A GPU reporting `[N/A]` memory must not hide an estimate we
+            # already have.
             text = f"  📦 [bold]{model_id}[/bold]  {result}  [yellow](GPU fit unavailable: {exc})[/yellow]"
         result_bar.update(text)

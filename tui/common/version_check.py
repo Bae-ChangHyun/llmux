@@ -32,7 +32,6 @@ _CACHE_TTL = 24 * 60 * 60  # seconds — one check per day
 _HTTP_TIMEOUT = 4  # seconds per GitHub API call
 _USER_AGENT = "llmux-version-check"
 
-# ── git helpers ──────────────────────────────────────────────────────────────
 def _git(*args: str, timeout: int = 15) -> tuple[int, str]:
     """Run `git -C PROJECT_ROOT <args>`; return (returncode, stdout+stderr).
 
@@ -74,7 +73,6 @@ def _repo_slug() -> str | None:
     return None
 
 
-# ── 24h cache ────────────────────────────────────────────────────────────────
 def _cache_is_fresh() -> bool:
     try:
         data = json.loads(_CACHE_FILE.read_text())
@@ -123,7 +121,6 @@ def _release_commit(slug: str, tag: str) -> str | None:
     return str(sha) if sha else None
 
 
-# ── local comparison ─────────────────────────────────────────────────────────
 def _is_behind(release_sha: str) -> bool | None:
     """True when HEAD does not yet contain `release_sha`; None if undecidable.
 
@@ -159,7 +156,6 @@ def _local_clean_main() -> bool:
     return rc == 0 and status.strip() == ""
 
 
-# ── public entry point ───────────────────────────────────────────────────────
 def check_for_update() -> None:
     """Best-effort: notify (and on a clean `main`, optionally apply) a newer
     llmux release. Honors the 24h cache, silent offline, never raises — except

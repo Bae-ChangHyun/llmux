@@ -171,11 +171,6 @@ async def _dev_image_matches(image_tag: str, repo_url: str, branch: str) -> bool
     return await dev_build.image_matches(LLAMACPP_DEV_SPEC, image_tag, repo_url, branch)
 
 
-# ---------------------------------------------------------------------------
-# Subprocess helpers (kept local to avoid cross-backend coupling)
-# ---------------------------------------------------------------------------
-
-
 async def _run(*args: str, env: dict[str, str] | None = None, timeout: float = 60) -> tuple[int, str]:
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -237,11 +232,6 @@ async def _stream(args: list[str], *, env: dict[str, str] | None = None):
         raise
 
 
-# ---------------------------------------------------------------------------
-# Compose argument builders
-# ---------------------------------------------------------------------------
-
-
 def _override_path(profile_name: str) -> Path:
     return RUNTIME_DIR / f"override-{profile_name}.yaml"
 
@@ -298,11 +288,6 @@ def _compose_base_args(profile: Profile) -> list[str]:
     return args
 
 
-# ---------------------------------------------------------------------------
-# Render helpers
-# ---------------------------------------------------------------------------
-
-
 async def _render_override(profile_name: str) -> tuple[int, str]:
     """Re-render .runtime/llamacpp/override-<name>.yaml.
 
@@ -316,11 +301,6 @@ async def _render_override(profile_name: str) -> tuple[int, str]:
         str(SCRIPTS_DIR / "render-override.py"),
         profile_name,
     )
-
-
-# ---------------------------------------------------------------------------
-# Safety pre-flight (mirrors vllm: GPU-overlap warning + port-conflict abort)
-# ---------------------------------------------------------------------------
 
 
 async def _gpu_conflict_messages(profile: Profile) -> list[str]:
@@ -366,12 +346,9 @@ async def check_port_conflict(profile: Profile) -> str | None:
                 return f"container '{container_name}'"
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # SO_REUSEADDR makes the probe ignore stale TIME_WAIT entries on the port.
-    # Without it every successful `up` poisons the next one for ~60s: our own
-    # /v1/models readiness probe leaves a TIME_WAIT 4-tuple on the loopback
-    # side, and a plain bind() refuses to claim a TIME_WAIT'd address. With
-    # SO_REUSEADDR the bind still fails for ports a process is actively
-    # LISTENING on (the case we want to catch), but skips the cooldown.
+    # SO_REUSEADDR: our own readiness probe leaves a TIME_WAIT entry on this
+    # port for ~60s, and a plain bind() refuses those. A port a process is
+    # actively LISTENING on still fails — that is the conflict we look for.
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         sock.bind(("127.0.0.1", int(port)))
@@ -380,11 +357,6 @@ async def check_port_conflict(profile: Profile) -> str | None:
     finally:
         sock.close()
     return None
-
-
-# ---------------------------------------------------------------------------
-# Container status (mirrors vllm.get_container_statuses)
-# ---------------------------------------------------------------------------
 
 
 async def get_container_statuses() -> list[ContainerStatus]:
@@ -463,11 +435,6 @@ async def get_container_statuses() -> list[ContainerStatus]:
             )
         )
     return statuses
-
-
-# ---------------------------------------------------------------------------
-# Post-start health validation (mirrors vllm _post_start_validation)
-# ---------------------------------------------------------------------------
 
 
 async def _models_endpoint_ready(port: str | int, timeout: int = 3) -> bool:
@@ -677,11 +644,6 @@ async def _post_start_validation(
         await asyncio.sleep(poll_interval)
 
 
-# ---------------------------------------------------------------------------
-# Public API: start
-# ---------------------------------------------------------------------------
-
-
 async def stream_container_up(
     profile_name: str,
     *,
@@ -741,11 +703,8 @@ async def stream_container_up(
     # start" promise was false on llama.cpp: an unlinked profile just failed in
     # render-override.
     #
-    # This runs BEFORE the image-override block on purpose: save_profile()
-    # persists `stored` to profiles.yaml, and the block below assigns the
-    # one-off resolved_image_tag onto `stored`. Saving after that would write a
-    # transient Dev Build / Custom Tag / Default Image selection into the user's
-    # saved profile.
+    # Must run BEFORE the image-override block: save_profile() persists
+    # `stored`, and that block assigns a one-off tag onto it.
     if not stored.config_name:
         stored.config_name = profile_name
         profile.config_name = profile_name
@@ -962,11 +921,6 @@ async def stream_container_up(
         yield ("log", f"  Health:   curl http://localhost:{profile.port}/health")
         yield ("rc", 0)
         return
-
-
-# ---------------------------------------------------------------------------
-# Public API: stop
-# ---------------------------------------------------------------------------
 
 
 async def _container_exists(container_name: str) -> bool | None:

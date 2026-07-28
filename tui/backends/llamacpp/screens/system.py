@@ -117,7 +117,6 @@ class SystemScreen(Screen):
             self._gpu_timer.resume()
         self._refresh_gpu()
 
-    # ----- GPU -----
 
     @work(exclusive=True, group="sys-gpu")
     async def _refresh_gpu(self) -> None:
@@ -159,7 +158,6 @@ class SystemScreen(Screen):
                 mem_total = f"{g.memory_total} MiB"
             table.add_row(g.index, g.name, mem_used, mem_total, util, temp)
 
-    # ----- Docker images -----
 
     @work(exclusive=True, group="sys-images")
     async def _refresh_images(self) -> None:
@@ -192,7 +190,6 @@ class SystemScreen(Screen):
         self.notify(t(f"Image list failed: {exc}", f"이미지 조회 실패: {exc}"),
                     severity="error", timeout=8)
 
-    # ----- Containers -----
 
     @work(exclusive=True, group="sys-containers")
     async def _refresh_containers(self) -> None:
@@ -226,7 +223,6 @@ class SystemScreen(Screen):
         else:
             log.write(t("[dim](no profile containers for this project)[/]", "[dim](이 프로젝트의 프로필 컨테이너 없음)[/]"))
 
-    # ----- Disk -----
 
     @work(exclusive=True, group="sys-disk")
     async def _refresh_disk(self) -> None:
@@ -237,7 +233,6 @@ class SystemScreen(Screen):
         log.write(f"[b]Model dir:[/b] {model_dir}")
         log.write("")
 
-        # 모델 파일 목록
         if model_dir.exists():
             files = sorted(
                 (f for f in model_dir.glob("*.gguf")),
@@ -277,7 +272,6 @@ class SystemScreen(Screen):
             log.write(t("  [dim](no GGUF downloaded in HF cache)[/dim]", "  [dim](HF 캐시에 받아둔 GGUF 없음)[/dim]"))
         log.write("")
 
-        # df -h
         probe_path = model_dir if model_dir.exists() else ROOT
         used, avail, pct = await get_disk_usage(str(probe_path))
         log.write(t("[b]Disk usage[/b]", "[b]디스크 사용량[/b]"))
@@ -287,7 +281,6 @@ class SystemScreen(Screen):
             log.write(t(f"  [yellow]Could not stat {probe_path} (does it exist?)[/]",
                         f"  [yellow]{probe_path} 조회 실패 (경로가 존재하나요?)[/]"))
 
-    # ----- Actions -----
 
     def action_go_back(self) -> None:
         self.app.pop_screen()

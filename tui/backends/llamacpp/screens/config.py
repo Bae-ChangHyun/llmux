@@ -30,10 +30,8 @@ from tui.common.i18n import t
 from tui.common.widgets import TextPromptModal
 
 
-# ---------------------------------------------------------------------------
 # llama-server 주요 플래그 참조표 (자동추출 실패/보완 시 fallback)
 # key → (한줄설명, 예시값)
-# ---------------------------------------------------------------------------
 
 LLAMA_SERVER_FLAGS: dict[str, tuple[str, str]] = {
     # 필수/핵심
@@ -98,14 +96,8 @@ LLAMA_SERVER_FLAGS: dict[str, tuple[str, str]] = {
 }
 
 
-# 런타임에 갱신되는 suggester
 _KNOWN_FLAGS: set[str] = set(LLAMA_SERVER_FLAGS.keys())
 _FLAG_SUGGESTER = SuggestFromList(sorted(_KNOWN_FLAGS), case_sensitive=False)
-
-
-# ---------------------------------------------------------------------------
-# ConfigFormScreen
-# ---------------------------------------------------------------------------
 
 
 class ConfigFormScreen(ModalScreen[str | None]):
@@ -273,7 +265,6 @@ class ConfigFormScreen(ModalScreen[str | None]):
             for key, value in self._initial_config.disabled_params.items():
                 self._add_param_row(key, format_config_param_value(value), enabled=False)
         else:
-            # 새 config: 필수 핵심 플래그 3개 선제공
             for key in ("model-file", "ctx-size", "n-gpu-layers"):
                 ex = LLAMA_SERVER_FLAGS.get(key, ("", ""))[1]
                 self._add_param_row(key, ex)
@@ -326,7 +317,6 @@ class ConfigFormScreen(ModalScreen[str | None]):
 
     @on(Input.Changed, ".param-key")
     def _on_key_changed(self, event: Input.Changed) -> None:
-        """플래그 이름 변경 시 하단 헬프 영역 업데이트."""
         key = event.value.strip()
         help_widget = self.query_one("#flag-help", Static)
         info = LLAMA_SERVER_FLAGS.get(key)
@@ -502,11 +492,6 @@ class ConfigFormScreen(ModalScreen[str | None]):
             scroll.scroll_end()
 
 
-# ---------------------------------------------------------------------------
-# ConfirmDeleteConfigScreen
-# ---------------------------------------------------------------------------
-
-
 class ConfirmDeleteConfigScreen(ModalScreen[bool]):
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
 
@@ -584,11 +569,6 @@ class ConfirmDeleteConfigScreen(ModalScreen[bool]):
 
     def action_cancel(self) -> None:
         self.dismiss(False)
-
-
-# ---------------------------------------------------------------------------
-# ConfigListScreen
-# ---------------------------------------------------------------------------
 
 
 class ConfigListScreen(Screen):

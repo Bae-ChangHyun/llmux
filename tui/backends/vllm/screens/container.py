@@ -33,10 +33,6 @@ from tui.backends.vllm.backend import (
 from tui.common.i18n import t
 
 
-# ---------------------------------------------------------------------------
-# Version option IDs (stable keys for logic, labels updated dynamically)
-# ---------------------------------------------------------------------------
-
 VER_PINNED = "pinned_image"
 VER_LOCAL = "local_latest"
 VER_OFFICIAL = "official"
@@ -47,11 +43,6 @@ VER_CUSTOM = "custom_tag"
 # Registry lookups retry on a timer; stop after this many so an unreachable
 # DockerHub stops looking like "still loading" forever.
 _VERSION_LOOKUP_RETRIES = 3
-
-
-# ---------------------------------------------------------------------------
-# ContainerUpScreen
-# ---------------------------------------------------------------------------
 
 
 class ContainerUpScreen(Screen):
@@ -263,12 +254,10 @@ class ContainerUpScreen(Screen):
     def on_mount(self) -> None:
         self._fetch_version_info()
         self._fetch_gpu_info()
-        # Focus the radio set for arrow key navigation
         try:
             self.query_one("#version-radio", RadioSet).focus()
         except Exception:
             pass
-        # Auto-refresh GPU bar every 3 seconds
         self._gpu_timer = self.set_interval(3, self._fetch_gpu_info)
 
     @work(exclusive=False)
@@ -278,7 +267,6 @@ class ContainerUpScreen(Screen):
         except Exception:
             return
 
-        # Local latest
         local_probe_failed = False
         try:
             local_tag = await get_local_latest_tag()
@@ -303,7 +291,6 @@ class ContainerUpScreen(Screen):
         except Exception:
             pass
 
-        # Official release
         release_ver = await get_dockerhub_release_version()
         self._release_version = release_ver if release_ver != "unknown" else ""
         try:
@@ -319,7 +306,6 @@ class ContainerUpScreen(Screen):
         except Exception:
             pass
 
-        # Nightly
         nightly_date = await get_dockerhub_nightly_date()
         try:
             btn = radio_set.query_one(f"#{VER_NIGHTLY}", RadioButton)
@@ -438,7 +424,6 @@ class ContainerUpScreen(Screen):
 
     @work(exclusive=True)
     async def _do_start(self) -> None:
-        # Determine version from radio selection
         radio_set = self.query_one("#version-radio", RadioSet)
         pressed = radio_set.pressed_button
         default_id = VER_PINNED if self._profile.image_tag else VER_LOCAL
@@ -453,7 +438,6 @@ class ContainerUpScreen(Screen):
 
         if selected_id == VER_PINNED:
             # Empty tag + the profile's own image_tag → runtime's pinned branch.
-            # Same behavior as before this option existed, just now explicit.
             pass
         elif selected_id == VER_LOCAL:
             if not self._local_tag:
@@ -519,7 +503,6 @@ class ContainerUpScreen(Screen):
             )
             return
 
-        # Switch to startup log view
         try:
             self.query_one("#startup-area").styles.display = "block"
             self.query_one("#version-scroll").styles.display = "none"
@@ -577,11 +560,6 @@ class ContainerUpScreen(Screen):
             ),
             timeout=2,
         )
-
-
-# ---------------------------------------------------------------------------
-# LogScreen
-# ---------------------------------------------------------------------------
 
 
 class LogScreen(Screen):

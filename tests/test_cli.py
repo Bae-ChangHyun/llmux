@@ -77,7 +77,7 @@ def _run_cli_stubbed_hf(
     """Run the CLI with `list_hf_repo_files` stubbed to return a synthetic
     GGUF file listing. Used by the llama.cpp quick-setup regression test so
     it doesn't depend on huggingface.co reachability (`NameError: run_async`
-    would otherwise be masked by network flake — see T17 regression).
+    would otherwise be masked by network flake).
     """
     env = {**os.environ, "LLMUX_ROOT": str(tmp), "NO_COLOR": "1"}
     # Build the in-process stub: monkey-patch the backend symbol *before*
@@ -114,7 +114,6 @@ class CliSmokeTests(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
-    # --- dispatch / help ----------------------------------------------------
 
     def test_help_lists_top_commands(self):
         r = _run_cli(self.tmp, "--help")
@@ -129,7 +128,6 @@ class CliSmokeTests(unittest.TestCase):
             r = _run_cli(self.tmp, sub, "--help")
             self.assertEqual(r.returncode, 0, f"{sub}: {r.stderr or r.stdout}")
 
-    # --- profile read paths ------------------------------------------------
 
     def test_profile_list_table(self):
         r = _run_cli(self.tmp, "profile", "list")
@@ -259,7 +257,6 @@ class CliSmokeTests(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-    # --- --set must not bypass the --gpu-mem range rule ----------------------
 
     def test_config_set_gpu_mem_is_range_checked_on_vllm(self):
         bad = _run_cli(
@@ -293,7 +290,6 @@ class CliSmokeTests(unittest.TestCase):
         # Clear the pin so the shared alpha fixture is left as we found it.
         _run_cli(self.tmp, "profile", "edit", "alpha", "--image-tag", "")
 
-    # --- parameter on/off (disable/enable) ----------------------------------
 
     def test_config_disable_enable_round_trip(self):
         _run_cli(
@@ -399,7 +395,6 @@ class CliSmokeTests(unittest.TestCase):
             _run_cli(self.tmp, "config", "delete", "dp4", "-y")
             _run_cli(self.tmp, "config", "delete", "dp4copy", "-y")
 
-    # --- env-check ----------------------------------------------------------
 
     def test_env_check_passes_on_onboarding_default_env_common(self):
         # The onboarding template leaves HF_TOKEN empty (public repos need none)
@@ -437,7 +432,6 @@ class CliSmokeTests(unittest.TestCase):
         finally:
             env_common.unlink(missing_ok=True)
 
-    # --- unknown --backend must be a usage error, not a fallback/traceback ---
 
     def test_unknown_backend_is_a_clean_usage_error(self):
         # `ps -b foo` silently fell through to llamacpp and printed rows labelled
@@ -454,7 +448,6 @@ class CliSmokeTests(unittest.TestCase):
                 self.assertIn("unknown backend", out)
                 self.assertNotIn("Traceback", out)
 
-    # --- config read paths -------------------------------------------------
 
     def test_config_list_includes_seeded(self):
         r = _run_cli(self.tmp, "config", "list", "--json")
@@ -469,9 +462,7 @@ class CliSmokeTests(unittest.TestCase):
         self.assertIn("model: Qwen/Qwen3-0.6B", r.stdout)
         self.assertIn("max-model-len: 4096", r.stdout)
 
-    # --- profile/config write paths (round-trip) ---------------------------
 
-    # --- port / gpu-id validation (unified CLI ⇄ TUI rule) ------------------
 
     def test_profile_new_rejects_privileged_port(self):
         r = _run_cli(
@@ -527,7 +518,6 @@ class CliSmokeTests(unittest.TestCase):
 
         _run_cli(self.tmp, "profile", "delete", "editport", "-y")
 
-    # --- --config existence (typo used to be absorbed silently) -------------
 
     def test_profile_new_config_must_exist_unless_named_after_profile(self):
         # A typo'd --config used to be stored verbatim; start-up would then
@@ -634,7 +624,6 @@ class CliSmokeTests(unittest.TestCase):
 
         _run_cli(self.tmp, "profile", "delete", "okval", "-y")
 
-    # --- --gpu-mem range validation (CLI ⇄ TUI rule: 0.0 < x <= 1.0) ---------
 
     def test_config_new_rejects_non_numeric_gpu_mem(self):
         r = _run_cli(
@@ -681,7 +670,6 @@ class CliSmokeTests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("gpu-memory-utilization", r.stderr + r.stdout)
 
-    # --- tensor-parallel (G2) -----------------------------------------------
 
     def test_profile_edit_gpu_id_announces_derived_tensor_parallel(self):
         created = _run_cli(
@@ -749,7 +737,6 @@ class CliSmokeTests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("--tensor-parallel", r.stderr + r.stdout)
 
-    # --- cross-backend option rejection (F4) --------------------------------
 
     def test_profile_new_rejects_vllm_only_option_on_llamacpp(self):
         # These used to be accepted and silently dropped by _profile_to_entry.
@@ -975,7 +962,6 @@ class CliSmokeTests(unittest.TestCase):
         r = _run_cli(self.tmp, "config", "delete", "tmpcfg", "-y")
         self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
 
-    # --- render-env --------------------------------------------------------
 
     def test_render_env_writes_runtime_file(self):
         r = _run_cli(self.tmp, "render-env", "alpha")
@@ -992,7 +978,6 @@ class CliSmokeTests(unittest.TestCase):
         for n in ("alpha", "bravo"):
             self.assertTrue((self.tmp / ".runtime" / "vllm" / f"{n}.env").exists())
 
-    # --- system commands ---------------------------------------------------
 
     def test_gpu_runs_without_crashing(self):
         r = _run_cli(self.tmp, "gpu")
@@ -1003,7 +988,6 @@ class CliSmokeTests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("MISSING", (r.stdout + r.stderr).upper())
 
-    # --- security / hardening ------------------------------------------------
 
     def test_config_show_rejects_path_traversal(self):
         # `..%2Fetc%2Fpasswd` style: dots-and-slashes name should be rejected
@@ -1064,7 +1048,6 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(data["backend"], "llamacpp")
         self.assertEqual(data["port"], 8080)
 
-    # --- llama.cpp quick-setup (T17) ------------------------------------------
 
     def test_quick_setup_llamacpp_writes_profile_and_config(self):
         """Regression: `_quick_setup_llamacpp` used `run_async` without
@@ -1120,7 +1103,7 @@ class CliSmokeTests(unittest.TestCase):
         _run_cli(self.tmp, "profile", "delete", "lc-smoke", "-y")
 
     def test_quick_setup_llamacpp_rejects_non_integer_ctx_size(self):
-        # Finding #8: --ctx-size / --n-gpu-layers must validate as ints up front
+        # --ctx-size / --n-gpu-layers must validate as ints up front
         # (like --port / --gpu-id), not silently store a string that only breaks
         # at llama-server start.
         r = _run_cli_stubbed_hf(

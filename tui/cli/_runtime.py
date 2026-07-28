@@ -112,7 +112,6 @@ def emit_table(rows: Iterable[dict], columns: list[str]) -> None:
         print("  ".join(str(r.get(c, "")).ljust(widths[c]) for c in columns))
 
 
-# ── Shared orchestration helpers ────────────────────────────────────────────
 
 
 async def gather_conflict_warnings(profile_name: str, backend: str) -> list[str]:

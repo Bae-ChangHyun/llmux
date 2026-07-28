@@ -182,8 +182,7 @@ class ContainerUpScreen(Screen):
                     )
                 )
 
-            # Surface ANY pinned image, not just `llamacpp-dev:` ones — a
-            # profile pinned to e.g. `ghcr.io/foo/bar:v1` was equally silent.
+            # Surface ANY pinned image, not just `llamacpp-dev:` ones.
             pinned = self._profile.image_tag
             if pinned:
                 yield Static(
@@ -206,8 +205,6 @@ class ContainerUpScreen(Screen):
                     id="version-help",
                 )
                 with RadioSet(id="version-radio"):
-                    # A pinned profile defaulted to "Default Image", i.e. the
-                    # default selection silently *discarded* the user's pin.
                     if pinned:
                         yield RadioButton(
                             t(f"Pinned Image  ({pinned})", f"고정 이미지  ({pinned})"), id=VER_PINNED, value=True
@@ -383,8 +380,7 @@ class ContainerUpScreen(Screen):
         branch = ""
 
         if selected_id == VER_PINNED:
-            # All-zero → the runtime honors profile.image_tag. Same behavior as
-            # a pinned profile always had, just now the selected, visible one.
+            # All-zero → the runtime honors profile.image_tag.
             pass
         elif selected_id == VER_DEV:
             use_dev = True
@@ -422,7 +418,6 @@ class ContainerUpScreen(Screen):
             )
             return
 
-        # Switch to log view
         try:
             self.query_one("#startup-area").styles.display = "block"
             self.query_one("#version-scroll").styles.display = "none"

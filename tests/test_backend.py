@@ -498,8 +498,8 @@ class ProfileStoreYamlTests(unittest.TestCase):
 
 
 class AuditFindingsProfileStoreTests(unittest.TestCase):
-    """Regressions for the profiles.yaml write-path / dedup / global-uniqueness
-    audit fixes (findings #1, #2, #4)."""
+    """Regressions for the profiles.yaml write path: dedup and global name
+    uniqueness."""
 
     @staticmethod
     def _write_yaml(root: Path, body: str) -> Path:
@@ -1420,9 +1420,8 @@ class _ExistingStore:
         return None
 
 
-class R18RoundTests(unittest.IsolatedAsyncioTestCase):
-    """D1 (container_down probe failure), D3 (async GPU conflict empty guard),
-    D4 (llama.cpp downloaded needs hf_repo), D5 (vLLM profile-not-found)."""
+class ProbeFailureAndGuardTests(unittest.IsolatedAsyncioTestCase):
+    """Failed probes and empty inputs must not read as definite answers."""
 
     async def test_container_exists_returns_none_when_probe_fails(self) -> None:
         from tui.backends.vllm import backend_runtime as rt
@@ -2173,7 +2172,7 @@ class LlamacppCheckPortConflictTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LlamacppStreamContainerUpTests(unittest.IsolatedAsyncioTestCase):
-    """Dev-tag rebuild policy (F1) and config auto-generation (F5)."""
+    """Dev-tag rebuild policy and config auto-generation."""
 
     def _fakes(self, tmp: Path, *, config_name: str, exists: bool, matches: bool):
         from tui.common import profile_store as ps
@@ -2213,7 +2212,7 @@ class LlamacppStreamContainerUpTests(unittest.IsolatedAsyncioTestCase):
             @staticmethod
             def save_profile(s):
                 # Snapshot image_tag at save time — a transient override must
-                # never be persisted (same class of bug as vLLM's F2).
+                # never be persisted.
                 state["saved"].append(s.image_tag)
 
         async def fake_build(*a, **kw):

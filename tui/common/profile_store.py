@@ -214,9 +214,8 @@ def _to_profile(entry: dict, defaults: dict[str, Any] | None = None) -> StoredPr
     name = merged["name"]
 
     def _as_int(field_name: str, raw: Any) -> int:
-        # A hand-edited `port: abc` used to raise a bare ValueError deep inside
-        # int(), taking down every read path. Re-raise with the profile + field
-        # so list_profiles can skip just this entry and say why.
+        # Re-raise with the profile + field so list_profiles can skip just
+        # this entry and say why, instead of a bare ValueError from int().
         try:
             return int(raw)
         except (TypeError, ValueError):

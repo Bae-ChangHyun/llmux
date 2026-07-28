@@ -131,11 +131,6 @@ def image_tag_error(value: str) -> str:
     return ""
 
 
-# ---------------------------------------------------------------------------
-# subprocess helpers (small, local — avoids cross-backend coupling)
-# ---------------------------------------------------------------------------
-
-
 async def _run(*args: str, cwd: Path | None = None, timeout: float = 30) -> tuple[int, str]:
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -192,11 +187,6 @@ async def _stream(
         except (asyncio.CancelledError, ProcessLookupError, OSError):
             pass
         raise
-
-
-# ---------------------------------------------------------------------------
-# git clone/update
-# ---------------------------------------------------------------------------
 
 
 async def clone_or_update(spec: DevBuildSpec, repo_url: str, branch: str):
@@ -258,11 +248,6 @@ async def clone_or_update(spec: DevBuildSpec, repo_url: str, branch: str):
         yield ("rc", rc)
         return
     yield ("commit", sha.strip())
-
-
-# ---------------------------------------------------------------------------
-# docker build
-# ---------------------------------------------------------------------------
 
 
 async def stream_build(
@@ -365,11 +350,6 @@ async def stream_build(
             yield event
             return
         yield event
-
-
-# ---------------------------------------------------------------------------
-# image inspection helpers
-# ---------------------------------------------------------------------------
 
 
 async def detect_local_gpu_caps() -> list[str]:

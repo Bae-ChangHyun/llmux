@@ -27,7 +27,6 @@ class _StatusProbeFailed(RuntimeError):
     """`docker ps` failed, so container state is unknown rather than stopped."""
 
 
-# ---- up ---------------------------------------------------------------------
 
 @app.command("up")
 def up(
@@ -155,7 +154,6 @@ def up(
     raise typer.Exit(code=rc)
 
 
-# ---- down -------------------------------------------------------------------
 
 @app.command("down")
 def down(
@@ -179,7 +177,6 @@ def down(
     raise typer.Exit(code=rc)
 
 
-# ---- logs -------------------------------------------------------------------
 
 @app.command("logs")
 def logs(
@@ -210,7 +207,6 @@ def logs(
     raise typer.Exit(code=rc)
 
 
-# ---- benchmark --------------------------------------------------------------
 
 @app.command("benchmark")
 def benchmark(
@@ -300,7 +296,6 @@ def benchmark(
     )
 
 
-# ---- stats ------------------------------------------------------------------
 
 @app.command("stats")
 def stats(
@@ -438,7 +433,6 @@ def stats(
         raise typer.Exit(code=1) from exc
 
 
-# ---- ps ---------------------------------------------------------------------
 
 @app.command("ps")
 def ps(
@@ -507,7 +501,6 @@ def ps(
     )
 
 
-# ---- render-env -------------------------------------------------------------
 
 @app.command("render-env")
 def render_env(

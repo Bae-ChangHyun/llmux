@@ -415,7 +415,6 @@ def edit_config(
                         "removed; use --model / --gpu-mem to change it.",
                         param_hint=flag,
                     )
-    # --disable: active -> disabled. Must currently be active.
     for k in disable:
         if k not in data:
             raise typer.BadParameter(
@@ -434,7 +433,6 @@ def edit_config(
     # Validate AFTER enable so a bad gpu-memory-utilization brought back from
     # the disabled set (or set above) can't slip through unchecked.
     _validate_gpu_mem_in_data(bk, data)
-    # --unset removes from wherever it lives.
     for k in unset:
         data.pop(k, None)
         disabled.pop(k, None)
