@@ -367,12 +367,15 @@ async def get_container_statuses() -> list[ContainerStatus]:
     rc, out = await run_command(
         "docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}", timeout=10
     )
+    if rc != 0:
+        raise RuntimeError(
+            "docker ps failed or timed out — container state is unknown"
+        )
     container_info: dict[str, str] = {}
-    if rc == 0:
-        for line in out.strip().splitlines():
-            parts = line.split("\t", 1)
-            if len(parts) == 2:
-                container_info[parts[0]] = parts[1]
+    for line in out.strip().splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) == 2:
+            container_info[parts[0]] = parts[1]
 
     statuses = []
     for name in profiles:
@@ -1079,19 +1082,23 @@ async def container_down(profile_name: str) -> tuple[int, str]:
     if rc == 0:
         return 0, f"{profile_name} stopped successfully!"
 
+    compose_err = next(
+        (line for line in reversed(out.strip().splitlines()) if line.strip()),
+        f"rc={rc}",
+    )
     stop_rc, stop_out = await run_command("docker", "stop", profile.container_name, timeout=30)
     if stop_rc != 0:
         return stop_rc, stop_out
     rm_rc, rm_out = await run_command("docker", "rm", profile.container_name, timeout=30)
     if rm_rc != 0:
         return rm_rc, rm_out
-    # Best-effort: tear down the compose network too. Without this, repeated
-    # `compose down` failures leave `<profile>_default` networks accumulating
-    # under `docker network ls`. Errors are ignored — the network may not
-    # exist (compose never created it) or may still be in use by an external
-    # container, and neither case is fatal for the stop operation.
+    # Errors ignored — the network may not exist, or may still hold an external
+    # container; neither is fatal for the stop itself.
     await run_command("docker", "network", "rm", f"{profile.name}_default", timeout=10)
-    return 0, f"{profile_name} stopped successfully!"
+    return 0, (
+        f"{profile_name} stopped via docker stop/rm "
+        f"(compose down failed: {compose_err})"
+    )
 
 
 async def stream_container_logs(container_name: str, *, tail: int = 100):

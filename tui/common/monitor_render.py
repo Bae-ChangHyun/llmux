@@ -25,6 +25,7 @@ from tui.common.metrics import Hist, MetricsSnapshot
 _VLLM_BLUE = "#4c8dff"
 _LLAMA_GREEN = "#51cf66"
 _BORDER = "#3b4048"
+_ALERT = "#f87171"
 _TITLE = "#8b93a7"
 _DIM = "#6b7280"
 
@@ -532,6 +533,7 @@ def render_dashboard(
     interval: float = 1.0,
     uptime: float = 0.0,
     lag_ms: float = 0.0,
+    notices: list[str] | None = None,
 ) -> RenderableType:
     """System view: every GPU always, plus a panel per running model.
 
@@ -564,10 +566,22 @@ def render_dashboard(
     header.add_row(left, right)
 
     blocks: list[RenderableType] = [header, _gpu_panel(gpus, pcie)]
-    if not entries:
+    if notices:
         blocks.append(Panel(
-            Text(t("Nothing is running — start one with `llmux up <profile>`.",
-                   "실행 중인 모델이 없습니다 — `llmux up <프로필>` 로 시작하세요."), style=_DIM),
+            Text("\n".join(notices), style=_ALERT),
+            title=t("SCAN ERRORS", "스캔 오류"), title_align="left",
+            border_style=_ALERT, style=_TITLE, box=box.ROUNDED, padding=(0, 1),
+        ))
+    if not entries:
+        empty = (
+            t("Model scan failed — this list is incomplete, not empty.",
+              "모델 스캔 실패 — 목록이 비어 있는 게 아니라 불완전합니다.")
+            if notices else
+            t("Nothing is running — start one with `llmux up <profile>`.",
+              "실행 중인 모델이 없습니다 — `llmux up <프로필>` 로 시작하세요.")
+        )
+        blocks.append(Panel(
+            Text(empty, style=_ALERT if notices else _DIM),
             title="MODELS", title_align="left", border_style=_BORDER,
             style=_TITLE, box=box.ROUNDED, padding=(0, 1),
         ))

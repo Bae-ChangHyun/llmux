@@ -356,11 +356,17 @@ class CliSmokeTests(unittest.TestCase):
     def test_config_cannot_toggle_vllm_core_fields(self):
         _run_cli(self.tmp, "config", "new", "dpc", "--backend", "vllm", "--model", "m/x")
         try:
-            for flag in ("--disable", "--enable"):
+            for flag in ("--disable", "--enable", "--unset"):
                 for key in ("model", "gpu-memory-utilization"):
                     r = _run_cli(self.tmp, "config", "edit", "dpc", flag, key)
                     self.assertNotEqual(r.returncode, 0, (flag, key))
                     self.assertIn("core vLLM field", r.stderr + r.stdout)
+            # The serializer re-emits both with a default, so an accepted
+            # --unset would have looked like success while nothing changed.
+            show = json.loads(
+                _run_cli(self.tmp, "config", "show", "dpc", "--json").stdout
+            )
+            self.assertEqual(show["params"]["model"], "m/x")
         finally:
             _run_cli(self.tmp, "config", "delete", "dpc", "-y")
 

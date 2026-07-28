@@ -8,6 +8,7 @@ import unittest
 
 import yaml
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from tui.backends.llamacpp import backend as lbackend
@@ -1441,6 +1442,37 @@ class R18RoundTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotEqual(rc, 0)
         self.assertIn("could not determine", msg)
+
+    async def test_llamacpp_container_exists_returns_none_when_probe_fails(self) -> None:
+        from tui.backends.llamacpp import backend_runtime as rt
+
+        async def failing_ps(*_a, **_k):
+            return 1, ""
+
+        with patch.object(rt, "_docker_run", failing_ps):
+            self.assertIsNone(await rt._container_exists("c"))
+
+    async def test_llamacpp_container_down_does_not_report_success_on_probe_failure(
+        self,
+    ) -> None:
+        from tui.backends.llamacpp import backend as lb
+        from tui.backends.llamacpp import backend_runtime as rt
+
+        profile = lb.Profile(name="p", container_name="p", port=8080)
+        stored = SimpleNamespace(name="p", backend="llamacpp")
+
+        async def failing_ps(*_a, **_k):
+            return 1, ""
+
+        with patch.object(rt, "load_profile", lambda _n: profile), \
+             patch.object(rt.profile_store, "load_profile", lambda _n, _b: stored), \
+             patch.object(rt.profile_store, "render_env", lambda _s: None), \
+             patch.object(rt, "_override_path", lambda _n: Path("/nonexistent.yaml")), \
+             patch.object(rt, "_docker_run", failing_ps):
+            rc, msg = await rt.container_down("p")
+
+        self.assertNotEqual(rc, 0)
+        self.assertIn("확인할 수 없음", msg)
 
     async def test_async_gpu_conflict_empty_gpu_set_is_silent(self) -> None:
         from tui.common import conflicts
@@ -3043,7 +3075,7 @@ class VllmContainerStatusImageTests(unittest.IsolatedAsyncioTestCase):
         )
 
         async def fake_run_command(*_a, **_k):
-            return 1, ""  # no docker → stopped, but image must still be filled
+            return 0, ""  # probe ok, no container → stopped; image still filled
 
         with patch.dict(
             rt.get_container_statuses.__globals__,
@@ -3057,6 +3089,27 @@ class VllmContainerStatusImageTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(statuses), 1)
         self.assertEqual(statuses[0].image, "vllm-dev:mine")
+
+    async def test_status_probe_failure_raises_instead_of_reporting_stopped(self) -> None:
+        from tui.backends.llamacpp import backend_runtime as lrt
+        from tui.backends.vllm import backend_runtime as rt
+
+        async def failing(*_a, **_k):
+            return 1, ""
+
+        with patch.dict(
+            rt.get_container_statuses.__globals__,
+            {"list_profile_names": lambda: ["p"], "run_command": failing},
+        ):
+            with self.assertRaises(RuntimeError):
+                await rt.get_container_statuses()
+
+        with patch.dict(
+            lrt.get_container_statuses.__globals__,
+            {"list_profile_names": lambda: ["p"], "_docker_run": failing},
+        ):
+            with self.assertRaises(RuntimeError):
+                await lrt.get_container_statuses()
 
 
 class DevBuildCustomTagTests(unittest.IsolatedAsyncioTestCase):
@@ -3531,7 +3584,7 @@ class PlainMonitorTests(unittest.IsolatedAsyncioTestCase):
         opens. Only an explicitly named, non-running profile is rejected."""
         from unittest.mock import patch, AsyncMock
         from tui.common import plain_monitor as mod
-        with patch.object(mod, "_running_rows", AsyncMock(return_value=[])), \
+        with patch.object(mod, "_running_rows", AsyncMock(return_value=([], []))), \
              patch.object(mod, "run_plain_monitor", AsyncMock(return_value=None)) as run:
             rc = await mod._resolve_and_run(None)
             self.assertEqual(rc, 0)
@@ -3540,6 +3593,15 @@ class PlainMonitorTests(unittest.IsolatedAsyncioTestCase):
     async def test_resolve_rejects_non_running_name(self) -> None:
         from unittest.mock import patch, AsyncMock
         from tui.common import plain_monitor as mod
-        with patch.object(mod, "_running_rows", AsyncMock(return_value=[self._row("a")])):
+        with patch.object(mod, "_running_rows", AsyncMock(return_value=([self._row("a")], []))):
             rc = await mod._resolve_and_run("nope")
             self.assertEqual(rc, 1)
+
+    async def test_resolve_does_not_claim_not_running_when_scan_failed(self) -> None:
+        from unittest.mock import patch, AsyncMock
+        from tui.common import plain_monitor as mod
+        with patch.object(
+            mod, "_running_rows", AsyncMock(return_value=([], ["docker down"]))
+        ):
+            rc = await mod._resolve_and_run("a")
+        self.assertEqual(rc, 2)

@@ -55,7 +55,8 @@ class MonitorScreen(Screen):
         self._polling = False
         self._timer = None
         self._rendered = None
-        self._last = {"entries": [], "gpus": [], "pcie": {}, "lag": 0.0, "ready": False}
+        self._last = {"entries": [], "gpus": [], "pcie": {}, "lag": 0.0,
+                      "ready": False, "notices": []}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -78,8 +79,11 @@ class MonitorScreen(Screen):
             gpus = await common_docker.get_gpu_info()
             pcie = await common_docker.get_pcie_stats()
             lag_ms = (monotonic() - t0) * 1000
-            entries = await sample_entries(self._focus, self._states, monotonic(), lag_ms)
-            self._last.update(entries=entries, gpus=gpus, pcie=pcie, lag=lag_ms, ready=True)
+            entries, notices = await sample_entries(
+                self._focus, self._states, monotonic(), lag_ms
+            )
+            self._last.update(entries=entries, gpus=gpus, pcie=pcie, lag=lag_ms,
+                              ready=True, notices=notices)
             self._repaint()
         finally:
             self._polling = False
@@ -91,6 +95,7 @@ class MonitorScreen(Screen):
             self._last["entries"], self._last["gpus"], self._last["pcie"],
             self.size.width or 100, paused=self._paused, interval=self._interval,
             uptime=monotonic() - self._started, lag_ms=self._last["lag"],
+            notices=self._last["notices"],
         )
         self.query_one("#mon", Static).update(self._rendered)
 

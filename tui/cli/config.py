@@ -399,12 +399,14 @@ def edit_config(
     # alongside a live default — `up` would silently use the default, not the
     # value the user thought they'd toggled. Refuse to toggle them at all.
     if bk == "vllm":
-        for flag, keys in (("--disable", disable), ("--enable", enable)):
+        for flag, keys in (
+            ("--disable", disable), ("--enable", enable), ("--unset", unset),
+        ):
             for k in keys:
                 if k in ("model", "gpu-memory-utilization"):
                     raise typer.BadParameter(
-                        f"{k} is a core vLLM field and cannot be toggled; use "
-                        "--model / --gpu-mem to change it.",
+                        f"{k} is a core vLLM field and cannot be toggled or "
+                        "removed; use --model / --gpu-mem to change it.",
                         param_hint=flag,
                     )
     # --disable: active -> disabled. Must currently be active.

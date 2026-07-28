@@ -8,4 +8,4 @@ services:
     extends:
       file: docker-compose.yaml
       service: vllm
-    image: vllm-dev:${VLLM_DEV_TAG:-${VLLM_BRANCH:-main}}
+    image: vllm-dev:${VLLM_DEV_TAG:?VLLM_DEV_TAG is required — llmux resolves the dev tag before compose runs}

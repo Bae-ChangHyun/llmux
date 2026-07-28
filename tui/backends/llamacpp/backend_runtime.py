@@ -397,12 +397,15 @@ async def get_container_statuses() -> list[ContainerStatus]:
     rc, out = await _docker_run(
         "docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}", timeout=10
     )
+    if rc != 0:
+        raise RuntimeError(
+            "docker ps failed or timed out — container state is unknown"
+        )
     container_info: dict[str, str] = {}
-    if rc == 0:
-        for line in out.strip().splitlines():
-            parts = line.split("\t", 1)
-            if len(parts) == 2:
-                container_info[parts[0]] = parts[1]
+    for line in out.strip().splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) == 2:
+            container_info[parts[0]] = parts[1]
 
     statuses: list[ContainerStatus] = []
     for name in names:
@@ -943,42 +946,68 @@ async def stream_container_up(
 # ---------------------------------------------------------------------------
 
 
+async def _container_exists(container_name: str) -> bool | None:
+    """True/False if the probe succeeded, None if `docker ps` failed/timed out."""
+    rc, out = await _docker_run(
+        "docker", "ps", "-a", "--format", "{{.Names}}", timeout=10
+    )
+    if rc != 0:
+        return None
+    return container_name in out.strip().splitlines()
+
+
 async def container_down(profile_name: str) -> tuple[int, str]:
-    """Mirrors stop.sh: prefer compose down (clean network teardown), fall back
-    to docker rm -f for orphaned containers without an override file."""
+    """compose down (clean network teardown), falling back to docker rm -f for
+    orphaned containers without an override file."""
     stored = profile_store.load_profile(profile_name, "llamacpp")
     if stored is None:
         return 1, f"✗ 프로필 없음: llamacpp/{profile_name}"
 
     profile = load_profile(profile_name)
 
-    # Re-render env so compose has the right CONTAINER_NAME / LLAMA_PORT.
+    render_warning = ""
     try:
         profile_store.render_env(stored)
-    except Exception:  # noqa: BLE001 — best-effort; the rm -f fallback still works
-        pass
+    except Exception as exc:  # noqa: BLE001 — the rm -f path still works, but say so
+        render_warning = f" (⚠ env 렌더 실패: {exc})"
 
+    compose_err = ""
     override = _override_path(profile_name)
     if override.exists():
         env = _compose_env(profile)
         cmd = [*_compose_base_args(profile), "down"]
         rc, out = await _run(*cmd, env=env, timeout=120)
         if rc == 0:
-            return 0, f"✓ '{profile_name}' 중지 완료"
-        # fallthrough to docker rm -f if compose down fails
+            return 0, f"✓ '{profile_name}' 중지 완료{render_warning}"
+        compose_err = next(
+            (line for line in reversed(out.strip().splitlines()) if line.strip()),
+            f"rc={rc}",
+        )
 
-    rc_inspect, names = await _docker_run("docker", "ps", "-a", "--format", "{{.Names}}", timeout=10)
-    if rc_inspect == 0 and profile.container_name in names.splitlines():
-        rc_rm, out_rm = await _docker_run("docker", "rm", "-f", profile.container_name, timeout=30)
+    exists = await _container_exists(profile.container_name)
+    if exists is None:
+        return 1, (
+            f"✗ '{profile_name}' 컨테이너 상태를 확인할 수 없음 "
+            "(docker ps 실패 또는 타임아웃) — 중지 여부 불명"
+        )
+
+    if exists:
+        rc_rm, out_rm = await _docker_run(
+            "docker", "rm", "-f", profile.container_name, timeout=30
+        )
         if rc_rm != 0:
             return rc_rm, out_rm.strip() or "✗ docker rm -f 실패"
-        # Mirror the vLLM fallback: best-effort tear down the compose network so
-        # repeated stop fallbacks don't leave `<profile>_default` networks
-        # accumulating. Errors ignored — network may not exist or may still be
-        # in use by an external attachment.
+        # Errors ignored — the network may not exist, or may still hold an
+        # external container; neither is fatal for the stop itself.
         await _docker_run(
             "docker", "network", "rm", f"{profile.name}_default", timeout=10
         )
-        return 0, f"✓ '{profile_name}' 중지 완료 (rm -f)"
+        detail = f" (compose down 실패: {compose_err})" if compose_err else ""
+        return 0, f"✓ '{profile_name}' 중지 완료 (rm -f){detail}{render_warning}"
 
-    return 0, f"({profile_name}) 컨테이너 없음 — 이미 중지됨"
+    if compose_err:
+        return 1, (
+            f"✗ '{profile_name}' compose down 실패 후 컨테이너를 찾을 수 없음: "
+            f"{compose_err}{render_warning}"
+        )
+    return 0, f"({profile_name}) 컨테이너 없음 — 이미 중지됨{render_warning}"

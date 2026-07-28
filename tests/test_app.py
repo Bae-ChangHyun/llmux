@@ -399,7 +399,7 @@ class MonitorScreenTests(unittest.IsolatedAsyncioTestCase):
         with patch("tui.common.plain_monitor.fetch_snapshot",
                    AsyncMock(return_value=snap)), \
             patch("tui.common.plain_monitor._running_rows",
-                  AsyncMock(return_value=[self._row()])), \
+                  AsyncMock(return_value=([self._row()], []))), \
             patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=gpus)), \
             patch("tui.common.docker.get_pcie_stats", AsyncMock(return_value={})):
             app = LlmuxApp()
@@ -427,7 +427,7 @@ class MonitorScreenTests(unittest.IsolatedAsyncioTestCase):
         with patch("tui.common.plain_monitor.fetch_snapshot",
                    AsyncMock(return_value=None)), \
             patch("tui.common.plain_monitor._running_rows",
-                  AsyncMock(return_value=[self._row()])), \
+                  AsyncMock(return_value=([self._row()], []))), \
             patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=[])), \
             patch("tui.common.docker.get_pcie_stats", AsyncMock(return_value={})):
             app = LlmuxApp()
@@ -449,7 +449,7 @@ class MonitorScreenTests(unittest.IsolatedAsyncioTestCase):
         from tui.screens.monitor import MonitorScreen
 
         gpus = [GpuInfo("0", "RTX", "8000", "16000", "78", "71", "210")]
-        with patch("tui.common.plain_monitor._running_rows", AsyncMock(return_value=[])), \
+        with patch("tui.common.plain_monitor._running_rows", AsyncMock(return_value=([], []))), \
             patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=gpus)), \
             patch("tui.common.docker.get_pcie_stats", AsyncMock(return_value={})):
             app = LlmuxApp()
