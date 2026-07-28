@@ -29,6 +29,16 @@ _ALERT = "#f87171"
 _TITLE = "#8b93a7"
 _DIM = "#6b7280"
 
+# Poll cadence shared by the TUI monitor screen and `llmux top` — both views
+# render through this module, so +/- must move them identically.
+MIN_INTERVAL = 0.25
+MAX_INTERVAL = 5.0
+INTERVAL_STEP = 0.25
+
+# Requests-in-flight gauge saturation. vLLM's default max-num-seqs is far
+# higher, so a fixed small ceiling would peg the bar red under any real load.
+REQUEST_GAUGE_FULL = 32.0
+
 # Vertical heat gradient (cool → hot), used for braille graphs and value bars.
 _STOPS = [
     (59, 130, 246),   # blue
@@ -292,13 +302,13 @@ def _requests_panel(snap, d: Derived) -> Panel:
     run_cell = Text()
     run_cell.append(_num(run), style="bold white")
     run_cell.append("  ")
-    run_cell.append_text(gradient_bar(min((run or 0.0) / 8.0, 1.0) if run is not None else None, 14))
+    run_cell.append_text(gradient_bar(min((run or 0.0) / REQUEST_GAUGE_FULL, 1.0) if run is not None else None, 14))
     tbl.add_row("running", run_cell)
 
     wait_cell = Text()
     wait_cell.append(_num(wait), style="bold #facc15" if (wait or 0) else "white")
     wait_cell.append("  ")
-    wait_cell.append_text(gradient_bar(min((wait or 0.0) / 8.0, 1.0) if wait is not None else None, 14))
+    wait_cell.append_text(gradient_bar(min((wait or 0.0) / REQUEST_GAUGE_FULL, 1.0) if wait is not None else None, 14))
     tbl.add_row("waiting", wait_cell)
 
     tbl.add_row("done/s", Text(_num(d.done_tps, "{:.1f}"), style="white"))

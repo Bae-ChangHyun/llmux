@@ -70,7 +70,16 @@ def sanitize_docker_tag(name: str) -> str:
 _sanitize_docker_tag = sanitize_docker_tag
 
 
-_DEV_IMAGE_PREFIXES = ("vllm-dev:", "llamacpp-dev:")
+def _dev_image_prefixes() -> tuple[str, ...]:
+    """Registered dev-image prefixes, from the specs that own them."""
+    from tui.backends.llamacpp.backend_runtime import LLAMACPP_DEV_SPEC
+    from tui.backends.vllm.backend_runtime import VLLM_DEV_SPEC
+
+    return tuple(
+        f"{spec.image_prefix}:" for spec in (VLLM_DEV_SPEC, LLAMACPP_DEV_SPEC)
+    )
+
+
 _TAG_PART_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
 
 
@@ -86,7 +95,7 @@ def image_tag_error(value: str) -> str:
     value = value.strip()
     if not value:
         return ""
-    for prefix in _DEV_IMAGE_PREFIXES:
+    for prefix in _dev_image_prefixes():
         if value.startswith(prefix):
             tag = value[len(prefix):]
             if not tag:

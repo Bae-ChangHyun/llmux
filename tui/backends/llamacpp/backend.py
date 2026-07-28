@@ -563,7 +563,8 @@ async def list_hf_repo_files(repo: str) -> list[dict]:
     loop = asyncio.get_running_loop()
 
     def _do():
-        url = f"https://huggingface.co/api/models/{repo}/tree/main?recursive=true"
+        endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
+        url = f"{endpoint}/api/models/{repo}/tree/main?recursive=true"
         headers = {"User-Agent": "llmux"}
         token = _parse_env_file(ROOT / ".env.common").get("HF_TOKEN", "").strip()
         if token and not token.startswith("your_"):

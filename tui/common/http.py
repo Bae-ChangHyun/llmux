@@ -11,12 +11,18 @@ import urllib.request
 
 log = logging.getLogger(__name__)
 
+BENCH_PROMPT = "Explain the theory of relativity in about 150 words."
+BENCH_MAX_TOKENS = 200
+# Qwen-family chat templates gate reasoning on this; other templates ignore
+# unknown kwargs, so it is safe to send unconditionally.
+BENCH_CHAT_TEMPLATE_KWARGS = {"enable_thinking": False}
+
 
 async def chat_completion_bench(
     port: int | str,
     model: str,
-    prompt: str = "Explain the theory of relativity in about 150 words.",
-    max_tokens: int = 200,
+    prompt: str = BENCH_PROMPT,
+    max_tokens: int = BENCH_MAX_TOKENS,
     timeout: int = 600,
 ) -> dict:
     """단일 /v1/chat/completions 호출 → {elapsed, usage}."""
@@ -26,7 +32,7 @@ async def chat_completion_bench(
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
             "stream": False,
-            "chat_template_kwargs": {"enable_thinking": False},
+            "chat_template_kwargs": dict(BENCH_CHAT_TEMPLATE_KWARGS),
         }
     ).encode()
 
@@ -52,8 +58,8 @@ async def run_bench(
     port: int | str,
     model: str,
     *,
-    prompt: str = "Explain the theory of relativity in about 150 words.",
-    max_tokens: int = 200,
+    prompt: str = BENCH_PROMPT,
+    max_tokens: int = BENCH_MAX_TOKENS,
     runs: int = 3,
     warmup: int = 1,
 ) -> dict:

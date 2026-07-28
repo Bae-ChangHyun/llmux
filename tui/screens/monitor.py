@@ -20,11 +20,14 @@ from textual.widgets import Footer, Header, Static
 from tui.common import docker as common_docker
 from tui.common.adapter import DashboardRow
 from tui.common.i18n import t
-from tui.common.monitor_render import MonitorState, render_dashboard
+from tui.common.monitor_render import (
+    INTERVAL_STEP,
+    MAX_INTERVAL,
+    MIN_INTERVAL,
+    MonitorState,
+    render_dashboard,
+)
 from tui.common.plain_monitor import sample_entries
-
-_MIN_INTERVAL = 0.25
-_MAX_INTERVAL = 5.0
 
 
 class MonitorScreen(Screen):
@@ -114,12 +117,12 @@ class MonitorScreen(Screen):
         self._repaint()
 
     def action_faster(self) -> None:
-        self._interval = max(_MIN_INTERVAL, round(self._interval - 0.25, 2))
+        self._interval = max(MIN_INTERVAL, round(self._interval - INTERVAL_STEP, 2))
         self._restart_timer()
         self._repaint()
 
     def action_slower(self) -> None:
-        self._interval = min(_MAX_INTERVAL, round(self._interval + 0.25, 2))
+        self._interval = min(MAX_INTERVAL, round(self._interval + INTERVAL_STEP, 2))
         self._restart_timer()
         self._repaint()
 

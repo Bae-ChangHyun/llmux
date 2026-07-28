@@ -15,8 +15,8 @@ from tui.backends.llamacpp import backend as lbackend
 from tui.backends.llamacpp import backend_runtime as lbackend_rt
 from tui.backends.vllm import backend
 from tui.backends.vllm import backend_inspect
+from tui.common import ssl_ctx
 from tui.backends.vllm.backend_inspect import (
-    _get_ssl_context,
     _pick_preferred_tag,
     get_dockerhub_nightly_date,
     get_dockerhub_release_version,
@@ -1178,13 +1178,6 @@ class DockerHubTagLookupTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SslContextBuilderTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._original = backend_inspect._ssl_context
-        backend_inspect._ssl_context = None
-
-    def tearDown(self) -> None:
-        backend_inspect._ssl_context = self._original
-
     def test_picks_existing_cafile_from_candidates(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as tmp:
             # Minimal valid CA bundle: an empty file is enough for
@@ -1193,20 +1186,20 @@ class SslContextBuilderTests(unittest.TestCase):
             cafile = Path(tmp.name)
         self.addCleanup(cafile.unlink, missing_ok=True)
 
-        with patch.object(
-            backend_inspect, "_SYSTEM_CA_CANDIDATES", (str(cafile),)
+        with patch.object(ssl_ctx, "_cached", None), patch.object(
+            ssl_ctx, "_CA_CANDIDATES", (str(cafile),)
         ), patch.dict("sys.modules", {"certifi": None}):
-            ctx = _get_ssl_context()
+            ctx = ssl_ctx.get_ssl_context()
 
-        self.assertIsNotNone(ctx)
-        # Result is cached on the module; second call returns the same instance.
-        self.assertIs(_get_ssl_context(), ctx)
+            self.assertIsNotNone(ctx)
+            # Result is cached on the module; second call returns the same one.
+            self.assertIs(ssl_ctx.get_ssl_context(), ctx)
 
     def test_falls_back_to_default_when_no_candidate_exists(self) -> None:
-        with patch.object(
-            backend_inspect, "_SYSTEM_CA_CANDIDATES", ("/nonexistent/ca.pem",)
+        with patch.object(ssl_ctx, "_cached", None), patch.object(
+            ssl_ctx, "_CA_CANDIDATES", ("/nonexistent/ca.pem",)
         ), patch.dict("sys.modules", {"certifi": None}):
-            ctx = _get_ssl_context()
+            ctx = ssl_ctx.get_ssl_context()
 
         self.assertIsNotNone(ctx)
 

@@ -44,8 +44,8 @@ def _common_env() -> dict[str, str]:
 
 def get_dev_build_defaults() -> tuple[str, str]:
     common = _common_env()
-    repo_url = common.get("VLLM_REPO_URL", DEFAULT_VLLM_REPO_URL) or DEFAULT_VLLM_REPO_URL
-    branch = common.get("VLLM_BRANCH", "main") or "main"
+    repo_url = common.get("VLLM_REPO_URL", "").strip() or VLLM_DEV_SPEC.default_repo_url
+    branch = common.get("VLLM_BRANCH", "").strip() or VLLM_DEV_SPEC.default_branch
     return repo_url, branch
 
 
@@ -803,16 +803,20 @@ async def stream_container_up(
         # image `vllm-dev:<safe_branch>`, so a raw `feat/foo` here would look
         # up an invalid reference that can never match.
         image_tag = dev_build.sanitize_docker_tag(tag or resolved_branch)
-        rc, _ = await run_command("docker", "image", "inspect", f"vllm-dev:{image_tag}", timeout=20)
+        rc, _ = await run_command(
+            "docker", "image", "inspect",
+            f"{VLLM_DEV_SPEC.image_prefix}:{image_tag}", timeout=20,
+        )
         needs_build = rc != 0
         if not tag and not needs_build:
             needs_build = not await _dev_image_matches(image_tag, resolved_repo_url, resolved_branch)
 
         if needs_build:
             if tag:
-                yield ("log", f"Error: Image vllm-dev:{image_tag} not found")
+                yield ("log", f"Error: Image {VLLM_DEV_SPEC.image_prefix}:{image_tag} not found")
                 rc, out = await run_command(
-                    "docker", "images", "vllm-dev", "--format", "  {{.Tag}}", timeout=20
+                    "docker", "images", VLLM_DEV_SPEC.image_prefix,
+                    "--format", "  {{.Tag}}", timeout=20,
                 )
                 if rc == 0 and out.strip():
                     yield ("log", "Available images:")
@@ -832,7 +836,7 @@ async def stream_container_up(
                 if event[0] == "rc" and event[1] != 0:
                     return
 
-        yield ("log", f"Using image: vllm-dev:{image_tag}")
+        yield ("log", f"Using image: {VLLM_DEV_SPEC.image_prefix}:{image_tag}")
         env = _compose_env(profile, use_dev=True, image_tag=image_tag)
         compose_cmd = [
             "docker",
@@ -1053,7 +1057,9 @@ async def container_down(profile_name: str) -> tuple[int, str]:
         "--format={{.Config.Image}}",
         timeout=20,
     )
-    use_dev = image_rc == 0 and image.strip().startswith("vllm-dev:")
+    use_dev = image_rc == 0 and image.strip().startswith(
+        f"{VLLM_DEV_SPEC.image_prefix}:"
+    )
     env = _compose_env(
         profile,
         use_dev=use_dev,

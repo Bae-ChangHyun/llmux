@@ -230,14 +230,16 @@ class QuickSetupScreen(ModalScreen[str]):
                         t(
                             "[dim]MoE models (Qwen3-A3B, Mixtral, etc.) activate only a subset of "
                             "the total parameters per token. [b]Keeping expert weights in CPU RAM and "
-                            "streaming only the active experts to the GPU[/b] fits a 35B MoE on a 16GB GPU.\n"
-                            "e.g. [b]qwen3.6-35b-a3b UD-Q4_K_XL[/b] → 36 tok/s at VRAM 7.5GB + RAM 15GB.\n\n"
+                            "streaming only the active experts to the GPU[/b] can fit a 35B MoE on a 16GB GPU.\n"
+                            "e.g. [b]qwen3.6-35b-a3b UD-Q4_K_XL[/b] → VRAM 7.5GB + RAM 15GB; throughput "
+                            "depends heavily on RAM bandwidth (~36 tok/s measured on an RTX 4080 SUPER).\n\n"
                             "If the filename has an 'A3B' / 'A7B' pattern it is auto-detected and the default regex is filled in. "
                             "Leave blank for no expert offload (dense models usually don't need it).[/dim]",
                             "[dim]MoE 모델 (Qwen3-A3B, Mixtral 등) 은 전체 파라미터 중 일부만 "
                             "매 토큰 활성화됩니다. [b]Expert 가중치를 CPU RAM 에 두고 "
                             "활성 expert 만 GPU 로 스트리밍[/b] 하면 16GB GPU 에 35B MoE 도 올라갑니다.\n"
-                            "예: [b]qwen3.6-35b-a3b UD-Q4_K_XL[/b] → VRAM 7.5GB + RAM 15GB 로 36 tok/s.\n\n"
+                            "예: [b]qwen3.6-35b-a3b UD-Q4_K_XL[/b] → VRAM 7.5GB + RAM 15GB. 속도는 RAM 대역폭에 "
+                            "크게 좌우됩니다 (RTX 4080 SUPER 기준 약 36 tok/s).\n\n"
                             "파일명에 'A3B', 'A7B' 패턴이 있으면 자동 감지 후 기본 정규식을 채워드립니다. "
                             "비우면 expert offload 안 함 (Dense 모델은 보통 필요 없음).[/dim]",
                         ),

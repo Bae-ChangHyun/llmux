@@ -23,10 +23,14 @@ from tui.common import docker as common_docker
 from tui.common.adapter import DashboardRow
 from tui.common.i18n import t
 from tui.common.metrics import fetch_snapshot
-from tui.common.monitor_render import ModelEntry, MonitorState, render_dashboard
-
-_MIN_INTERVAL = 0.25
-_MAX_INTERVAL = 5.0
+from tui.common.monitor_render import (
+    INTERVAL_STEP,
+    MAX_INTERVAL,
+    MIN_INTERVAL,
+    ModelEntry,
+    MonitorState,
+    render_dashboard,
+)
 
 
 def _key_ready() -> bool:
@@ -134,9 +138,9 @@ async def run_plain_monitor(focus: str | None = None, interval: float = 1.0) -> 
                             for st in states.values():
                                 st.reset_peaks()
                         elif ch in ("+", "="):
-                            interval = max(_MIN_INTERVAL, round(interval - 0.25, 2))
+                            interval = max(MIN_INTERVAL, round(interval - INTERVAL_STEP, 2))
                         elif ch in ("-", "_"):
-                            interval = min(_MAX_INTERVAL, round(interval + 0.25, 2))
+                            interval = min(MAX_INTERVAL, round(interval + INTERVAL_STEP, 2))
                         elif ch in ("l", "L"):
                             _toggle_lang()
                         break
