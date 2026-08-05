@@ -6,8 +6,8 @@
 
 **vLLM과 llama.cpp 서버를 터미널 하나에서 올리고 관리합니다 — TUI로도, CLI로도.**
 
-[![CI](https://github.com/Bae-ChangHyun/llmux/actions/workflows/ci.yml/badge.svg)](https://github.com/Bae-ChangHyun/llmux/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-7c4dff?style=flat-square)](https://Bae-ChangHyun.github.io/llmux/)
+[![CI](https://github.com/Changroro/llmux/actions/workflows/ci.yml/badge.svg)](https://github.com/Changroro/llmux/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-7c4dff?style=flat-square)](https://Changroro.github.io/llmux/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)](https://docs.docker.com/compose/)
 [![vLLM](https://img.shields.io/badge/vLLM-semver-green?style=flat-square)](https://github.com/vllm-project/vllm)
 [![llama.cpp](https://img.shields.io/badge/llama.cpp-server--cuda-8A2BE2?style=flat-square)](https://github.com/ggml-org/llama.cpp)
@@ -30,7 +30,7 @@ llmux는 이 둘을 Docker Compose 위의 Textual 대시보드 하나로 묶습�
 
 <br/>
 
-**[📖 전체 문서 →](https://Bae-ChangHyun.github.io/llmux/)**
+**[📖 전체 문서 →](https://Changroro.github.io/llmux/)**
 
 </div>
 
@@ -96,7 +96,7 @@ llmux는 이 둘을 Docker Compose 위의 Textual 대시보드 하나로 묶습�
 한 줄로 설치합니다. llmux를 clone하고, 의존성을(그리고 `uv`가 없으면 `uv`까지) 설치한 뒤 `llmux` 명령을 PATH에 올립니다:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Changroro/llmux/main/install.sh | sh
 ```
 
 그다음 그냥 실행하면 됩니다. 첫 실행 때 짧은 설정 마법사(HF 캐시 경로, 모델 디렉터리, 선택 사항인 토큰)를 안내하고 `.env.common`을 대신 써줍니다:
@@ -111,7 +111,7 @@ llmux
 <summary>수동 설치</summary>
 
 ```bash
-git clone https://github.com/Bae-ChangHyun/llmux.git && cd llmux
+git clone https://github.com/Changroro/llmux.git && cd llmux
 uv tool install --editable .   # editable — 코드 수정이 바로 반영됨
 uv tool update-shell           # 최초 1회 — ~/.local/bin 을 PATH에 추가
 ```
@@ -122,7 +122,7 @@ uv tool update-shell           # 최초 1회 — ~/.local/bin 을 PATH에 추가
 
 > **언어:** TUI는 한/영 이중 언어입니다. 기본은 시스템 로케일을 따르고, `LLMUX_LANG=en` 또는 `LLMUX_LANG=ko`로 강제할 수 있습니다.
 
-전체 과정은 [설치 가이드](https://Bae-ChangHyun.github.io/llmux/getting-started/installation.html)와 [빠른 시작](https://Bae-ChangHyun.github.io/llmux/getting-started/quickstart.html) 문서를 참고하세요. (문서 사이트는 영어입니다.)
+전체 과정은 [설치 가이드](https://Changroro.github.io/llmux/getting-started/installation.html)와 [빠른 시작](https://Changroro.github.io/llmux/getting-started/quickstart.html) 문서를 참고하세요. (문서 사이트는 영어입니다.)
 
 ### Headless CLI
 
@@ -141,21 +141,21 @@ llmux profile rename old-name new-name                  # 컨테이너가 멈춰
 llmux image build-dev --backend llamacpp --branch master
 ```
 
-`--json`은 모든 list/show/check 명령이 지원합니다. 전체 명령과 플래그는 [CLI 레퍼런스](https://Bae-ChangHyun.github.io/llmux/reference/cli.html)에 있습니다.
+`--json`은 모든 list/show/check 명령이 지원합니다. 전체 명령과 플래그는 [CLI 레퍼런스](https://Changroro.github.io/llmux/reference/cli.html)에 있습니다.
 
 <br/>
 
 ## 문서
 
-전체 문서는 **[Bae-ChangHyun.github.io/llmux](https://Bae-ChangHyun.github.io/llmux/)** 에 있습니다. (영어)
+전체 문서는 **[Changroro.github.io/llmux](https://Changroro.github.io/llmux/)** 에 있습니다. (영어)
 
 | 섹션 | 내용 |
 |:---|:---|
-| [Getting Started](https://Bae-ChangHyun.github.io/llmux/getting-started/installation.html) | 설치, 첫 모델 실행 워크스루 (TUI + CLI) |
-| [Guide](https://Bae-ChangHyun.github.io/llmux/guide/profiles.html) | 프로필, 모델 config, 컨테이너 라이프사이클, TUI 단축키, dev 빌드 |
-| [Backends](https://Bae-ChangHyun.github.io/llmux/backends/comparison.html) | vLLM과 llama.cpp 심화 + 기능 비교표 |
-| [Reference](https://Bae-ChangHyun.github.io/llmux/reference/cli.html) | 모든 CLI 명령/플래그, `.env.common` 변수, 내부 아키텍처 |
-| [Troubleshooting](https://Bae-ChangHyun.github.io/llmux/troubleshooting.html) | 흔한 시작/다운로드/GPU 문제 — 증상 → 원인 → 해결 |
+| [Getting Started](https://Changroro.github.io/llmux/getting-started/installation.html) | 설치, 첫 모델 실행 워크스루 (TUI + CLI) |
+| [Guide](https://Changroro.github.io/llmux/guide/profiles.html) | 프로필, 모델 config, 컨테이너 라이프사이클, TUI 단축키, dev 빌드 |
+| [Backends](https://Changroro.github.io/llmux/backends/comparison.html) | vLLM과 llama.cpp 심화 + 기능 비교표 |
+| [Reference](https://Changroro.github.io/llmux/reference/cli.html) | 모든 CLI 명령/플래그, `.env.common` 변수, 내부 아키텍처 |
+| [Troubleshooting](https://Changroro.github.io/llmux/troubleshooting.html) | 흔한 시작/다운로드/GPU 문제 — 증상 → 원인 → 해결 |
 
 <br/>
 

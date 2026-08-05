@@ -2595,13 +2595,13 @@ class VersionCheckTests(unittest.TestCase):
         from tui.common import version_check as vc
 
         for url in (
-            "https://github.com/Bae-ChangHyun/llmux.git",
-            "https://github.com/Bae-ChangHyun/llmux",
-            "git@github.com:Bae-ChangHyun/llmux.git",
-            "ssh://git@github.com/Bae-ChangHyun/llmux.git",
+            "https://github.com/Changroro/llmux.git",
+            "https://github.com/Changroro/llmux",
+            "git@github.com:Changroro/llmux.git",
+            "ssh://git@github.com/Changroro/llmux.git",
         ):
             with patch.object(vc, "_git", return_value=(0, url + "\n")):
-                self.assertEqual(vc._repo_slug(), "Bae-ChangHyun/llmux", msg=url)
+                self.assertEqual(vc._repo_slug(), "Changroro/llmux", msg=url)
 
     def test_repo_slug_none_on_non_github_or_failure(self) -> None:
         from tui.common import version_check as vc

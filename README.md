@@ -6,8 +6,8 @@
 
 **Run and manage vLLM and llama.cpp servers from one terminal — TUI or CLI.**
 
-[![CI](https://github.com/Bae-ChangHyun/llmux/actions/workflows/ci.yml/badge.svg)](https://github.com/Bae-ChangHyun/llmux/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-7c4dff?style=flat-square)](https://Bae-ChangHyun.github.io/llmux/)
+[![CI](https://github.com/Changroro/llmux/actions/workflows/ci.yml/badge.svg)](https://github.com/Changroro/llmux/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-7c4dff?style=flat-square)](https://Changroro.github.io/llmux/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)](https://docs.docker.com/compose/)
 [![vLLM](https://img.shields.io/badge/vLLM-semver-green?style=flat-square)](https://github.com/vllm-project/vllm)
 [![llama.cpp](https://img.shields.io/badge/llama.cpp-server--cuda-8A2BE2?style=flat-square)](https://github.com/ggml-org/llama.cpp)
@@ -30,7 +30,7 @@ llmux unifies both under a single Textual dashboard backed by Docker Compose.
 
 <br/>
 
-**[📖 Full documentation →](https://Bae-ChangHyun.github.io/llmux/)**
+**[📖 Full documentation →](https://Changroro.github.io/llmux/)**
 
 </div>
 
@@ -97,7 +97,7 @@ Install with one command — it clones llmux, installs dependencies (and `uv`
 itself if missing), and puts the `llmux` command on your PATH:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Changroro/llmux/main/install.sh | sh
 ```
 
 Then just launch it — the first run walks you through a short setup wizard
@@ -117,7 +117,7 @@ with no reinstall — and llmux checks GitHub for a newer release on startup
 <summary>Manual install</summary>
 
 ```bash
-git clone https://github.com/Bae-ChangHyun/llmux.git && cd llmux
+git clone https://github.com/Changroro/llmux.git && cd llmux
 uv tool install --editable .   # editable — code edits are picked up live
 uv tool update-shell           # one-time: adds ~/.local/bin to PATH
 ```
@@ -130,8 +130,8 @@ uv tool update-shell           # one-time: adds ~/.local/bin to PATH
 > **Language:** the TUI is bilingual (English / Korean). It follows your system
 > locale by default; force one with `LLMUX_LANG=en` or `LLMUX_LANG=ko`.
 
-See the [Installation guide](https://Bae-ChangHyun.github.io/llmux/getting-started/installation.html)
-and [Quick Start](https://Bae-ChangHyun.github.io/llmux/getting-started/quickstart.html) for the full walkthrough.
+See the [Installation guide](https://Changroro.github.io/llmux/getting-started/installation.html)
+and [Quick Start](https://Changroro.github.io/llmux/getting-started/quickstart.html) for the full walkthrough.
 
 ### Headless CLI
 
@@ -152,21 +152,21 @@ llmux image build-dev --backend llamacpp --branch master
 ```
 
 `--json` is supported by every list/show/check command. Full command/flag list in the
-[CLI Reference](https://Bae-ChangHyun.github.io/llmux/reference/cli.html).
+[CLI Reference](https://Changroro.github.io/llmux/reference/cli.html).
 
 <br/>
 
 ## Documentation
 
-Full docs live at **[Bae-ChangHyun.github.io/llmux](https://Bae-ChangHyun.github.io/llmux/)**:
+Full docs live at **[Changroro.github.io/llmux](https://Changroro.github.io/llmux/)**:
 
 | Section | What's there |
 |:---|:---|
-| [Getting Started](https://Bae-ChangHyun.github.io/llmux/getting-started/installation.html) | Installation, first-model walkthrough (TUI + CLI) |
-| [Guide](https://Bae-ChangHyun.github.io/llmux/guide/profiles.html) | Profiles, model configs, container lifecycle, TUI shortcuts, dev builds |
-| [Backends](https://Bae-ChangHyun.github.io/llmux/backends/comparison.html) | vLLM and llama.cpp deep-dives + a feature comparison matrix |
-| [Reference](https://Bae-ChangHyun.github.io/llmux/reference/cli.html) | Every CLI command/flag, `.env.common` variables, internal architecture |
-| [Troubleshooting](https://Bae-ChangHyun.github.io/llmux/troubleshooting.html) | Common start/download/GPU issues — symptom → cause → fix |
+| [Getting Started](https://Changroro.github.io/llmux/getting-started/installation.html) | Installation, first-model walkthrough (TUI + CLI) |
+| [Guide](https://Changroro.github.io/llmux/guide/profiles.html) | Profiles, model configs, container lifecycle, TUI shortcuts, dev builds |
+| [Backends](https://Changroro.github.io/llmux/backends/comparison.html) | vLLM and llama.cpp deep-dives + a feature comparison matrix |
+| [Reference](https://Changroro.github.io/llmux/reference/cli.html) | Every CLI command/flag, `.env.common` variables, internal architecture |
+| [Troubleshooting](https://Changroro.github.io/llmux/troubleshooting.html) | Common start/download/GPU issues — symptom → cause → fix |
 
 <br/>
 

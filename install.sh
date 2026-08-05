@@ -1,7 +1,7 @@
 #!/bin/sh
 # llmux installer
 #
-#   curl -fsSL https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Changroro/llmux/main/install.sh | sh
 #
 # Clones llmux, installs its dependencies, and puts the `llmux` command on PATH.
 # The checkout stays a live git repo, so `git pull` applies updates without a
@@ -11,7 +11,7 @@
 # override and relocate the install to LLMUX_DIR instead.
 set -eu
 
-REPO_URL="https://github.com/Bae-ChangHyun/llmux.git"
+REPO_URL="https://github.com/Changroro/llmux.git"
 INSTALL_DIR="${LLMUX_DIR:-$HOME/.llmux}"
 
 # ── output helpers (colour only on a real terminal) ──────────────────────────

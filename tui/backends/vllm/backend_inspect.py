@@ -150,7 +150,7 @@ async def _fetch_json_url(
     def _fetch() -> dict | None:
         request_headers = {
             "Accept": "application/json",
-            "User-Agent": "llmux/1.0 (+https://github.com/Bae-ChangHyun/llmux)",
+            "User-Agent": "llmux/1.0 (+https://github.com/Changroro/llmux)",
         }
         if headers:
             request_headers.update(headers)

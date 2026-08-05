@@ -24,7 +24,7 @@
         <a href="reference/cli.html">Reference</a>
         <a href="troubleshooting.html">Troubleshooting</a>
       </span>
-      <a href="https://github.com/Bae-ChangHyun/llmux" class="nav-github" target="_blank">
+      <a href="https://github.com/Changroro/llmux" class="nav-github" target="_blank">
         <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
         <span class="nav-github-stars" id="starCount">GitHub</span>
       </a>
@@ -36,7 +36,7 @@
 
   <!-- HERO -->
   <section class="hero">
-    <img src="https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/assets/llmux-hero.png" alt="llmux — one TUI for vLLM and llama.cpp" class="hero-logo" onerror="this.style.display='none'" />
+    <img src="https://raw.githubusercontent.com/Changroro/llmux/main/assets/llmux-hero.png" alt="llmux — one TUI for vLLM and llama.cpp" class="hero-logo" onerror="this.style.display='none'" />
     <p class="hero-badge">open source &middot; GPU-native &middot; dual backend</p>
     <h1>
       One TUI for<br/>
@@ -48,7 +48,7 @@
     </p>
     <div class="hero-cmd" onclick="copyCmd(this)">
       <span class="prompt">$</span>
-      <span class="cmd-text">git clone https://github.com/Bae-ChangHyun/llmux.git</span>
+      <span class="cmd-text">git clone https://github.com/Changroro/llmux.git</span>
       <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
         <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
@@ -56,8 +56,8 @@
       <span class="copied-tooltip">Copied!</span>
     </div>
     <div class="hero-links">
-      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a>
-      <a href="https://github.com/Bae-ChangHyun/llmux#get-started-in-30-seconds">Docs</a>
+      <a href="https://github.com/Changroro/llmux">GitHub</a>
+      <a href="https://github.com/Changroro/llmux#get-started-in-30-seconds">Docs</a>
     </div>
     <div class="tech-stack">
       <span class="tech-badge">
@@ -158,7 +158,7 @@
         <span class="terminal-dot green"></span>
         <span class="terminal-title">llmux</span>
       </div>
-      <img src="https://raw.githubusercontent.com/Bae-ChangHyun/llmux/main/demo/llmux.gif" alt="llmux Demo" loading="lazy" onerror="this.style.display='none'" />
+      <img src="https://raw.githubusercontent.com/Changroro/llmux/main/demo/llmux.gif" alt="llmux Demo" loading="lazy" onerror="this.style.display='none'" />
     </div>
   </section>
 
@@ -176,7 +176,7 @@
         <span class="terminal-title">~</span>
       </div>
       <div class="terminal-body" id="terminalBody">
-        <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">git clone https://github.com/Bae-ChangHyun/llmux.git</span></div>
+        <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">git clone https://github.com/Changroro/llmux.git</span></div>
         <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">cd llmux</span></div>
         <div class="line info">&nbsp;</div>
         <div class="line"><span class="prompt-sign">$</span> <span class="prompt-line">cat > .env.common << 'EOF'</span></div>
@@ -410,8 +410,8 @@
   <div class="page-wrap">
     <p>
       MIT License &middot;
-      <a href="https://github.com/Bae-ChangHyun/llmux">GitHub</a> &middot;
-      Made by <a href="https://github.com/Bae-ChangHyun">Bae-ChangHyun</a>
+      <a href="https://github.com/Changroro/llmux">GitHub</a> &middot;
+      Made by <a href="https://github.com/Changroro">Bae-ChangHyun</a>
     </p>
   </div>
 </footer>
@@ -447,7 +447,7 @@ const termObserver = new IntersectionObserver((entries) => {
 }, { threshold: 0.3 });
 termObserver.observe(document.getElementById('terminalBody'));
 
-fetch('https://api.github.com/repos/Bae-ChangHyun/llmux')
+fetch('https://api.github.com/repos/Changroro/llmux')
   .then(r => r.json())
   .then(data => {
     if (data.stargazers_count !== undefined) {
