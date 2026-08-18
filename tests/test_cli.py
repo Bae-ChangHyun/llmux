@@ -118,9 +118,9 @@ class CliSmokeTests(unittest.TestCase):
     def test_help_lists_top_commands(self):
         r = _run_cli(self.tmp, "--help")
         self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
-        for cmd in ["tui", "up", "down", "logs", "ps", "render-env",
-                    "container", "profile", "config", "image", "system",
-                    "gpu", "env-check"]:
+        for cmd in ["tui", "up", "prepare", "down", "logs", "ps", "render-env",
+                    "update", "container", "profile", "config", "image",
+                    "system", "gpu", "env-check"]:
             self.assertIn(cmd, r.stdout)
 
     def test_subcommand_help(self):

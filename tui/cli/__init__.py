@@ -59,12 +59,14 @@ def _maybe_run_onboarding() -> None:
 
 
 def _maybe_check_for_update() -> None:
-    """Check for a newer llmux release once per day, in interactive sessions.
+    """Check for a newer llmux release, in interactive sessions.
 
-    Headless invocations skip it so scripts and CI never see a prompt or
-    extra output. SystemExit (raised after a successful self-update so the
-    user restarts on fresh code) is allowed to propagate; everything else is
-    swallowed — a version check must never break startup.
+    Runs on every interactive invocation (only a failed lookup backs off), so
+    a release published minutes ago shows up on the next command. Headless
+    invocations skip it so scripts and CI never see a prompt or extra output.
+    SystemExit (raised after a successful self-update so the user restarts on
+    fresh code) is allowed to propagate; everything else is swallowed — a
+    version check must never break startup.
     """
     if not _interactive_session():
         return
@@ -183,6 +185,73 @@ def top_cmd(
     from tui.common.plain_monitor import run_cli
 
     raise typer.Exit(code=run_cli(profile))
+
+
+@app.command("update")
+def update_cmd(
+    check: bool = typer.Option(
+        False, "--check", help="Only report; never touch the checkout."
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Update without asking for confirmation."
+    ),
+    json_out: bool = typer.Option(
+        False, "--json", help="Emit the status as JSON instead of a human line."
+    ),
+) -> None:
+    """Check for a newer llmux release right now, and update to it.
+
+    Unlike the startup check this ignores the failure back-off and runs even
+    in a non-interactive session, so it always answers. Exits non-zero when
+    the check could not be completed or the update failed.
+    """
+    from tui.cli._runtime import emit_json
+    from tui.common import version_check as vc
+
+    status = vc.resolve_status(respect_cooldown=False)
+
+    if json_out:
+        emit_json({
+            "state": status.state,
+            "latest_tag": status.tag,
+            "local_version": status.local_version,
+            "url": status.url,
+            "detail": status.detail,
+            "checkout": str(vc.PROJECT_ROOT),
+        })
+        if status.state == vc.UNKNOWN:
+            raise typer.Exit(code=1)
+        if status.state == vc.CURRENT or check:
+            raise typer.Exit(code=0)
+    else:
+        if status.state == vc.UNKNOWN:
+            typer.echo(f"could not check for updates — {status.detail}", err=True)
+            raise typer.Exit(code=1)
+        if status.state == vc.CURRENT:
+            print(f"llmux is up to date ({status.tag or status.local_version}).")
+            raise typer.Exit(code=0)
+        print(f"llmux {status.tag} is available.  {status.url}".rstrip())
+        if check:
+            print(f"  local: {status.local_version or 'unknown'}  ({vc.PROJECT_ROOT})")
+            raise typer.Exit(code=0)
+
+    blocked = vc.update_blocked_reason()
+    if blocked:
+        typer.echo(
+            f"refusing to update automatically — {blocked}. "
+            f"Pull it yourself in {vc.PROJECT_ROOT} when ready.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if not yes and not typer.confirm("Update now?", default=True):
+        raise typer.Exit(code=0)
+
+    ok, message = vc.apply_update(status.tag)
+    if not ok:
+        typer.echo(message, err=True)
+        raise typer.Exit(code=1)
+    print(message)
 
 
 from tui.cli import config as _config  # noqa: E402

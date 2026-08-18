@@ -109,9 +109,11 @@ llmux
 ```
 
 The checkout stays a live git repo, so `git pull` in `~/.llmux` applies updates
-with no reinstall — and llmux checks GitHub for a newer release on startup
-(once a day) and offers to pull it for you. Install elsewhere by passing
-`LLMUX_DIR` to the script: `curl -fsSL ... | LLMUX_DIR=/path sh`.
+with no reinstall — and llmux checks GitHub for a newer release on **every**
+interactive run and offers to pull it for you. `llmux update` asks on demand
+(`--check` to only report, `--yes` to skip the prompt); `U` does the same in
+the TUI. Install elsewhere by passing `LLMUX_DIR` to the script:
+`curl -fsSL ... | LLMUX_DIR=/path sh`.
 
 <details>
 <summary>Manual install</summary>
@@ -141,6 +143,7 @@ launches the TUI, any subcommand bypasses it:
 ```bash
 llmux up <profile>                 # start a container
 llmux prepare <profile>            # download the model + render setup, don't start
+llmux update --check               # is a newer llmux release out?
 llmux logs <profile>               # follow logs
 llmux ps --json --running          # machine-readable status, both backends
 llmux stats --once --json          # live tok/s from every running container
