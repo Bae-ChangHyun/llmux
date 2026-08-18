@@ -30,7 +30,7 @@ import time
 import urllib.request
 from dataclasses import dataclass
 
-from tui.common.ssl_ctx import get_ssl_context
+from tui.common.ssl_ctx import open_url
 
 from tui.common.profile_store import PROJECT_ROOT
 
@@ -144,9 +144,7 @@ def _local_version() -> str:
 def _api_get(url: str) -> dict | None:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-        with urllib.request.urlopen(
-            req, timeout=_HTTP_TIMEOUT, context=get_ssl_context()
-        ) as resp:
+        with open_url(req, timeout=_HTTP_TIMEOUT) as resp:
             payload = json.loads(resp.read().decode("utf-8", errors="replace"))
         return payload if isinstance(payload, dict) else None
     except Exception as exc:  # noqa: BLE001 — offline / rate-limited / parse error

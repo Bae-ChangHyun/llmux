@@ -3,12 +3,16 @@
 Some Python builds (uv-managed CPython on RHEL/CentOS) default to a
 `/etc/ssl/cert.pem` that does not exist, so every HTTPS call fails with
 CERTIFICATE_VERIFY_FAILED until an existing bundle is passed explicitly.
+
+Call `open_url` for anything leaving the machine; a bare
+`urllib.request.urlopen` skips the bundle and breaks on those builds.
 """
 
 from __future__ import annotations
 
 import os
 import ssl
+import urllib.request
 
 _CA_CANDIDATES = (
     "/etc/pki/tls/certs/ca-bundle.crt",     # RHEL / CentOS / Fedora
@@ -44,3 +48,8 @@ def get_ssl_context() -> ssl.SSLContext:
 
     _cached = ssl.create_default_context()
     return _cached
+
+
+def open_url(request: urllib.request.Request | str, *, timeout: float):
+    """`urlopen` with the working CA bundle attached."""
+    return urllib.request.urlopen(request, timeout=timeout, context=get_ssl_context())

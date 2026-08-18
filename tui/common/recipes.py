@@ -20,6 +20,8 @@ from typing import Any
 
 import yaml
 
+from tui.common.ssl_ctx import open_url
+
 RECIPES_RAW_BASE = "https://raw.githubusercontent.com/vllm-project/recipes/main/models"
 
 
@@ -120,7 +122,7 @@ async def fetch_recipe(model_id: str, timeout: int = 15) -> Recipe | None:
     def _do() -> Recipe | None:
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "llmux"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with open_url(req, timeout=timeout) as r:
                 raw = yaml.safe_load(r.read().decode("utf-8", errors="replace"))
         except urllib.error.HTTPError as exc:
             if exc.code == 404:

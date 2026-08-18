@@ -16,7 +16,7 @@ from tui.common.docker import (  # noqa: F401 — re-exported for backward compa
 )
 from tui.common.mem import estimate_model_memory  # noqa: F401 — re-exported
 
-from tui.common.ssl_ctx import get_ssl_context
+from tui.common.ssl_ctx import open_url
 
 from .backend_common import CONFIG_DIR, DockerImage
 from .backend_process import run_command
@@ -155,13 +155,10 @@ async def _fetch_json_url(
         if headers:
             request_headers.update(headers)
         request = urllib.request.Request(url, headers=request_headers)
-        context = get_ssl_context()
         first_error: Exception | None = None
         for target in (request, url):
             try:
-                with urllib.request.urlopen(
-                    target, timeout=timeout, context=context
-                ) as response:
+                with open_url(target, timeout=timeout) as response:
                     payload = response.read().decode("utf-8", errors="replace")
                 data = json.loads(payload)
                 if isinstance(data, dict):
