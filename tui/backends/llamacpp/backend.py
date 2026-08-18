@@ -20,6 +20,7 @@ from tui.common.config_markers import (
     render_disabled_markers,
 )
 from tui.common.env import parse_env_file as _parse_env_file  # noqa: F401 — re-exported for callers
+from tui.common.ssl_ctx import open_url
 
 log = logging.getLogger(__name__)
 
@@ -529,7 +530,7 @@ async def list_hf_repo_files(repo: str) -> list[dict]:
         # 무한 루프 방지 캡. 1000 * 10 = 10k 파일이면 어떤 GGUF 리포에도 충분하다.
         for _ in range(_HF_TREE_PAGE_CAP):
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with open_url(req, timeout=15) as r:
                 page = json.loads(r.read().decode())
                 link = r.headers.get("Link", "") or ""
             if isinstance(page, list):

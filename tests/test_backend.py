@@ -3525,11 +3525,13 @@ class ListHfRepoFilesTests(unittest.IsolatedAsyncioTestCase):
     def _patch_urlopen(self, pages: dict[str, "ListHfRepoFilesTests._FakeResponse"]):
         requested: list[str] = []
 
-        def fake_urlopen(req, timeout=0):
+        def fake_open_url(req, timeout=0):
             requested.append(req.full_url)
             return pages[req.full_url]
 
-        return requested, patch("urllib.request.urlopen", fake_urlopen)
+        # The listing goes through ssl_ctx.open_url so it carries a working CA
+        # bundle; patching urlopen would miss it.
+        return requested, patch.object(lbackend, "open_url", fake_open_url)
 
     async def test_recursive_flag_and_subfolder_paths_preserved(self) -> None:
         base = "https://huggingface.co/api/models/org/repo/tree/main?recursive=true"
