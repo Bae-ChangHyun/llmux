@@ -75,7 +75,7 @@ llmux --version            # print the installed version and exit</code></pre>
       <tbody>
         <tr>
           <td><code>container</code></td>
-          <td><code>up</code> · <code>down</code> · <code>logs</code> · <code>ps</code> · <code>benchmark</code> · <code>stats</code> · <code>render-env</code></td>
+          <td><code>up</code> · <code>prepare</code> · <code>down</code> · <code>logs</code> · <code>ps</code> · <code>benchmark</code> · <code>stats</code> · <code>render-env</code></td>
           <td><code>tui/cli/container.py</code></td>
         </tr>
         <tr>
@@ -147,8 +147,8 @@ llmux --version            # print the installed version and exit</code></pre>
     <p>Lifecycle commands propagate the underlying <code>docker</code> / <code>docker compose</code> exit code. <code>Ctrl-C</code> while streaming (<code>up</code>, <code>logs</code>, <code>build-dev</code>) exits with <code>130</code>. <code>system env-check</code> exits <code>1</code> when <code>.env.common</code> is missing or has issues.</p>
 
     <h2 id="container-container-lifecycle"><code>container</code> — container lifecycle</h2>
-    <pre data-lang="text"><code>llmux container up|down|logs|ps|render-env …</code></pre>
-    <p>Start, stop, inspect, and re-render profile containers. <code>up</code>, <code>down</code>, <code>logs</code>, <code>ps</code>, and <code>render-env</code> are also exposed as <a href="#top-level-aliases">top-level aliases</a>.</p>
+    <pre data-lang="text"><code>llmux container up|prepare|down|logs|ps|render-env …</code></pre>
+    <p>Start, stop, inspect, and re-render profile containers. <code>up</code>, <code>prepare</code>, <code>down</code>, <code>logs</code>, <code>ps</code>, and <code>render-env</code> are also exposed as <a href="#top-level-aliases">top-level aliases</a>.</p>
 
     <h3 id="container-up"><code>container up</code></h3>
     <p>Start a profile's container. Streams <code>docker compose</code> output to stdout.</p>
@@ -192,6 +192,26 @@ uv run llmux up gemma-3-4b --dev \
     <div class="admonition note">
       <p class="admonition-title">Pinning a dev image to a profile</p>
       <p>To persist a dev image choice, edit the profile with <code>llmux profile edit &lt;name&gt; --image-tag llamacpp-dev:&lt;tag&gt;</code> (or <code>vllm-dev:&lt;tag&gt;</code>). <code>container up</code> then layers the appropriate compose override automatically. Use <code>--default-image</code> to bypass the pin for a single run.</p>
+    </div>
+
+    <h3 id="container-prepare"><code>container prepare</code></h3>
+    <p>Download the model and render the runtime files — without starting the server. Everything <code>up</code> does up to <code>docker compose up</code>: renders the profile env (plus llama.cpp's command override), makes sure the image is on disk (pulling it if not), then downloads the weights into the HF cache from <code>HF_CACHE_PATH</code>. No container is left running and no GPU is touched.</p>
+    <pre data-lang="text"><code>llmux container prepare PROFILE [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+      <tbody><tr><td><code>PROFILE</code></td><td>Profile name (from <code>profiles.yaml</code>). Required.</td></tr></tbody>
+    </table>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><em>auto-detect</em></td><td>Force backend; auto-detect if omitted.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux prepare qwen3-0-6b
+uv run llmux prepare gemma-3-4b --backend llamacpp</code></pre>
+    <div class="admonition note">
+      <p class="admonition-title">How the download runs</p>
+      <p>Inside a throwaway container of the same image the profile would serve from — vLLM calls <code>huggingface_hub.snapshot_download</code>; llama.cpp uses llama-server's own <code>-hf</code> download path and is stopped as soon as the GGUF is complete in the host cache. llmux never needs an <code>hf</code> CLI on the host. The image resolves the same way <code>up</code> resolves it: a pinned <code>image_tag</code> wins, then the newest local versioned image; only when there is none does <code>prepare</code> pull one.</p>
     </div>
 
     <h3 id="container-down"><code>container down</code></h3>
@@ -601,11 +621,20 @@ uv run llmux config edit qwen3-8b --enable enforce-eager</code></pre>
         <tr><td><code>--name</code>, <code>-n</code></td><td><em>auto</em></td><td>Config name (derived from the model id if omitted).</td></tr>
         <tr><td><code>--json</code></td><td><code>False</code></td><td>Preview the resulting config as JSON without writing.</td></tr>
         <tr><td><code>--overwrite</code></td><td><code>False</code></td><td>Overwrite if the config already exists.</td></tr>
+        <tr><td><code>--recipe-from</code></td><td><em>(MODEL_ID)</em></td><td>Fetch the recipe of a <em>different</em> model (e.g. the base model of a quantized checkpoint). The config's <code>model</code> stays <code>MODEL_ID</code>; only the recipe's flags are borrowed, and a variant's checkpoint swap is ignored.</td></tr>
+        <tr><td><code>--merge</code></td><td><code>False</code></td><td>Merge the recipe's params into an existing config instead of replacing it — recipe values win, other keys are kept. Mirrors the TUI's <strong>Fetch vLLM recipe</strong> button inside Edit Config. Mutually exclusive with <code>--overwrite</code>.</td></tr>
       </tbody>
     </table>
     <pre data-lang="bash"><code>uv run llmux config from-recipe Qwen/Qwen3-32B --list
 uv run llmux config from-recipe Qwen/Qwen3-32B --variant fp8 --feature reasoning
-uv run llmux config from-recipe Qwen/Qwen3-32B --variant awq --json</code></pre>
+uv run llmux config from-recipe Qwen/Qwen3-32B --variant awq --json
+
+# Borrow the base model's recipe for a quantized checkpoint
+uv run llmux config from-recipe cpatonn/Qwen3-32B-AWQ \
+    --recipe-from Qwen/Qwen3-32B --variant awq
+
+# Merge into a config you already have
+uv run llmux config from-recipe Qwen/Qwen3-32B --name my-model --merge</code></pre>
 
     <h3 id="config-rename"><code>config rename</code></h3>
     <p>Rename a config YAML and repoint every profile that referenced it. Refused while any referencing profile's container is running.</p>
@@ -778,6 +807,7 @@ uv run llmux system env-check --json</code></pre>
         <tr><td><code>llmux gpu</code></td><td><code>llmux system gpu</code></td></tr>
         <tr><td><code>llmux env-check</code></td><td><code>llmux system env-check</code></td></tr>
         <tr><td><code>llmux up</code></td><td><code>llmux container up</code></td></tr>
+        <tr><td><code>llmux prepare</code></td><td><code>llmux container prepare</code></td></tr>
         <tr><td><code>llmux down</code></td><td><code>llmux container down</code></td></tr>
         <tr><td><code>llmux logs</code></td><td><code>llmux container logs</code></td></tr>
         <tr><td><code>llmux ps</code></td><td><code>llmux container ps</code></td></tr>

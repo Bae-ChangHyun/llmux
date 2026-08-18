@@ -140,6 +140,7 @@ launches the TUI, any subcommand bypasses it:
 
 ```bash
 llmux up <profile>                 # start a container
+llmux prepare <profile>            # download the model + render setup, don't start
 llmux logs <profile>               # follow logs
 llmux ps --json --running          # machine-readable status, both backends
 llmux stats --once --json          # live tok/s from every running container
@@ -147,6 +148,7 @@ llmux bench <profile> --runs 3     # warmup + median tok/s benchmark
 llmux profile quick-setup Qwen/Qwen3-8B --gpu-id 0,1
 llmux config edit <name> --disable trust-remote-code   # toggle a flag off, keep it
 llmux config from-recipe Qwen/Qwen3-32B --variant fp8   # official vLLM recipe
+llmux config from-recipe my/Qwen3-32B-AWQ --recipe-from Qwen/Qwen3-32B --merge
 llmux profile rename old-name new-name                  # container must be stopped
 llmux image build-dev --backend llamacpp --branch master
 ```

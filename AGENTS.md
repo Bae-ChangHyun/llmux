@@ -12,7 +12,9 @@ mirrors every TUI capability and is the only interface usable headlessly.
 
 Start from `llmux --help`. Top-level shortcuts and sub-apps:
 
-- Container lifecycle: `llmux up <profile>`, `down`, `logs`, `ps`, `bench`, `render-env`
+- Container lifecycle: `llmux up <profile>`, `prepare`, `down`, `logs`, `ps`, `bench`, `render-env`
+  (`prepare` = everything `up` does except starting the server: renders the
+  runtime files, ensures the image is local, downloads the weights.)
 - Profiles: `llmux profile {list,show,new,edit,rename,clone,delete,quick-setup}`
 - Configs: `llmux config {list,show,new,edit,clone,rename,delete}`
 - Images: `llmux image {list,pull,remove,build-dev}`

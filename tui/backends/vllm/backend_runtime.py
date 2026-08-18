@@ -30,7 +30,7 @@ from .backend_storage import (
     save_config,
     save_profile,
 )
-from tui.common import dev_build, profile_store
+from tui.common import dev_build, prepare, profile_store
 from tui.common.conflicts import gpu_conflict_messages as _shared_gpu_conflict_messages
 from tui.common.env import expand_env_values, validate_common_env
 
@@ -976,6 +976,139 @@ async def stream_container_up(
                 yield evt
         yield ("rc", 0)
         return
+
+
+async def _resolve_prepare_image(profile: Profile) -> tuple[str, str]:
+    """`(image_ref, error)` — the image `prepare` downloads weights with.
+
+    A pinned image_tag wins; otherwise the newest local versioned image, and
+    only when there is none does it fall back to DockerHub's latest stable
+    (which prepare is allowed to pull — fetching ahead of time is its job).
+    """
+    if profile.image_tag:
+        return profile.image_tag, ""
+    try:
+        version_tag = await get_local_latest_tag()
+    except RuntimeError as exc:
+        return "", f"could not list local vLLM images — {exc}"
+    if version_tag != "none":
+        return f"vllm/vllm-openai:{version_tag}", ""
+    release = await get_dockerhub_release_version()
+    if release == "unknown":
+        return "", (
+            "no local versioned vllm/vllm-openai image and DockerHub is "
+            "unreachable — pull one first (docker pull vllm/vllm-openai:<version>)"
+        )
+    return f"vllm/vllm-openai:{release}", ""
+
+
+async def stream_container_prepare(profile_name: str):
+    """Render runtime files, make sure the image is local, download the model.
+
+    Everything `up` does before `docker compose up`, plus the weight download —
+    and nothing after it. No server is started and no GPU is touched, so the
+    next `up` only has to load what is already on disk.
+    """
+    if profile_store.load_profile(profile_name, "vllm") is None:
+        yield ("log", f"✗ profile not found: vllm/{profile_name} (check profiles.yaml)")
+        yield ("rc", 1)
+        return
+
+    profile = load_profile(profile_name)
+
+    ok, messages = _ensure_common_env(profile)
+    for message in messages:
+        yield ("log", message)
+    if not ok:
+        yield ("rc", 1)
+        return
+
+    try:
+        ok, messages = _ensure_profile_config(profile)
+    except ValueError as exc:
+        yield ("log", f"Error: cannot save {profile_name} — {exc}")
+        yield ("rc", 1)
+        return
+    for message in messages:
+        yield ("log", message)
+    if not ok:
+        yield ("rc", 1)
+        return
+
+    stored = profile_store.load_profile(profile_name, "vllm")
+    if stored is not None:
+        try:
+            path = profile_store.render_env(stored)
+        except ValueError as exc:
+            yield ("log", f"Error: cannot render {profile_name}.env — {exc}")
+            yield ("rc", 1)
+            return
+        yield ("log", f"▸ Rendered runtime env: {path}")
+
+    config = load_config(profile.config_name)
+    model = config.model.strip()
+    if not model:
+        yield ("log", f"Error: config/{profile.config_name}.yaml has no model set.")
+        yield ("rc", 1)
+        return
+
+    image_ref, error = await _resolve_prepare_image(profile)
+    if error:
+        yield ("log", f"Error: {error}")
+        yield ("rc", 1)
+        return
+
+    if not await prepare.image_present(image_ref):
+        if image_ref.startswith(f"{VLLM_DEV_SPEC.image_prefix}:"):
+            dev_tag = image_ref.split(":", 1)[1]
+            yield ("log", f"Error: Dev image {image_ref} not found locally.")
+            yield ("log", "  Build it first:")
+            yield ("log", f"  uv run llmux image build-dev --backend vllm --tag {dev_tag}")
+            yield ("rc", 1)
+            return
+        async for event in prepare.stream_pull(image_ref):
+            if event[0] == "rc":
+                if int(event[1]) != 0:
+                    yield ("log", f"Error: could not pull {image_ref}")
+                    yield ("rc", int(event[1]))
+                    return
+            else:
+                yield event
+    yield ("log", f"▸ Image: {image_ref}")
+
+    if model.startswith("/") or model.startswith("~"):
+        yield ("log", f"▸ Model is a container path ({model}) — nothing to download.")
+        yield ("log", f"✓ {profile_name} prepared. Start it with: llmux up {profile_name}")
+        yield ("rc", 0)
+        return
+
+    cache_path = prepare.hf_cache_path()
+    if not cache_path:
+        yield ("log", "Error: HF_CACHE_PATH is not set in .env.common — "
+                      "prepare has nowhere to download to.")
+        yield ("rc", 1)
+        return
+
+    yield ("log", f"▸ Downloading {model} into {cache_path}")
+    rc = -1
+    async for event in prepare.stream_vllm_download(
+        image_ref=image_ref,
+        model_id=model,
+        cache_path=cache_path,
+        token=prepare.hf_token(),
+        container_name=prepare.prepare_container_name(profile.container_name),
+    ):
+        if event[0] == "rc":
+            rc = int(event[1])
+        else:
+            yield event
+    if rc != 0:
+        yield ("log", f"✗ Download failed (rc={rc}).")
+        yield ("rc", rc if rc != 0 else 1)
+        return
+
+    yield ("log", f"✓ {profile_name} prepared. Start it with: llmux up {profile_name}")
+    yield ("rc", 0)
 
 
 async def _verify_vllm_version(container_name: str, expected_tag: str):

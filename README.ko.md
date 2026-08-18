@@ -130,6 +130,7 @@ TUI의 모든 기능은 비대화형 서브커맨드로도 있습니다. 인자 
 
 ```bash
 llmux up <profile>                 # 컨테이너 시작
+llmux prepare <profile>            # 모델 다운로드 + 세팅만, 실행은 안 함
 llmux logs <profile>               # 로그 follow
 llmux ps --json --running          # 기계가 읽는 상태, 양쪽 백엔드
 llmux stats --once --json          # 실행 중 컨테이너의 실시간 tok/s
@@ -137,6 +138,7 @@ llmux bench <profile> --runs 3     # warmup + 중앙값 tok/s 벤치마크
 llmux profile quick-setup Qwen/Qwen3-8B --gpu-id 0,1
 llmux config edit <name> --disable trust-remote-code   # 플래그를 끄되 남겨둠
 llmux config from-recipe Qwen/Qwen3-32B --variant fp8   # vLLM 공식 recipe
+llmux config from-recipe my/Qwen3-32B-AWQ --recipe-from Qwen/Qwen3-32B --merge
 llmux profile rename old-name new-name                  # 컨테이너가 멈춰 있어야 함
 llmux image build-dev --backend llamacpp --branch master
 ```

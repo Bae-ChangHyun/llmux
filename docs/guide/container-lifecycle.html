@@ -127,6 +127,12 @@ llmux up gemma-3-4b --tag llamacpp-dev:master</code></pre>
     </table>
     <p>Compose output streams to stdout. The command exits non-zero if startup fails.</p>
 
+    <h3 id="prepare-download-without-starting"><code>prepare</code> — download without starting</h3>
+    <p><code>prepare</code> runs everything <code>up</code> does <em>except</em> launching the server: it renders the profile env (and llama.cpp's command override), makes sure the image is on disk (pulling it when it isn't), and downloads the weights into your HF cache. Nothing is served and no GPU is touched, so a later <code>up</code> only has to load what is already there.</p>
+    <pre data-lang="bash"><code>llmux prepare qwen3-0-6b
+llmux prepare gemma-3-4b --backend llamacpp</code></pre>
+    <p>The download itself runs inside a throwaway container of the same image the profile would serve from — vLLM calls <code>huggingface_hub.snapshot_download</code>, llama.cpp uses llama-server's own <code>-hf</code> path and is stopped the moment the GGUF lands in the cache. There is no host-side <code>hf</code> CLI involved either way. In the TUI the same action is <strong>⬇ Prepare (download only)</strong> in a stopped profile's action menu, or the <code>p</code> key on the dashboard.</p>
+
     <div class="admonition warning">
       <p class="admonition-title">vLLM rejects <code>:latest</code></p>
       <p>The <code>:latest</code> alias doesn't describe an image's real contents, so llmux refuses it. Pick a specific version, <code>nightly</code>, the resolved "Official Release" tag, or your highest local versioned tag.</p>

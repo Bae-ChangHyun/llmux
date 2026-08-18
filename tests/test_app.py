@@ -561,3 +561,134 @@ class PlainModeToggleTests(unittest.IsolatedAsyncioTestCase):
                 await dash.action_plain_mode()
                 run.assert_awaited_once()
                 dash._reload.assert_called_once()
+
+
+class ConfigFormRecipeMergeTests(unittest.IsolatedAsyncioTestCase):
+    """Edit Config can pull a recipe: its params merge into the open form,
+    updating rows that already exist instead of duplicating them."""
+
+    async def test_apply_recipe_updates_and_adds_rows(self) -> None:
+        from textual.widgets import Input, Switch
+        from tui.backends.vllm.screens.config import ConfigFormScreen
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cdir = Path(tmp)
+            with _patched_vllm_config_dir(cdir):
+                (cdir / "cfg.yaml").write_text(
+                    "model: m/x\ngpu-memory-utilization: '0.9'\nmax-model-len: 4096\n"
+                )
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    screen = ConfigFormScreen("cfg")
+                    await app.push_screen(screen)
+                    await pilot.pause()
+
+                    screen._apply_recipe(
+                        "org/other", {"max-model-len": 8192, "quantization": "awq"}
+                    )
+                    await pilot.pause()
+
+                    rows = {
+                        row.query_one(".param-key", Input).value: row
+                        for row in screen.query(".param-row")
+                    }
+                    self.assertEqual(
+                        rows["max-model-len"].query_one(".param-value", Input).value,
+                        "8192",
+                    )
+                    self.assertTrue(
+                        rows["max-model-len"].query_one(".param-switch", Switch).value
+                    )
+                    self.assertIn("quantization", rows)
+                    self.assertEqual(
+                        screen.query_one("#model-input", Input).value, "org/other"
+                    )
+
+
+class ActionMenuPrepareTests(unittest.IsolatedAsyncioTestCase):
+    """`prepare` is offered only while the container is stopped — there is
+    nothing to pre-download for a profile that is already serving."""
+
+    async def test_vllm_menu_offers_prepare_only_when_stopped(self) -> None:
+        from tui.backends.vllm.screens.dashboard import ProfileActionScreen
+
+        app = LlmuxApp()
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            for running, expected in ((False, True), (True, False)):
+                screen = ProfileActionScreen("p", running)
+                await app.push_screen(screen)
+                await pilot.pause()
+                ids = {o.id for o in screen.query_one("#action-list").options}
+                self.assertEqual("prepare" in ids, expected)
+                app.pop_screen()
+                await pilot.pause()
+
+    async def test_llamacpp_menu_offers_prepare_only_when_stopped(self) -> None:
+        from tui.backends.llamacpp import backend as lbackend
+        from tui.backends.llamacpp.screens.dashboard import ActionModal
+
+        app = LlmuxApp()
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            for running, expected in ((False, True), (True, False)):
+                profile = lbackend.Profile(name="p", container_name="p", port=8080)
+                profile.running = running
+                screen = ActionModal(profile)
+                await app.push_screen(screen)
+                await pilot.pause()
+                ids = {o.id for o in screen.query_one("#action-list").options}
+                self.assertEqual("prepare" in ids, expected)
+                app.pop_screen()
+                await pilot.pause()
+
+
+class QuickSetupRecipeSourceTests(unittest.IsolatedAsyncioTestCase):
+    """Quick Setup can pull the recipe of a different model than the one being
+    configured (a quantized checkpoint borrowing its base model's recipe)."""
+
+    async def test_source_input_drives_the_fetch(self) -> None:
+        from unittest.mock import MagicMock
+
+        from textual.widgets import Input
+        from tui.backends.vllm.screens.quick_setup import QuickSetupScreen
+
+        app = LlmuxApp()
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            screen = QuickSetupScreen()
+            await app.push_screen(screen)
+            await pilot.pause()
+
+            screen.query_one("#model-input", Input).value = "cpatonn/Qwen3-32B-AWQ"
+            screen.query_one("#recipe-model-input", Input).value = "Qwen/Qwen3-32B"
+            screen._fetch_recipe = MagicMock()
+            screen.query_one("#fetch-recipe-btn").press()
+            await pilot.pause()
+
+            screen._fetch_recipe.assert_called_once_with(
+                "Qwen/Qwen3-32B", "cpatonn/Qwen3-32B-AWQ"
+            )
+
+    async def test_blank_source_falls_back_to_the_model(self) -> None:
+        from unittest.mock import MagicMock
+
+        from textual.widgets import Input
+        from tui.backends.vllm.screens.quick_setup import QuickSetupScreen
+
+        app = LlmuxApp()
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            screen = QuickSetupScreen()
+            await app.push_screen(screen)
+            await pilot.pause()
+
+            screen.query_one("#model-input", Input).value = "Qwen/Qwen3-32B"
+            screen._fetch_recipe = MagicMock()
+            screen.query_one("#fetch-recipe-btn").press()
+            await pilot.pause()
+
+            screen._fetch_recipe.assert_called_once_with(
+                "Qwen/Qwen3-32B", "Qwen/Qwen3-32B"
+            )

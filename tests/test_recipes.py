@@ -160,13 +160,109 @@ class FromRecipeWriteTests(unittest.TestCase):
                  patch("tui.common.recipes.fetch_recipe",
                        new=AsyncMock(return_value=recipe)):
                 cli_config.config_from_recipe(
-                    "Qwen/Qwen3-32B", variant="awq", feature=["reasoning"],
-                    name="q32-awq", list_only=False, json_out=False, overwrite=False,
+                    "Qwen/Qwen3-32B", recipe_from="", variant="awq",
+                    feature=["reasoning"], name="q32-awq", list_only=False,
+                    json_out=False, overwrite=False, merge=False,
                 )
             written = (Path(tmp) / "q32-awq.yaml").read_text()
             self.assertIn("Qwen/Qwen3-32B-AWQ", written)   # awq swaps the model
             self.assertIn("quantization", written)
             self.assertIn("reasoning-parser", written)
+
+
+class RecipeFromOtherModelTests(unittest.TestCase):
+    """--recipe-from borrows another model's recipe; the configured model stays."""
+
+    def _write(self, tmp, **kwargs):
+        from pathlib import Path
+        from unittest.mock import AsyncMock, patch
+
+        from tui.backends.vllm import backend_common as vc
+        from tui.backends.vllm import backend_storage as vs
+        from tui.cli import config as cli_config
+
+        recipe = recipes._parse(_QWEN32B, "Qwen/Qwen3-32B")
+        call = dict(
+            recipe_from="", variant="awq", feature=[], name="borrowed",
+            list_only=False, json_out=False, overwrite=False, merge=False,
+        )
+        call.update(kwargs)
+        model_id = call.pop("model_id")
+        with patch.object(cli_config, "_config_dir", lambda b: Path(tmp)), \
+             patch.object(vs, "CONFIG_DIR", Path(tmp)), \
+             patch.object(vc, "CONFIG_DIR", Path(tmp)), \
+             patch("tui.common.recipes.fetch_recipe",
+                   new=AsyncMock(return_value=recipe)):
+            cli_config.config_from_recipe(model_id, **call)
+
+    def test_keeps_the_requested_model(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(
+                tmp, model_id="cpatonn/Qwen3-32B-AWQ", recipe_from="Qwen/Qwen3-32B"
+            )
+            written = (Path(tmp) / "borrowed.yaml").read_text()
+            # The awq variant would normally swap in Qwen's own AWQ checkpoint.
+            self.assertIn("cpatonn/Qwen3-32B-AWQ", written)
+            self.assertNotIn("Qwen/Qwen3-32B-AWQ", written)
+            self.assertIn("quantization", written)
+
+    def test_merge_keeps_existing_params(self):
+        import tempfile
+        from pathlib import Path
+
+        import yaml
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, model_id="Qwen/Qwen3-32B")
+            (Path(tmp) / "borrowed.yaml").write_text(
+                (Path(tmp) / "borrowed.yaml").read_text() + "swap-space: 8\n"
+            )
+            self._write(
+                tmp, model_id="Qwen/Qwen3-32B", feature=["reasoning"], merge=True
+            )
+            data = yaml.safe_load((Path(tmp) / "borrowed.yaml").read_text())
+            self.assertEqual(data["swap-space"], 8)          # kept
+            self.assertEqual(data["reasoning-parser"], "qwen3")  # added by the recipe
+
+    def test_merge_requires_an_existing_config(self):
+        import tempfile
+
+        import typer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(typer.BadParameter):
+                self._write(tmp, model_id="Qwen/Qwen3-32B", merge=True)
+
+    def test_merge_and_overwrite_are_exclusive(self):
+        import tempfile
+
+        import typer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(typer.BadParameter):
+                self._write(
+                    tmp, model_id="Qwen/Qwen3-32B", merge=True, overwrite=True
+                )
+
+
+class ReviewTargetModelTests(unittest.TestCase):
+    """A recipe fetched for another model contributes flags, never its model id."""
+
+    def test_target_model_overrides_variant_model(self):
+        from tui.backends.vllm.screens.recipe import RecipeReviewScreen
+
+        r = recipes._parse(_QWEN32B, "Qwen/Qwen3-32B")
+        screen = RecipeReviewScreen(
+            r, gpu_total_gb=24.0, target_model="cpatonn/Qwen3-32B-AWQ"
+        )
+        screen._selected_variant = lambda: r.variants[2]   # awq
+        screen._enabled_features = lambda: []
+        model_id, params = screen._current()
+        self.assertEqual(model_id, "cpatonn/Qwen3-32B-AWQ")
+        self.assertEqual(params["quantization"], "awq")
 
 
 if __name__ == "__main__":

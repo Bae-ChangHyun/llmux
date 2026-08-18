@@ -87,6 +87,11 @@ class QuickSetupScreen(ModalScreen[str]):
                 yield Label(t("HuggingFace Model (e.g., meta-llama/Llama-3-8B)", "HuggingFace 모델 (예: meta-llama/Llama-3-8B)"))
                 yield Input(placeholder="org/model-name", id="model-input")
                 yield Static("", id="mem-estimate")
+                yield Label(t("Recipe source model (optional)", "레시피 출처 모델 (선택)"))
+                yield Input(
+                    placeholder=t("blank = the model above", "비우면 위 모델 사용"),
+                    id="recipe-model-input",
+                )
                 yield Button(
                     t("📋 Fetch vLLM recipe", "📋 vLLM 레시피 받아오기"),
                     id="fetch-recipe-btn",
@@ -153,6 +158,7 @@ class QuickSetupScreen(ModalScreen[str]):
     def _on_fetch_recipe(self, event: Button.Pressed) -> None:
         event.stop()
         model = self.query_one("#model-input", Input).value.strip()
+        source = self.query_one("#recipe-model-input", Input).value.strip() or model
         if not model or "/" not in model:
             self.notify(
                 t("Enter a HuggingFace model id (org/name) first",
@@ -160,10 +166,17 @@ class QuickSetupScreen(ModalScreen[str]):
                 severity="warning",
             )
             return
-        self._fetch_recipe(model)
+        if "/" not in source:
+            self.notify(
+                t("The recipe source model must be an org/name id",
+                  "레시피 출처 모델은 org/name 형식이어야 합니다"),
+                severity="warning",
+            )
+            return
+        self._fetch_recipe(source, model)
 
     @work(exclusive=True, group="recipe-fetch")
-    async def _fetch_recipe(self, model_id: str) -> None:
+    async def _fetch_recipe(self, model_id: str, target_model: str = "") -> None:
         from tui.common.docker import get_gpu_info
         from tui.common.recipes import RecipeUnavailable, fetch_recipe
 
@@ -206,7 +219,10 @@ class QuickSetupScreen(ModalScreen[str]):
 
         self.app.push_screen(
             RecipeReviewScreen(
-                recipe, gpu_total_gb=gpu_total_gb, local_vllm_version=local_ver
+                recipe,
+                gpu_total_gb=gpu_total_gb,
+                local_vllm_version=local_ver,
+                target_model=target_model if target_model != model_id else "",
             ),
             after,
         )
