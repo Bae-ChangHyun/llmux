@@ -521,6 +521,12 @@ def rename_config(
 @app.command("from-recipe")
 def config_from_recipe(
     model_id: str = typer.Argument(..., help="HuggingFace model id, e.g. Qwen/Qwen3-32B."),
+    recipe_from: str = typer.Option(
+        "", "--recipe-from",
+        help="Fetch the recipe of a DIFFERENT model (e.g. the base model of a "
+        "quantized checkpoint). The config's `model` stays MODEL_ID; only the "
+        "recipe's flags are borrowed.",
+    ),
     variant: str = typer.Option(
         "", "--variant", help="Precision variant (default/fp8/awq/…). Auto-picks a "
         "GPU-fitting one if omitted.",
@@ -536,6 +542,12 @@ def config_from_recipe(
         False, "--json", help="Preview the resulting config as JSON without writing."
     ),
     overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite if it exists."),
+    merge: bool = typer.Option(
+        False, "--merge",
+        help="Merge the recipe's params into an existing config instead of "
+        "replacing it (recipe values win; other keys are kept). Mirrors the "
+        "TUI's 'Fetch recipe' button inside Edit Config.",
+    ),
 ) -> None:
     """Create a vLLM config from the official vllm-project/recipes recipe.
 
@@ -545,15 +557,23 @@ def config_from_recipe(
     from tui.cli._runtime import run_async
     from tui.common.recipes import RecipeUnavailable, build_config, fetch_recipe
 
+    if merge and overwrite:
+        raise typer.BadParameter(
+            "--merge and --overwrite are mutually exclusive (one keeps the "
+            "existing params, the other replaces them)",
+            param_hint="--merge",
+        )
+
+    source_model = recipe_from.strip() or model_id
     try:
-        recipe = run_async(fetch_recipe(model_id))
+        recipe = run_async(fetch_recipe(source_model))
     except RecipeUnavailable as exc:
         typer.echo(f"could not reach the recipe index — {exc}", err=True)
         raise typer.Exit(code=1) from exc
     if recipe is None:
         raise typer.BadParameter(
-            f"no vLLM recipe found for {model_id} (see recipes.vllm.ai)",
-            param_hint="MODEL_ID",
+            f"no vLLM recipe found for {source_model} (see recipes.vllm.ai)",
+            param_hint="--recipe-from" if recipe_from else "MODEL_ID",
         )
 
     if list_only:
@@ -572,18 +592,48 @@ def config_from_recipe(
     chosen = _pick_recipe_variant(recipe, variant)
     model, params = build_config(recipe, chosen, list(feature))
 
+    if recipe_from:
+        # The recipe describes another checkpoint, so its model id (and any
+        # variant that swaps in an FP8/AWQ build) must not replace the model
+        # the user asked for.
+        if model != model_id:
+            typer.echo(
+                f"recipe model {model} ignored — keeping {model_id} "
+                f"(recipe borrowed from {source_model})",
+                err=True,
+            )
+        model = model_id
+
     if json_out:
-        emit_json({"model": model, "variant": chosen.name if chosen else "",
+        emit_json({"model": model, "recipe_source": recipe.model_id,
+                   "variant": chosen.name if chosen else "",
                    "params": params})
         return
 
     cfg_name = name or _derive_config_name(model)
+    path = _config_dir("vllm") / f"{cfg_name}.yaml"
+
+    if merge:
+        if not path.exists():
+            raise typer.BadParameter(
+                f"no such config to merge into: {path} (drop --merge to create it)",
+                param_hint="--merge",
+            )
+        data = _backend_load_config("vllm", cfg_name)
+        disabled = _backend_load_disabled("vllm", cfg_name)
+        data["model"] = model
+        data.update(params)
+        saved = _backend_save_config("vllm", cfg_name, data, disabled)
+        if chosen:
+            print(f"variant: {chosen.name} (recipe {recipe.model_id})")
+        print(f"merged {len(params)} recipe param(s) into {saved}")
+        return
+
     _validate_new_name(cfg_name, param_hint="--name")
     _reject_creating_example(cfg_name, param_hint="--name")
-    path = _config_dir("vllm") / f"{cfg_name}.yaml"
     if path.exists() and not overwrite:
         raise typer.BadParameter(
-            f"config already exists: {path} (use --overwrite or --name)",
+            f"config already exists: {path} (use --overwrite, --merge or --name)",
             param_hint="--name",
         )
     data: dict = {"model": model, "gpu-memory-utilization": "0.9"}

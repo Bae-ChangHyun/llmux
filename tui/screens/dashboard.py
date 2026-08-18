@@ -49,6 +49,7 @@ class DashboardScreen(Screen):
         Binding("q", "quit", t("Quit", "종료")),
         # Power-user: footer 에서 숨김
         Binding("u", "start_container", show=False),
+        Binding("p", "prepare_profile", show=False),
         Binding("d", "stop_container", show=False),
         Binding("l", "view_logs", show=False),
         Binding("v", "monitor", show=False),
@@ -414,6 +415,10 @@ class DashboardScreen(Screen):
 
             self._confirm_conflicts_before_start(row, launch)
             return
+        elif action == "prepare":
+            from tui.screens.prepare import PrepareScreen
+
+            self.app.push_screen(PrepareScreen(name, "vllm"), self._after_mutation)
         elif action == "stop":
             self._confirm_vllm_stop(name)
         elif action == "logs":
@@ -522,6 +527,10 @@ class DashboardScreen(Screen):
 
             self._confirm_conflicts_before_start(row, launch)
             return
+        elif action == "prepare":
+            from tui.screens.prepare import PrepareScreen
+
+            self.app.push_screen(PrepareScreen(name, "llamacpp"), self._after_mutation)
         elif action == "stop":
             self._confirm_llamacpp_stop(name)
         elif action == "logs":
@@ -612,6 +621,24 @@ class DashboardScreen(Screen):
         else:
             self._dispatch_llamacpp(
                 "start", row, lbackend.load_profile(row.profile_name)
+            )
+
+    def action_prepare_profile(self) -> None:
+        row = self._selected_row()
+        if row is None:
+            return
+        if row.running:
+            self.notify(
+                t("Container is running — nothing to prepare.",
+                  "컨테이너가 실행 중입니다 — 준비할 것이 없습니다."),
+                severity="warning", timeout=3,
+            )
+            return
+        if row.backend == "vllm":
+            self._dispatch_vllm("prepare", row)
+        else:
+            self._dispatch_llamacpp(
+                "prepare", row, lbackend.load_profile(row.profile_name)
             )
 
     def action_stop_container(self) -> None:
@@ -752,6 +779,7 @@ class DashboardScreen(Screen):
                 "[b]Dashboard[/b]\n"
                 "  Enter   action menu\n"
                 "  u/d/l   start/stop/logs\n"
+                "  p       prepare (download only, no start)\n"
                 "  v/t     live monitor (in TUI / plain terminal)\n"
                 "  e/c/x   edit profile/config, delete\n"
                 "  C       config list (clone/rename/edit/delete)\n"
@@ -760,6 +788,7 @@ class DashboardScreen(Screen):
                 "[b]대시보드[/b]\n"
                 "  Enter   작업 메뉴\n"
                 "  u/d/l   시작/중지/로그\n"
+                "  p       준비 (다운로드만, 시작 안 함)\n"
                 "  v/t     라이브 모니터 (TUI 안 / 일반 터미널)\n"
                 "  e/c/x   프로필/config 편집, 삭제\n"
                 "  C       config 목록 (복제/이름변경/편집/삭제)\n"

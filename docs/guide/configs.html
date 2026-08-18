@@ -169,6 +169,10 @@ override-tensors:
       <li>a live preview of the exact config flags that will be written.</li>
     </ul>
     <p>Confirm and it creates the profile + config (swapping in the FP8/AWQ checkpoint and quantization flags when you pick that variant).</p>
+    <p>The same <strong>📋 Fetch vLLM recipe</strong> button sits in the <strong>Edit Config</strong> form. There it merges into the config you already have: a flag the recipe sets is updated in place (and re-enabled if you had switched it off), anything else you wrote is left alone. Nothing is written until you press Save.</p>
+
+    <h3 id="borrowing-another-models-recipe">Borrowing another model's recipe</h3>
+    <p>Quantized community checkpoints rarely have a recipe of their own. Fill <strong>Recipe source</strong> (Quick Setup) / <strong>Recipe source (optional)</strong> (Edit Config) with the model whose recipe you want — the base model, typically — and llmux fetches that recipe while keeping <em>your</em> model id. Only the flags are borrowed; the recipe's own model id (and a variant's FP8/AWQ checkpoint swap) is ignored, and the review window says so. Leave the field blank and it behaves exactly as before.</p>
     <p>Headless equivalent:</p>
     <pre data-lang="bash"><code># See the recipe's variants + features
 llmux config from-recipe Qwen/Qwen3-32B --list
@@ -177,7 +181,13 @@ llmux config from-recipe Qwen/Qwen3-32B --list
 llmux config from-recipe Qwen/Qwen3-32B --variant fp8 --feature reasoning
 
 # Preview without writing
-llmux config from-recipe Qwen/Qwen3-32B --variant awq --json</code></pre>
+llmux config from-recipe Qwen/Qwen3-32B --variant awq --json
+
+# Borrow the base model's recipe for a quantized checkpoint
+llmux config from-recipe cpatonn/Qwen3-32B-AWQ --recipe-from Qwen/Qwen3-32B --variant awq
+
+# Merge a recipe into an existing config instead of replacing it
+llmux config from-recipe Qwen/Qwen3-32B --name my-model --feature reasoning --merge</code></pre>
 
     <h2 id="flag-autocomplete">Flag autocomplete, from your actual image</h2>
     <p>When you add a flag row in the TUI config form, the name field autocompletes against the <em>real</em> flag set of the engine you're running — not a hardcoded list. The first time it's needed, llmux runs your vLLM image once (<code>vllm serve --help</code>) or <code>llama-server --help</code>, extracts every valid flag, and caches the result per image tag. Pin a different vLLM version to a profile and its config form suggests that version's flags.</p>

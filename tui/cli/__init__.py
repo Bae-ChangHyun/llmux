@@ -205,6 +205,11 @@ app.command("env-check", help="Validate .env.common (alias for `system env-check
 app.command("up", help="Start a profile's container (alias for `container up`).")(
     _container.up
 )
+app.command(
+    "prepare",
+    help="Download the model + render runtime files without starting "
+    "(alias for `container prepare`).",
+)(_container.prepare)
 app.command("down", help="Stop a profile's container (alias for `container down`).")(
     _container.down
 )

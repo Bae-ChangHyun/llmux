@@ -217,6 +217,19 @@ class ConfigFormScreen(ModalScreen[str | None]):
                     )
 
                 with Horizontal(classes="form-row"):
+                    yield Label(t("Recipe source (optional)", "레시피 출처 (선택)"))
+                    yield Input(
+                        placeholder=t("blank = the model above", "비우면 위 모델 사용"),
+                        id="recipe-model-input",
+                    )
+                yield Button(
+                    t("📋 Fetch vLLM recipe", "📋 vLLM 레시피 받아오기"),
+                    id="fetch-recipe-btn",
+                    variant="default",
+                )
+                yield Static("", id="recipe-status")
+
+                with Horizontal(classes="form-row"):
                     yield Label(t("GPU Memory Utilization", "GPU 메모리 사용률"))
                     yield Input(
                         value=cfg.gpu_memory_utilization if cfg else "",
@@ -297,6 +310,111 @@ class ConfigFormScreen(ModalScreen[str | None]):
             scroll.scroll_end(animate=False)
         except Exception:
             pass
+
+    @on(Button.Pressed, "#fetch-recipe-btn")
+    def _on_fetch_recipe(self, event: Button.Pressed) -> None:
+        event.stop()
+        model = self.query_one("#model-input", Input).value.strip()
+        source = self.query_one("#recipe-model-input", Input).value.strip() or model
+        if not model or "/" not in model:
+            self.notify(
+                t("Enter a HuggingFace model id (org/name) first",
+                  "먼저 HuggingFace 모델 id (org/name) 를 입력하세요"),
+                severity="warning",
+            )
+            return
+        if "/" not in source:
+            self.notify(
+                t("The recipe source model must be an org/name id",
+                  "레시피 출처 모델은 org/name 형식이어야 합니다"),
+                severity="warning",
+            )
+            return
+        self._fetch_recipe(source, model)
+
+    @work(exclusive=True, group="recipe-fetch")
+    async def _fetch_recipe(self, source_model: str, target_model: str) -> None:
+        from tui.common.docker import get_gpu_info
+        from tui.common.recipes import RecipeUnavailable, fetch_recipe
+
+        status = self.query_one("#recipe-status", Static)
+        status.update(t(f"[dim]Fetching recipe for {source_model}…[/dim]",
+                        f"[dim]{source_model} 레시피 받는 중…[/dim]"))
+        try:
+            recipe = await fetch_recipe(source_model)
+        except RecipeUnavailable as exc:
+            status.update(t(f"[red]Could not reach the recipe index: {exc}[/red]",
+                            f"[red]레시피 조회 실패: {exc}[/red]"))
+            return
+        if recipe is None:
+            status.update(t(f"[yellow]No vLLM recipe found for {source_model}[/yellow]",
+                            f"[yellow]{source_model} 의 vLLM 레시피 없음[/yellow]"))
+            return
+        status.update("")
+
+        gpus = await get_gpu_info()
+        gpu_total_gb = None
+        if gpus:
+            try:
+                gpu_total_gb = max(int(g.memory_total) / 1024 for g in gpus)
+            except (TypeError, ValueError):
+                gpu_total_gb = None
+
+        from tui.backends.vllm.backend import get_local_latest_tag
+
+        local_tag = await get_local_latest_tag()
+        local_ver = "" if local_tag == "none" else local_tag
+
+        from tui.backends.vllm.screens.recipe import RecipeReviewScreen
+
+        def after(result: dict | None) -> None:
+            if result:
+                self._apply_recipe(result["model_id"], dict(result["params"]))
+
+        self.app.push_screen(
+            RecipeReviewScreen(
+                recipe,
+                gpu_total_gb=gpu_total_gb,
+                local_vllm_version=local_ver,
+                target_model=target_model if target_model != source_model else "",
+            ),
+            after,
+        )
+
+    def _apply_recipe(self, model_id: str, params: dict[str, Any]) -> None:
+        """Merge a fetched recipe into the open form (nothing is saved yet).
+
+        An existing row for the same key is updated and re-enabled so a recipe
+        can't leave a stale value behind as a disabled marker.
+        """
+        self.query_one("#model-input", Input).value = model_id
+
+        rows: dict[str, Any] = {}
+        for row in self.query(".param-row"):
+            key = row.query_one(".param-key", Input).value.strip()
+            if key:
+                rows[key] = row
+
+        updated, added = 0, 0
+        for key, value in params.items():
+            text = format_config_param_value(value)
+            row = rows.get(key)
+            if row is not None:
+                row.query_one(".param-value", Input).value = text
+                row.query_one(".param-switch", Switch).value = True
+                updated += 1
+            else:
+                self._add_param_row(key, text)
+                added += 1
+
+        self.notify(
+            t(
+                f"Recipe applied: {added} added, {updated} updated — review, then Save.",
+                f"레시피 적용: {added}개 추가, {updated}개 갱신 — 확인 후 저장하세요.",
+            ),
+            severity="information",
+            timeout=6,
+        )
 
     @on(Button.Pressed, "#add-param-btn")
     def _on_add_param(self, event: Button.Pressed) -> None:

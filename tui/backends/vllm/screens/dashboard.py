@@ -61,6 +61,9 @@ class ProfileActionScreen(ModalScreen[str]):
             options.append(Option(t("■ Stop Container", "■ 컨테이너 중지"), id="stop"))
         else:
             options.append(Option(t("▶ Start Container", "▶ 컨테이너 시작"), id="start"))
+            options.append(
+                Option(t("⬇ Prepare (download only)", "⬇ 준비 (다운로드만)"), id="prepare")
+            )
         # `docker logs` also works on exited containers, so the log viewer is
         # offered in both states — matching the `l` binding on the dashboard.
         options.append(Option(t("◉ View Logs", "◉ 로그 보기"), id="logs"))

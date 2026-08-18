@@ -155,6 +155,31 @@ def up(
 
 
 
+@app.command("prepare")
+def prepare(
+    profile: str = typer.Argument(..., help="Profile name (from profiles.yaml)."),
+    backend: Optional[str] = typer.Option(
+        None, "--backend", "-b", help="Force backend; auto-detect if omitted."
+    ),
+) -> None:
+    """Download the model and render the runtime files — without starting it.
+
+    Does everything `up` does up to the point of launching the server: renders
+    the profile env (and llama.cpp's command override), makes sure the image is
+    on disk, then downloads the weights into the HF cache using a throwaway
+    container. No server is started and no GPU is touched, so a later
+    `llmux up <profile>` only has to load what is already there.
+    """
+    bk = detect_backend(profile, override=backend)
+    if bk == "vllm":
+        from tui.backends.vllm.backend_runtime import stream_container_prepare
+    else:
+        from tui.backends.llamacpp.backend_runtime import stream_container_prepare
+
+    rc = stream_async(stream_container_prepare(profile))
+    raise typer.Exit(code=rc)
+
+
 @app.command("down")
 def down(
     profile: str = typer.Argument(..., help="Profile name (from profiles.yaml)."),

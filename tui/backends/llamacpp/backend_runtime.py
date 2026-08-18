@@ -23,7 +23,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from tui.common import dev_build, profile_store
+from tui.common import dev_build, prepare, profile_store
 from tui.common.conflicts import gpu_conflict_messages as _shared_gpu_conflict_messages
 from tui.common.docker import (
     run_command as _docker_run,
@@ -32,6 +32,7 @@ from tui.common.env import expand_env_values, validate_common_env
 
 from .backend import (
     COMMON_ENV,
+    LLAMACPP_OFFICIAL_IMAGE,
     CONFIG_DIR,
     PROJECT_ROOT,
     RUNTIME_DIR,
@@ -644,6 +645,58 @@ async def _post_start_validation(
         await asyncio.sleep(poll_interval)
 
 
+def _ensure_profile_config(
+    stored: profile_store.StoredProfile, profile: Profile
+) -> tuple[bool, list[str]]:
+    """Link (and create) the profile's config so the override can render.
+
+    Without this the Start screen's "a default config will be generated on
+    start" promise was false on llama.cpp: an unlinked profile just failed in
+    render-override.
+    """
+    messages: list[str] = []
+    if not stored.config_name:
+        stored.config_name = profile.name
+        profile.config_name = profile.name
+        try:
+            profile_store.save_profile(stored)
+        except Exception as exc:  # noqa: BLE001 — surface, don't half-start
+            messages.append(f"✗ config 자동 링크 저장 실패: {exc}")
+            return False, messages
+        messages.append(f"▸ config 미링크 — '{profile.name}' 로 자동 링크")
+
+    config_path = CONFIG_DIR / f"{stored.config_name}.yaml"
+    if not config_path.exists():
+        try:
+            save_config(Config(
+                name=stored.config_name,
+                params={
+                    "alias": stored.config_name,
+                    "ctx-size": 8192,
+                    "n-gpu-layers": 99,
+                },
+            ))
+        except Exception as exc:  # noqa: BLE001
+            messages.append(f"✗ 기본 config 생성 실패: {exc}")
+            return False, messages
+        messages.append(
+            f"▸ 기본 config 생성: {config_path} (ctx-size/n-gpu-layers 기본값 — 확인 후 조정하세요)"
+        )
+        return True, messages
+
+    existing = load_config(stored.config_name)
+    if not existing.params:
+        messages.append(f"✗ config '{stored.config_name}' 가 비어 있습니다 ({config_path}).")
+        messages.append("  ctx-size / n-gpu-layers 등을 채운 뒤 다시 시작하세요.")
+        return False, messages
+    missing = [k for k in ("ctx-size", "n-gpu-layers") if k not in existing.params]
+    if missing:
+        messages.append(
+            f"⚠ config '{stored.config_name}' 에 {', '.join(missing)} 없음 — llama-server 기본값이 적용됩니다."
+        )
+    return True, messages
+
+
 async def stream_container_up(
     profile_name: str,
     *,
@@ -699,49 +752,15 @@ async def stream_container_up(
         yield ("log", message)
 
     # Auto-link / auto-create the config (parity with vllm._ensure_profile_config).
-    # Without this the Start screen's "a default config will be generated on
-    # start" promise was false on llama.cpp: an unlinked profile just failed in
-    # render-override.
     #
     # Must run BEFORE the image-override block: save_profile() persists
     # `stored`, and that block assigns a one-off tag onto it.
-    if not stored.config_name:
-        stored.config_name = profile_name
-        profile.config_name = profile_name
-        try:
-            profile_store.save_profile(stored)
-        except Exception as exc:  # noqa: BLE001 — surface, don't half-start
-            yield ("log", f"✗ config 자동 링크 저장 실패: {exc}")
-            yield ("rc", 1)
-            return
-        yield ("log", f"▸ config 미링크 — '{profile_name}' 로 자동 링크")
-
-    config_path = CONFIG_DIR / f"{stored.config_name}.yaml"
-    if not config_path.exists():
-        try:
-            save_config(Config(
-                name=stored.config_name,
-                params={
-                    "alias": stored.config_name,
-                    "ctx-size": 8192,
-                    "n-gpu-layers": 99,
-                },
-            ))
-        except Exception as exc:  # noqa: BLE001
-            yield ("log", f"✗ 기본 config 생성 실패: {exc}")
-            yield ("rc", 1)
-            return
-        yield ("log", f"▸ 기본 config 생성: {config_path} (ctx-size/n-gpu-layers 기본값 — 확인 후 조정하세요)")
-    else:
-        existing = load_config(stored.config_name)
-        if not existing.params:
-            yield ("log", f"✗ config '{stored.config_name}' 가 비어 있습니다 ({config_path}).")
-            yield ("log", "  ctx-size / n-gpu-layers 등을 채운 뒤 다시 시작하세요.")
-            yield ("rc", 1)
-            return
-        missing = [k for k in ("ctx-size", "n-gpu-layers") if k not in existing.params]
-        if missing:
-            yield ("log", f"⚠ config '{stored.config_name}' 에 {', '.join(missing)} 없음 — llama-server 기본값이 적용됩니다.")
+    ok, cfg_messages = _ensure_profile_config(stored, profile)
+    for message in cfg_messages:
+        yield ("log", message)
+    if not ok:
+        yield ("rc", 1)
+        return
 
     # Apply TUI-side image override (a Dev Build / Custom Tag / Default Image
     # selection trumps whatever's pinned on the profile). This is identical to
@@ -921,6 +940,106 @@ async def stream_container_up(
         yield ("log", f"  Health:   curl http://localhost:{profile.port}/health")
         yield ("rc", 0)
         return
+
+
+async def stream_container_prepare(profile_name: str):
+    """Render runtime files, make sure the image is local, download the GGUF.
+
+    Everything `up` does before `docker compose up`, plus the weight download —
+    and nothing after it. Mirrors vllm.stream_container_prepare.
+    """
+    ok, env_messages = validate_common_env(COMMON_ENV)
+    for message in env_messages:
+        yield ("log", message)
+    if not ok:
+        yield ("rc", 1)
+        return
+
+    stored = profile_store.load_profile(profile_name, "llamacpp")
+    if stored is None:
+        yield ("log", f"✗ 프로필 없음: llamacpp/{profile_name} (profiles.yaml 확인)")
+        yield ("rc", 1)
+        return
+
+    profile = load_profile(profile_name)
+
+    ok, cfg_messages = _ensure_profile_config(stored, profile)
+    for message in cfg_messages:
+        yield ("log", message)
+    if not ok:
+        yield ("rc", 1)
+        return
+
+    if not stored.hf_repo or not (stored.hf_file or stored.model_file):
+        yield ("log", f"✗ '{profile_name}' 에 hf_repo / hf_file 이 없습니다 — 받을 GGUF 를 특정할 수 없습니다.")
+        yield ("log", f"  llmux profile edit {profile_name} --hf-repo <org/repo> --hf-file <파일.gguf>")
+        yield ("rc", 1)
+        return
+
+    try:
+        env_path = profile_store.render_env(stored)
+    except Exception as exc:  # noqa: BLE001 — surface any render failure
+        yield ("log", f"✗ profile env render 실패: {exc}")
+        yield ("rc", 1)
+        return
+    yield ("log", f"▸ runtime env 렌더: {env_path}")
+
+    rc, out = await _render_override(profile_name)
+    if rc != 0:
+        yield ("log", out.strip() or "✗ override 렌더 실패")
+        yield ("rc", rc)
+        return
+    for line in out.splitlines():
+        if line.startswith("warning:"):
+            yield ("log", f"⚠ {line[len('warning:'):].strip()}")
+    yield ("log", f"▸ command 렌더: {_override_path(profile_name)}")
+
+    image_ref = profile.image_tag or LLAMACPP_OFFICIAL_IMAGE
+    if not await prepare.image_present(image_ref):
+        if image_ref.startswith(f"{LLAMACPP_DEV_SPEC.image_prefix}:"):
+            dev_tag = image_ref.split(":", 1)[1]
+            yield ("log", f"✗ Dev image {image_ref} 가 로컬에 없습니다.")
+            yield ("log", f"  먼저 빌드하세요: uv run llmux image build-dev --backend llamacpp --tag {dev_tag}")
+            yield ("rc", 1)
+            return
+        async for event in prepare.stream_pull(image_ref):
+            if event[0] == "rc":
+                if int(event[1]) != 0:
+                    yield ("log", f"✗ 이미지 pull 실패: {image_ref}")
+                    yield ("rc", int(event[1]))
+                    return
+            else:
+                yield event
+    yield ("log", f"▸ Image: {image_ref}")
+
+    cache_path = prepare.hf_cache_path()
+    if not cache_path:
+        yield ("log", "✗ .env.common 의 HF_CACHE_PATH 가 비어 있습니다 — 받을 위치가 없습니다.")
+        yield ("rc", 1)
+        return
+
+    hf_file = stored.hf_file or stored.model_file
+    yield ("log", f"▸ {stored.hf_repo} / {hf_file} 다운로드 → {cache_path}")
+    rc = -1
+    async for event in prepare.stream_llamacpp_download(
+        image_ref=image_ref,
+        hf_repo=stored.hf_repo,
+        hf_file=hf_file,
+        cache_path=cache_path,
+        token=prepare.hf_token(),
+        container_name=prepare.prepare_container_name(profile.container_name),
+    ):
+        if event[0] == "rc":
+            rc = int(event[1])
+        else:
+            yield event
+    if rc != 0:
+        yield ("log", f"✗ 다운로드 실패 (rc={rc}).")
+        yield ("rc", rc if rc != 0 else 1)
+        return
+
+    yield ("log", f"✓ '{profile_name}' 준비 완료 — 시작: llmux up {profile_name}")
+    yield ("rc", 0)
 
 
 async def _container_exists(container_name: str) -> bool | None:

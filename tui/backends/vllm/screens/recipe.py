@@ -72,11 +72,15 @@ class RecipeReviewScreen(ModalScreen[dict | None]):
         *,
         gpu_total_gb: float | None = None,
         local_vllm_version: str = "",
+        target_model: str = "",
     ) -> None:
         super().__init__()
         self._recipe = recipe
         self._gpu_total_gb = gpu_total_gb
         self._local_vllm_version = local_vllm_version
+        # Set when the recipe was fetched for a different model than the one
+        # being configured: the recipe's flags are borrowed, its model id is not.
+        self._target_model = target_model.strip()
 
 
     def _fits(self, v: RecipeVariant) -> bool | None:
@@ -127,6 +131,13 @@ class RecipeReviewScreen(ModalScreen[dict | None]):
                 meta = f"[b]{r.model_id}[/b]"
                 if r.description:
                     meta += f"\n[dim]{r.description}[/dim]"
+                if self._target_model:
+                    meta += t(
+                        f"\n[yellow]Applied to {self._target_model}[/yellow] "
+                        "[dim](flags only — the recipe's own model id is ignored)[/dim]",
+                        f"\n[yellow]{self._target_model} 에 적용[/yellow] "
+                        "[dim](플래그만 — 레시피의 모델 id 는 무시)[/dim]",
+                    )
                 yield Static(meta, id="recipe-meta")
 
                 if self._gpu_total_gb is not None:
@@ -210,7 +221,12 @@ class RecipeReviewScreen(ModalScreen[dict | None]):
         return out
 
     def _current(self) -> tuple[str, dict]:
-        return build_config(self._recipe, self._selected_variant(), self._enabled_features())
+        model_id, params = build_config(
+            self._recipe, self._selected_variant(), self._enabled_features()
+        )
+        if self._target_model:
+            return self._target_model, params
+        return model_id, params
 
     def _refresh_preview(self) -> None:
         try:
