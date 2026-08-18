@@ -50,6 +50,7 @@ class DashboardScreen(Screen):
         # Power-user: footer 에서 숨김
         Binding("u", "start_container", show=False),
         Binding("p", "prepare_profile", show=False),
+        Binding("U", "check_update", show=False),
         Binding("d", "stop_container", show=False),
         Binding("l", "view_logs", show=False),
         Binding("v", "monitor", show=False),
@@ -641,6 +642,71 @@ class DashboardScreen(Screen):
                 "prepare", row, lbackend.load_profile(row.profile_name)
             )
 
+    def action_check_update(self) -> None:
+        self._check_update()
+
+    @work(exclusive=True, group="update-check")
+    async def _check_update(self) -> None:
+        """Ask GitHub whether a newer release exists, and offer to install it.
+
+        Mirrors `llmux update`: the failure back-off is ignored, so this always
+        answers.
+        """
+        from tui.common import version_check as vc
+
+        self.notify(t("Checking for updates…", "업데이트 확인 중…"), timeout=3)
+        status = await asyncio.to_thread(vc.resolve_status, respect_cooldown=False)
+
+        if status.state == vc.UNKNOWN:
+            self.notify(
+                t(f"Could not check for updates — {status.detail}",
+                  f"업데이트를 확인할 수 없습니다 — {status.detail}"),
+                severity="error", timeout=8,
+            )
+            return
+        if status.state == vc.CURRENT:
+            version = status.tag or status.local_version
+            self.notify(
+                t(f"llmux is up to date ({version}).",
+                  f"llmux 가 최신입니다 ({version})."),
+                timeout=5,
+            )
+            return
+
+        blocked = vc.update_blocked_reason()
+        if blocked:
+            self.notify(
+                t(f"{status.tag} is available, but auto-update is refused — {blocked}",
+                  f"{status.tag} 이(가) 있지만 자동 업데이트 불가 — {blocked}"),
+                severity="warning", timeout=10,
+            )
+            return
+
+        def after(confirmed: bool) -> None:
+            if confirmed:
+                self._apply_update(status.tag)
+
+        self.app.push_screen(
+            ConfirmModal(
+                t(f"llmux [b]{status.tag}[/b] is available. Update now?",
+                  f"llmux [b]{status.tag}[/b] 이(가) 있습니다. 지금 업데이트할까요?"),
+                confirm_label=t("Update", "업데이트"),
+            ),
+            after,
+        )
+
+    @work(exclusive=True, group="update-apply")
+    async def _apply_update(self, tag: str) -> None:
+        from tui.common import version_check as vc
+
+        self.notify(t(f"Updating to {tag}…", f"{tag} 로 업데이트 중…"), timeout=5)
+        ok, message = await asyncio.to_thread(vc.apply_update, tag)
+        self.notify(
+            message,
+            severity="information" if ok else "error",
+            timeout=15 if ok else 20,
+        )
+
     def action_stop_container(self) -> None:
         row = self._selected_row()
         if row is None or not row.running:
@@ -784,7 +850,8 @@ class DashboardScreen(Screen):
                 "  e/c/x   edit profile/config, delete\n"
                 "  C       config list (clone/rename/edit/delete)\n"
                 "  m       estimate model memory\n"
-                "  n s r q new/system/refresh/quit",
+                "  n s r q new/system/refresh/quit\n"
+                "  U       check for a newer llmux release",
                 "[b]대시보드[/b]\n"
                 "  Enter   작업 메뉴\n"
                 "  u/d/l   시작/중지/로그\n"
@@ -793,7 +860,8 @@ class DashboardScreen(Screen):
                 "  e/c/x   프로필/config 편집, 삭제\n"
                 "  C       config 목록 (복제/이름변경/편집/삭제)\n"
                 "  m       모델 메모리 추정\n"
-                "  n s r q 새로/시스템/새로고침/종료",
+                "  n s r q 새로/시스템/새로고침/종료\n"
+                "  U       llmux 새 릴리스 확인",
             ),
             title=t("Keys", "단축키"),
             timeout=10,

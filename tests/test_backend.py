@@ -2651,17 +2651,79 @@ class VersionCheckTests(unittest.TestCase):
         with patch.object(vc, "_git", side_effect=shallow):
             self.assertIsNone(vc._is_behind("deadbeef"))
 
-    def test_cache_freshness(self) -> None:
+    def test_only_failures_back_off(self) -> None:
         from tui.common import version_check as vc
 
         with tempfile.TemporaryDirectory() as d:
             cache = Path(d) / "version-check.json"
             with patch.object(vc, "_CACHE_FILE", cache):
-                self.assertFalse(vc._cache_is_fresh())  # missing
-                vc._write_cache()
-                self.assertTrue(vc._cache_is_fresh())  # just written
-                cache.write_text('{"checked_at": 0}')
-                self.assertFalse(vc._cache_is_fresh())  # epoch 0 → stale
+                self.assertFalse(vc._cooldown_active())  # missing
+                vc._record_failure()
+                self.assertTrue(vc._cooldown_active())  # just failed
+                vc._clear_failure()
+                self.assertFalse(vc._cooldown_active())  # a success clears it
+                cache.write_text('{"failed_at": 0}')
+                self.assertFalse(vc._cooldown_active())  # epoch 0 → expired
+
+    def test_local_version_read_from_pyproject(self) -> None:
+        from tui.common import version_check as vc
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "pyproject.toml").write_text(
+                '[project]\nname = "llmux"\nversion = "9.9.9"\n'
+            )
+            with patch.object(vc, "PROJECT_ROOT", root):
+                self.assertEqual(vc._local_version(), "9.9.9")
+
+    def test_matching_tag_skips_the_second_api_call(self) -> None:
+        from tui.common import version_check as vc
+
+        with (
+            patch.object(vc, "_is_git_checkout", return_value=True),
+            patch.object(vc, "_cooldown_active", return_value=False),
+            patch.object(vc, "_clear_failure"),
+            patch.object(vc, "_repo_slug", return_value="o/r"),
+            patch.object(vc, "_local_version", return_value="2.6.0"),
+            patch.object(vc, "_latest_release", return_value=("v2.6.0", "url")),
+            patch.object(vc, "_release_commit") as commit,
+        ):
+            status = vc.resolve_status()
+        self.assertEqual(status.state, vc.CURRENT)
+        commit.assert_not_called()
+
+    def test_failed_lookup_is_unknown_and_records_cooldown(self) -> None:
+        from tui.common import version_check as vc
+
+        with (
+            patch.object(vc, "_is_git_checkout", return_value=True),
+            patch.object(vc, "_cooldown_active", return_value=False),
+            patch.object(vc, "_repo_slug", return_value="o/r"),
+            patch.object(vc, "_local_version", return_value="2.6.0"),
+            patch.object(vc, "_latest_release", return_value=None),
+            patch.object(vc, "_record_failure") as failed,
+        ):
+            status = vc.resolve_status()
+        self.assertEqual(status.state, vc.UNKNOWN)
+        self.assertIn("rate-limited", status.detail)
+        failed.assert_called_once()
+
+    def test_explicit_check_ignores_the_cooldown(self) -> None:
+        from tui.common import version_check as vc
+
+        with (
+            patch.object(vc, "_is_git_checkout", return_value=True),
+            patch.object(vc, "_cooldown_active", return_value=True) as cooling,
+            patch.object(vc, "_clear_failure"),
+            patch.object(vc, "_repo_slug", return_value="o/r"),
+            patch.object(vc, "_local_version", return_value="2.6.0"),
+            patch.object(vc, "_latest_release", return_value=("v2.6.0", "url")),
+        ):
+            forced = vc.resolve_status(respect_cooldown=False)
+            backed_off = vc.resolve_status()
+        self.assertEqual(forced.state, vc.CURRENT)
+        self.assertEqual(backed_off.state, vc.UNKNOWN)
+        cooling.assert_called_once()  # only the cooldown-respecting call asks
 
     def test_local_clean_main_gates_auto_update(self) -> None:
         from tui.common import version_check as vc
@@ -2698,29 +2760,30 @@ class VersionCheckTests(unittest.TestCase):
         from tui.common import version_check as vc
 
         with (
-            patch.object(vc, "_is_git_checkout", return_value=True),
-            patch.object(vc, "_cache_is_fresh", return_value=False),
-            patch.object(vc, "_write_cache"),
-            patch.object(vc, "_repo_slug", return_value="o/r"),
-            patch.object(vc, "_latest_release", return_value=("v9.9.9", "url")),
-            patch.object(vc, "_release_commit", return_value="sha"),
-            patch.object(vc, "_is_behind", return_value=False),
+            patch.object(vc, "resolve_status",
+                         return_value=vc.UpdateStatus(vc.CURRENT, tag="v9.9.9")),
             patch.object(vc, "_prompt_and_update") as prompt,
         ):
             vc.check_for_update()  # up to date → returns, never prompts
+        prompt.assert_not_called()
+
+    def test_startup_check_is_silent_when_undecidable(self) -> None:
+        from tui.common import version_check as vc
+
+        with (
+            patch.object(vc, "resolve_status",
+                         return_value=vc.UpdateStatus(vc.UNKNOWN, detail="offline")),
+            patch.object(vc, "_prompt_and_update") as prompt,
+        ):
+            vc.check_for_update()
         prompt.assert_not_called()
 
     def test_check_for_update_propagates_systemexit_after_update(self) -> None:
         from tui.common import version_check as vc
 
         with (
-            patch.object(vc, "_is_git_checkout", return_value=True),
-            patch.object(vc, "_cache_is_fresh", return_value=False),
-            patch.object(vc, "_write_cache"),
-            patch.object(vc, "_repo_slug", return_value="o/r"),
-            patch.object(vc, "_latest_release", return_value=("v9.9.9", "url")),
-            patch.object(vc, "_release_commit", return_value="sha"),
-            patch.object(vc, "_is_behind", return_value=True),
+            patch.object(vc, "resolve_status",
+                         return_value=vc.UpdateStatus(vc.BEHIND, tag="v9.9.9", url="url")),
             patch.object(vc, "_prompt_and_update", side_effect=SystemExit(0)),
         ):
             # SystemExit from a successful self-update must reach the caller
@@ -2731,7 +2794,7 @@ class VersionCheckTests(unittest.TestCase):
     def test_check_for_update_swallows_errors(self) -> None:
         from tui.common import version_check as vc
 
-        with patch.object(vc, "_is_git_checkout", side_effect=RuntimeError("boom")):
+        with patch.object(vc, "resolve_status", side_effect=RuntimeError("boom")):
             vc.check_for_update()  # any non-SystemExit error must not escape
 
 

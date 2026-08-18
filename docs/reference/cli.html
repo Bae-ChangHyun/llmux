@@ -798,6 +798,23 @@ uv run llmux system gpu --json</code></pre>
 uv run llmux system env-check --json</code></pre>
     <p>See <a href="env-common.html"><code>.env.common</code> Reference</a> for every variable this command validates.</p>
 
+    <h2 id="update-self-update"><code>update</code> — check for a newer llmux</h2>
+    <p>Ask GitHub whether this checkout is behind the latest Release, and update to it. llmux already checks on <em>every</em> interactive start (only a failed lookup backs off for 15 minutes), so this command is for asking on demand — right after a release, or from a script.</p>
+    <pre data-lang="text"><code>llmux update [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--check</code></td><td><code>False</code></td><td>Only report; never touch the checkout.</td></tr>
+        <tr><td><code>--yes</code>, <code>-y</code></td><td><code>False</code></td><td>Update without asking for confirmation.</td></tr>
+        <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit the status as JSON (<code>state</code> = <code>behind</code> / <code>current</code> / <code>unknown</code>, plus <code>latest_tag</code>, <code>local_version</code>, <code>url</code>, <code>detail</code>, <code>checkout</code>).</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>llmux update --check          # "llmux is up to date (v2.6.0)."
+llmux update --check --json   # machine-readable status
+llmux update -y               # pull + refresh the installed tool, no prompt</code></pre>
+    <p>Exit codes: <code>0</code> when the state is known (up to date, or reported/applied), <code>1</code> when the check could not be completed (offline, rate-limited, not a git checkout, shallow clone) or the update failed. An update is refused — with the reason — when the checkout is not on a clean <code>main</code>; pull it yourself there.</p>
+    <p>The TUI has the same action on <kbd>U</kbd>.</p>
+
     <h2 id="top-level-aliases">Top-level aliases</h2>
     <p>For convenience — and so agents can write <code>llmux up &lt;profile&gt;</code> directly — the most-used commands are mirrored at the top level:</p>
     <table>

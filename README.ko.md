@@ -105,7 +105,7 @@ curl -fsSL https://raw.githubusercontent.com/Changroro/llmux/main/install.sh | s
 llmux
 ```
 
-설치된 폴더는 그대로 git 저장소로 남아 있어서, `~/.llmux`에서 `git pull`만 하면 재설치 없이 업데이트됩니다. llmux는 시작할 때 하루 한 번 GitHub에서 새 릴리스를 확인하고 받을지 물어봅니다. 다른 위치에 설치하려면 스크립트에 `LLMUX_DIR`을 넘깁니다: `curl -fsSL ... | LLMUX_DIR=/path sh`.
+설치된 폴더는 그대로 git 저장소로 남아 있어서, `~/.llmux`에서 `git pull`만 하면 재설치 없이 업데이트됩니다. llmux는 **실행할 때마다** GitHub에서 새 릴리스를 확인하고 받을지 물어봅니다. 지금 바로 확인하려면 `llmux update` (`--check` 는 확인만, `--yes` 는 확인 없이 업데이트), TUI 에서는 `U` 키. 다른 위치에 설치하려면 스크립트에 `LLMUX_DIR`을 넘깁니다: `curl -fsSL ... | LLMUX_DIR=/path sh`.
 
 <details>
 <summary>수동 설치</summary>
@@ -131,6 +131,7 @@ TUI의 모든 기능은 비대화형 서브커맨드로도 있습니다. 인자 
 ```bash
 llmux up <profile>                 # 컨테이너 시작
 llmux prepare <profile>            # 모델 다운로드 + 세팅만, 실행은 안 함
+llmux update --check               # 새 llmux 릴리스가 있나?
 llmux logs <profile>               # 로그 follow
 llmux ps --json --running          # 기계가 읽는 상태, 양쪽 백엔드
 llmux stats --once --json          # 실행 중 컨테이너의 실시간 tok/s

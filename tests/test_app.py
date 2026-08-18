@@ -692,3 +692,58 @@ class QuickSetupRecipeSourceTests(unittest.IsolatedAsyncioTestCase):
             screen._fetch_recipe.assert_called_once_with(
                 "Qwen/Qwen3-32B", "Qwen/Qwen3-32B"
             )
+
+
+class DashboardUpdateCheckTests(unittest.IsolatedAsyncioTestCase):
+    """`U` on the dashboard checks for a release on demand, ignoring the
+    failure back-off that the startup check honors."""
+
+    async def _run_check(self, status, blocked=""):
+        from unittest.mock import MagicMock
+
+        from tui.common import version_check as vc
+
+        with patch("tui.common.docker.running_container_names", AsyncMock(return_value=set())), \
+             patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=[])), \
+             patch.object(vc, "resolve_status", return_value=status) as resolve, \
+             patch.object(vc, "update_blocked_reason", return_value=blocked):
+            app = LlmuxApp()
+            async with app.run_test(size=WIDE) as pilot:
+                await pilot.pause()
+                dash = next(s for s in app.screen_stack if isinstance(s, DashboardScreen))
+                dash.notify = MagicMock()
+                dash.action_check_update()
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+                pushed = [type(s).__name__ for s in app.screen_stack]
+                return dash.notify, resolve, pushed
+
+    async def test_up_to_date_notifies_and_asks_nothing(self) -> None:
+        from tui.common import version_check as vc
+
+        notify, resolve, pushed = await self._run_check(
+            vc.UpdateStatus(vc.CURRENT, tag="v2.6.0", local_version="2.6.0")
+        )
+        messages = " ".join(str(c.args[0]) for c in notify.call_args_list)
+        self.assertIn("v2.6.0", messages)
+        self.assertNotIn("ConfirmModal", pushed)
+        self.assertEqual(resolve.call_args.kwargs, {"respect_cooldown": False})
+
+    async def test_behind_offers_the_update(self) -> None:
+        from tui.common import version_check as vc
+
+        _, _, pushed = await self._run_check(
+            vc.UpdateStatus(vc.BEHIND, tag="v9.9.9", url="u")
+        )
+        self.assertIn("ConfirmModal", pushed)
+
+    async def test_dirty_checkout_warns_instead_of_offering(self) -> None:
+        from tui.common import version_check as vc
+
+        notify, _, pushed = await self._run_check(
+            vc.UpdateStatus(vc.BEHIND, tag="v9.9.9", url="u"),
+            blocked="checkout has uncommitted changes to tracked files",
+        )
+        messages = " ".join(str(c.args[0]) for c in notify.call_args_list)
+        self.assertIn("uncommitted", messages)
+        self.assertNotIn("ConfirmModal", pushed)

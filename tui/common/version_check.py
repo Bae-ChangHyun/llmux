@@ -8,29 +8,58 @@ network, or any error leaves startup completely untouched.
 "Behind" is decided by commit ancestry, not version strings — the checkout is
 behind only when HEAD does not yet contain the latest release's commit. That
 stays correct even when local tags are stale (a `git pull`'d checkout often
-has the release commit without ever fetching the tag).
+has the release commit without ever fetching the tag). The one shortcut is the
+opposite direction: when the release tag already matches the checkout's
+`pyproject.toml` version there is nothing to be behind of, so the second API
+call is skipped.
 
-A 24h cache keeps this off the hot path: at most one network round-trip per
-day. The caller owns the TTY gate — this only runs for interactive sessions.
+The check runs on **every** interactive invocation — a release published an
+hour after the last run must be visible on the next one. Only a *failed*
+lookup backs off (`_FAILURE_COOLDOWN`), so an offline machine doesn't pay the
+network timeout on every command.
 """
 
 from __future__ import annotations
 
 import json
-import os
+import logging
+import re
 import shutil
 import subprocess
 import time
 import urllib.request
+from dataclasses import dataclass
 
 from tui.common.ssl_ctx import get_ssl_context
 
 from tui.common.profile_store import PROJECT_ROOT
 
+log = logging.getLogger(__name__)
+
 _CACHE_FILE = PROJECT_ROOT / ".runtime" / "version-check.json"
-_CACHE_TTL = 24 * 60 * 60  # seconds — one check per day
-_HTTP_TIMEOUT = 4  # seconds per GitHub API call
+_FAILURE_COOLDOWN = 15 * 60  # seconds — only a failed lookup backs off
+_HTTP_TIMEOUT = 3  # seconds per GitHub API call
 _USER_AGENT = "llmux-version-check"
+
+BEHIND = "behind"
+CURRENT = "current"
+UNKNOWN = "unknown"
+
+
+@dataclass
+class UpdateStatus:
+    """Outcome of one update check.
+
+    `state` is BEHIND / CURRENT / UNKNOWN; `detail` says why it is UNKNOWN so
+    `llmux update` can print a reason instead of shrugging.
+    """
+
+    state: str
+    tag: str = ""
+    url: str = ""
+    local_version: str = ""
+    detail: str = ""
+
 
 def _git(*args: str, timeout: int = 15) -> tuple[int, str]:
     """Run `git -C PROJECT_ROOT <args>`; return (returncode, stdout+stderr).
@@ -73,20 +102,43 @@ def _repo_slug() -> str | None:
     return None
 
 
-def _cache_is_fresh() -> bool:
+def _cooldown_active() -> bool:
+    """True while a recent lookup failure is still backing off."""
     try:
         data = json.loads(_CACHE_FILE.read_text())
-        return (time.time() - float(data.get("checked_at", 0))) < _CACHE_TTL
+        failed_at = float(data.get("failed_at", 0))
     except (OSError, ValueError, TypeError):
         return False
+    return (time.time() - failed_at) < _FAILURE_COOLDOWN
 
 
-def _write_cache() -> None:
+def _record_failure() -> None:
     try:
         _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _CACHE_FILE.write_text(json.dumps({"checked_at": time.time()}))
+        _CACHE_FILE.write_text(json.dumps({"failed_at": time.time()}))
     except OSError:
         pass
+
+
+def _clear_failure() -> None:
+    try:
+        _CACHE_FILE.unlink()
+    except OSError:
+        pass
+
+
+def _local_version() -> str:
+    """Version from the checkout's `pyproject.toml` ("" when unreadable).
+
+    Read with a regex rather than `tomllib`, which only exists on 3.11+ while
+    llmux supports 3.10.
+    """
+    try:
+        text = (PROJECT_ROOT / "pyproject.toml").read_text()
+    except OSError:
+        return ""
+    match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    return match.group(1) if match else ""
 
 
 def _api_get(url: str) -> dict | None:
@@ -97,7 +149,8 @@ def _api_get(url: str) -> dict | None:
         ) as resp:
             payload = json.loads(resp.read().decode("utf-8", errors="replace"))
         return payload if isinstance(payload, dict) else None
-    except Exception:  # noqa: BLE001 — offline / rate-limited / parse error
+    except Exception as exc:  # noqa: BLE001 — offline / rate-limited / parse error
+        log.debug("update check: %s failed (%s)", url, exc)
         return None
 
 
@@ -156,46 +209,114 @@ def _local_clean_main() -> bool:
     return rc == 0 and status.strip() == ""
 
 
-def check_for_update() -> None:
-    """Best-effort: notify (and on a clean `main`, optionally apply) a newer
-    llmux release. Honors the 24h cache, silent offline, never raises — except
-    SystemExit, raised deliberately after a successful update so the user
-    restarts on fresh code. The caller must only invoke this interactively.
+def resolve_status(*, respect_cooldown: bool = True) -> UpdateStatus:
+    """Ask GitHub whether this checkout is behind its latest release.
+
+    `respect_cooldown=False` forces the network call even right after a failed
+    one — that is what an explicit `llmux update` wants.
     """
-    try:
-        _check_impl()
-    except SystemExit:
-        raise
-    except Exception:  # noqa: BLE001 — a version check must never break startup
-        pass
+    local = _local_version()
+    if not _is_git_checkout():
+        return UpdateStatus(
+            UNKNOWN, local_version=local,
+            detail=f"{PROJECT_ROOT} is not a git checkout — update it the way you installed it",
+        )
+    if respect_cooldown and _cooldown_active():
+        return UpdateStatus(
+            UNKNOWN, local_version=local,
+            detail="a recent lookup failed; backing off before retrying",
+        )
 
-
-def _check_impl() -> None:
-    if not _is_git_checkout() or _cache_is_fresh():
-        return
     slug = _repo_slug()
     if slug is None:
-        return
+        return UpdateStatus(
+            UNKNOWN, local_version=local,
+            detail="`origin` is not a GitHub remote",
+        )
 
     latest = _latest_release(slug)
     if latest is None:
-        # First API call failed — almost certainly offline or rate-limited.
-        # Cache it so we don't retry the network on every command for a day.
-        _write_cache()
-        return
+        _record_failure()
+        return UpdateStatus(
+            UNKNOWN, local_version=local,
+            detail=f"could not reach the GitHub API for {slug} (offline or rate-limited)",
+        )
+    _clear_failure()
     tag, url = latest
+
+    if local and tag.lstrip("v") == local:
+        return UpdateStatus(CURRENT, tag=tag, url=url, local_version=local)
 
     release_sha = _release_commit(slug, tag)
     if release_sha is None:
-        # The releases API worked but resolving the tag's commit did not — a
-        # transient second-call failure. Skip the cache so the next run
-        # retries instead of staying silent for 24h.
-        return
-    _write_cache()
-    if _is_behind(release_sha) is not True:  # False or None → don't nag
-        return
+        return UpdateStatus(
+            UNKNOWN, tag=tag, url=url, local_version=local,
+            detail=f"could not resolve {tag} to a commit",
+        )
 
-    _prompt_and_update(tag, url)
+    behind = _is_behind(release_sha)
+    if behind is True:
+        return UpdateStatus(BEHIND, tag=tag, url=url, local_version=local)
+    if behind is False:
+        return UpdateStatus(CURRENT, tag=tag, url=url, local_version=local)
+    return UpdateStatus(
+        UNKNOWN, tag=tag, url=url, local_version=local,
+        detail="commit history is incomplete (shallow clone?) — cannot compare",
+    )
+
+
+def check_for_update() -> None:
+    """Best-effort startup check: notify (and on a clean `main`, optionally
+    apply) a newer llmux release. Silent when up to date or undecidable, never
+    raises — except SystemExit, raised deliberately after a successful update
+    so the user restarts on fresh code. The caller must only invoke this
+    interactively.
+    """
+    try:
+        status = resolve_status()
+        if status.state != BEHIND:
+            if status.detail:
+                log.debug("update check: %s", status.detail)
+            return
+        _prompt_and_update(status.tag, status.url)
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 — must never break startup
+        log.debug("update check failed: %s", exc)
+
+
+def apply_update(tag: str) -> tuple[bool, str]:
+    """`git pull --ff-only` + refresh the installed tool. (ok, message)."""
+    rc, out = _git("pull", "--ff-only")
+    if rc != 0:
+        return False, f"git pull failed — update manually.\n{out.strip()}"
+
+    # `llmux` is installed with `uv tool install --editable` (see install.sh);
+    # a bare `uv sync` would only update the project's .venv, not the `uv tool`
+    # environment that actually runs the command.
+    refresh_cmd = "uv tool install --editable . --force"
+    if not shutil.which("uv"):
+        return True, (
+            f"Updated to {tag}, but `uv` was not found — "
+            f"run `{refresh_cmd}` in {PROJECT_ROOT} manually."
+        )
+    try:
+        proc = subprocess.run(
+            ["uv", "tool", "install", "--editable", ".", "--force"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        refreshed = proc.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        refreshed = False
+    if not refreshed:
+        return True, (
+            f"Updated to {tag}, but the install could not be refreshed — "
+            f"run `{refresh_cmd}` in {PROJECT_ROOT} manually."
+        )
+    return True, f"Updated to {tag}. Restart llmux to use the new version."
 
 
 def _prompt_and_update(tag: str, url: str) -> None:
@@ -220,44 +341,20 @@ def _prompt_and_update(tag: str, url: str) -> None:
     except (KeyboardInterrupt, EOFError):
         return
 
-    rc, out = _git("pull", "--ff-only")
-    if rc != 0:
-        console.print(
-            "[red]  git pull failed — update manually.[/red]\n"
-            f"[dim]  {out.strip()}[/dim]"
-        )
+    ok, message = apply_update(tag)
+    if not ok:
+        console.print(f"[red]  {message}[/red]")
         return
-
-    # Refresh the installed tool environment, best-effort. `llmux` is installed
-    # with `uv tool install --editable` (see install.sh); a bare `uv sync`
-    # would only update the project's .venv, not the `uv tool` environment
-    # that actually runs the command — leaving stale deps after a pull.
-    refresh_cmd = "uv tool install --editable . --force"
-    if shutil.which("uv"):
-        refreshed = False
-        try:
-            proc = subprocess.run(
-                ["uv", "tool", "install", "--editable", ".", "--force"],
-                cwd=str(PROJECT_ROOT),
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
-            refreshed = proc.returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            refreshed = False
-        if not refreshed:
-            console.print(
-                f"[yellow]  ⚠ Could not refresh the install — run "
-                f"`{refresh_cmd}` in {PROJECT_ROOT} manually.[/yellow]"
-            )
-    else:
-        console.print(
-            f"[yellow]  ⚠ `uv` not found — run `{refresh_cmd}` manually.[/yellow]"
-        )
-
-    console.print(
-        f"[bold green]  ✓ Updated to {tag}.[/bold green] "
-        "Restart llmux to use the new version."
-    )
+    console.print(f"[bold green]  ✓ {message}[/bold green]")
     raise SystemExit(0)
+
+
+def update_blocked_reason() -> str:
+    """Why an automatic update is refused right now ("" when it can proceed)."""
+    if _local_clean_main():
+        return ""
+    rc, branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    current = branch.strip() if rc == 0 else "?"
+    if current != "main":
+        return f"checkout is on `{current}`, not `main`"
+    return "checkout has uncommitted changes to tracked files"

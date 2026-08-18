@@ -254,3 +254,85 @@ class PrepareCliWiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UpdateCommandTests(unittest.TestCase):
+    """`llmux update` answers on demand — no cache, no TTY requirement."""
+
+    def _invoke(self, status, **kwargs):
+        from typer.testing import CliRunner
+
+        from tui.cli import app
+        from tui.common import version_check as vc
+
+        args = ["update"] + kwargs.pop("args", [])
+        with patch.object(vc, "resolve_status", return_value=status) as resolve, \
+             patch.object(vc, "update_blocked_reason", return_value=kwargs.pop("blocked", "")), \
+             patch.object(vc, "apply_update", return_value=kwargs.pop("apply", (True, "Updated to v9.9.9."))) as apply_:
+            result = CliRunner().invoke(app, args)
+        return result, resolve, apply_
+
+    def test_up_to_date_exits_zero_without_touching_the_checkout(self) -> None:
+        from tui.common import version_check as vc
+
+        result, resolve, apply_ = self._invoke(
+            vc.UpdateStatus(vc.CURRENT, tag="v2.6.0", local_version="2.6.0")
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("up to date", result.output)
+        apply_.assert_not_called()
+        # The explicit command must never sit behind the failure back-off.
+        self.assertEqual(resolve.call_args.kwargs, {"respect_cooldown": False})
+
+    def test_check_only_reports_without_updating(self) -> None:
+        from tui.common import version_check as vc
+
+        result, _, apply_ = self._invoke(
+            vc.UpdateStatus(vc.BEHIND, tag="v9.9.9", url="u", local_version="2.6.0"),
+            args=["--check"],
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("v9.9.9", result.output)
+        apply_.assert_not_called()
+
+    def test_behind_with_yes_applies_the_update(self) -> None:
+        from tui.common import version_check as vc
+
+        result, _, apply_ = self._invoke(
+            vc.UpdateStatus(vc.BEHIND, tag="v9.9.9", url="u"), args=["--yes"]
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        apply_.assert_called_once_with("v9.9.9")
+
+    def test_dirty_checkout_refuses_and_exits_nonzero(self) -> None:
+        from tui.common import version_check as vc
+
+        result, _, apply_ = self._invoke(
+            vc.UpdateStatus(vc.BEHIND, tag="v9.9.9", url="u"),
+            args=["--yes"], blocked="checkout has uncommitted changes to tracked files",
+        )
+        self.assertEqual(result.exit_code, 1)
+        apply_.assert_not_called()
+
+    def test_failed_lookup_exits_nonzero(self) -> None:
+        from tui.common import version_check as vc
+
+        result, _, _ = self._invoke(
+            vc.UpdateStatus(vc.UNKNOWN, detail="offline"), args=["--check"]
+        )
+        self.assertEqual(result.exit_code, 1)
+
+    def test_json_reports_state(self) -> None:
+        import json
+
+        from tui.common import version_check as vc
+
+        result, _, _ = self._invoke(
+            vc.UpdateStatus(vc.BEHIND, tag="v9.9.9", url="u", local_version="2.6.0"),
+            args=["--check", "--json"],
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        data = json.loads(result.output)
+        self.assertEqual(data["state"], "behind")
+        self.assertEqual(data["latest_tag"], "v9.9.9")
+        self.assertEqual(data["local_version"], "2.6.0")
