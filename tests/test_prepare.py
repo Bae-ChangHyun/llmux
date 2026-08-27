@@ -62,19 +62,69 @@ class GgufCacheTests(unittest.TestCase):
                 prepare.gguf_in_cache(str(tmp), "o/r", "m.gguf"), expected
             )
 
+    def test_a_lone_first_shard_is_not_a_hit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            self._cache(tmp, filename="m-00001-of-00003.gguf")
+            self.assertIsNone(
+                prepare.gguf_in_cache(str(tmp), "o/r", "m-00001-of-00003.gguf")
+            )
+
+    def test_every_shard_present_is_a_hit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            first = self._cache(tmp, filename="m-00001-of-00003.gguf")
+            snap = first.parent
+            (snap / "m-00002-of-00003.gguf").write_text("gguf")
+            (snap / "m-00003-of-00003.gguf").write_text("gguf")
+            self.assertEqual(
+                prepare.gguf_in_cache(str(tmp), "o/r", "m-00001-of-00003.gguf"), first
+            )
+
     def test_missing_file_is_none(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             self.assertIsNone(
                 prepare.gguf_in_cache(tmpdir, "o/r", "m.gguf")
             )
 
-    def test_in_flight_download_is_detected(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            blobs = tmp / "hub" / "models--o--r" / "blobs"
-            blobs.mkdir(parents=True)
-            (blobs / "deadbeef.downloadInProgress").write_text("partial")
-            self.assertTrue(prepare._downloads_in_flight(str(tmp), "o/r"))
+
+class PrepareWorkersTests(unittest.TestCase):
+    def test_unset_leaves_the_library_default(self) -> None:
+        with patch.object(prepare, "_common", lambda: {}):
+            self.assertIsNone(prepare.prepare_max_workers())
+            self.assertEqual(prepare.workers_env(None), [])
+
+    def test_env_file_value_is_injected(self) -> None:
+        with patch.object(prepare, "_common", lambda: {"PREPARE_MAX_WORKERS": "2"}):
+            self.assertEqual(prepare.workers_env(None), ["-e", "LLMUX_PREPARE_WORKERS=2"])
+
+    def test_an_explicit_count_wins_over_the_env_file(self) -> None:
+        with patch.object(prepare, "_common", lambda: {"PREPARE_MAX_WORKERS": "2"}):
+            self.assertEqual(prepare.workers_env(8), ["-e", "LLMUX_PREPARE_WORKERS=8"])
+
+    def test_a_junk_value_is_rejected_loudly(self) -> None:
+        with patch.object(prepare, "_common", lambda: {"PREPARE_MAX_WORKERS": "many"}):
+            with self.assertRaises(ValueError):
+                prepare.prepare_max_workers()
+
+
+class GgufShardNameTests(unittest.TestCase):
+    def test_a_split_shard_expands_to_every_sibling(self) -> None:
+        self.assertEqual(
+            prepare.gguf_shard_names("UD-Q3_K_XL/m-00002-of-00003.gguf"),
+            [
+                "UD-Q3_K_XL/m-00001-of-00003.gguf",
+                "UD-Q3_K_XL/m-00002-of-00003.gguf",
+                "UD-Q3_K_XL/m-00003-of-00003.gguf",
+            ],
+        )
+
+    def test_an_unsplit_file_is_taken_as_is(self) -> None:
+        self.assertEqual(prepare.gguf_shard_names("m.gguf"), ["m.gguf"])
+
+
+async def _present(_image_ref: str) -> bool:
+    return True
 
 
 class LlamacppDownloadTests(unittest.IsolatedAsyncioTestCase):
@@ -91,61 +141,56 @@ class LlamacppDownloadTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(prepare, "_run", fail):
                 logs, rc = await _drain(
                     prepare.stream_llamacpp_download(
-                        image_ref="img", hf_repo="o/r", hf_file="m.gguf",
+                        hf_repo="o/r", hf_file="m.gguf",
                         cache_path=str(tmp), token="", container_name="c-prepare",
                     )
                 )
             self.assertEqual(rc, 0)
             self.assertTrue(any("m.gguf" in line for line in logs))
 
-    async def test_container_is_stopped_once_the_gguf_lands(self) -> None:
+    async def test_every_shard_is_requested_in_one_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
-            snap = tmp / "hub" / "models--o--r" / "snapshots" / "abc"
+            snap = tmp / "hub" / "models--o--r" / "snapshots" / "abc" / "UD-Q3"
             snap.mkdir(parents=True)
-            calls: list[tuple[str, ...]] = []
+            hf_file = "UD-Q3/m-00001-of-00002.gguf"
+            seen: list[list[str]] = []
 
             async def fake_run(*args, **kwargs):
-                calls.append(args)
-                if args[:2] == ("docker", "inspect") and "{{.State.Running}}" in args:
-                    return 0, "true\n"
-                if args[:2] == ("docker", "inspect"):
-                    return 0, "0\n"
-                return 0, "container-id\n"
+                return 0, ""
 
-            async def fake_stream(_args):
-                # llama-server's own output while it downloads.
-                yield ("log", "downloading m.gguf")
-                (snap / "m.gguf").write_text("gguf")
-                await asyncio.sleep(0)
+            async def fake_stream(args):
+                seen.append(args)
+                yield ("log", "Fetching 2 files")
+                (snap / "m-00001-of-00002.gguf").write_text("gguf")
+                (snap / "m-00002-of-00002.gguf").write_text("gguf")
                 yield ("rc", 0)
 
             with patch.object(prepare, "_run", fake_run), \
                  patch.object(prepare, "stream_lines", fake_stream), \
-                 patch.object(prepare, "_POLL_INTERVAL", 0.01):
+                 patch.object(prepare, "downloader_image", lambda: "downloader:img"), \
+                 patch.object(prepare, "image_present", _present):
                 logs, rc = await _drain(
                     prepare.stream_llamacpp_download(
-                        image_ref="img", hf_repo="o/r", hf_file="m.gguf",
+                        hf_repo="o/r", hf_file=hf_file,
                         cache_path=str(tmp), token="tok", container_name="c-prepare",
                     )
                 )
 
             self.assertEqual(rc, 0)
-            self.assertTrue(any("downloading m.gguf" in line for line in logs))
-            self.assertTrue(
-                any(a[:2] == ("docker", "stop") for a in calls),
-                "the throwaway container must be stopped, not left serving",
+            self.assertTrue(any("Fetching 2 files" in line for line in logs))
+            args = seen[0]
+            self.assertIn(
+                "LLMUX_PREPARE_ALLOW=UD-Q3/m-00001-of-00002.gguf,UD-Q3/m-00002-of-00002.gguf",
+                args,
             )
-            self.assertTrue(any(a[:3] == ("docker", "rm", "-f") for a in calls))
+            self.assertIn("downloader:img", args)
+            self.assertNotIn("-hf", args)
 
     async def test_exit_before_download_completes_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             async def fake_run(*args, **kwargs):
-                if args[:2] == ("docker", "inspect") and "{{.State.Running}}" in args:
-                    return 0, "false\n"
-                if args[:2] == ("docker", "inspect"):
-                    return 0, "1\n"
-                return 0, "container-id\n"
+                return 0, ""
 
             async def fake_stream(_args):
                 yield ("log", "error: 404 not found")
@@ -153,10 +198,11 @@ class LlamacppDownloadTests(unittest.IsolatedAsyncioTestCase):
 
             with patch.object(prepare, "_run", fake_run), \
                  patch.object(prepare, "stream_lines", fake_stream), \
-                 patch.object(prepare, "_POLL_INTERVAL", 0.01):
+                 patch.object(prepare, "downloader_image", lambda: "downloader:img"), \
+                 patch.object(prepare, "image_present", _present):
                 _, rc = await _drain(
                     prepare.stream_llamacpp_download(
-                        image_ref="img", hf_repo="o/r", hf_file="m.gguf",
+                        hf_repo="o/r", hf_file="m.gguf",
                         cache_path=tmpdir, token="", container_name="c-prepare",
                     )
                 )
