@@ -1019,10 +1019,10 @@ async def stream_container_prepare(profile_name: str):
         return
 
     hf_file = stored.hf_file or stored.model_file
+
     yield ("log", f"▸ {stored.hf_repo} / {hf_file} 다운로드 → {cache_path}")
     rc = -1
     async for event in prepare.stream_llamacpp_download(
-        image_ref=image_ref,
         hf_repo=stored.hf_repo,
         hf_file=hf_file,
         cache_path=cache_path,
