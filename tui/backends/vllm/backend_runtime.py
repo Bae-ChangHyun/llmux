@@ -1002,7 +1002,7 @@ async def _resolve_prepare_image(profile: Profile) -> tuple[str, str]:
     return f"vllm/vllm-openai:{release}", ""
 
 
-async def stream_container_prepare(profile_name: str):
+async def stream_container_prepare(profile_name: str, *, max_workers: int | None = None):
     """Render runtime files, make sure the image is local, download the model.
 
     Everything `up` does before `docker compose up`, plus the weight download —
@@ -1097,6 +1097,7 @@ async def stream_container_prepare(profile_name: str):
         cache_path=cache_path,
         token=prepare.hf_token(),
         container_name=prepare.prepare_container_name(profile.container_name),
+        max_workers=max_workers,
     ):
         if event[0] == "rc":
             rc = int(event[1])

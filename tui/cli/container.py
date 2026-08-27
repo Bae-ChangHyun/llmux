@@ -163,8 +163,8 @@ def prepare(
     ),
     max_workers: Optional[int] = typer.Option(
         None, "--max-workers", "-w", min=1,
-        help="llama.cpp only: parallel download connections (HF caps each at a few MB/s). "
-             "Empty = huggingface_hub default.",
+        help="Parallel download connections (HF caps each at a few MB/s). "
+             "Overrides PREPARE_MAX_WORKERS from .env.common.",
     ),
 ) -> None:
     """Download the model and render the runtime files — without starting it.
@@ -177,12 +177,9 @@ def prepare(
     """
     bk = detect_backend(profile, override=backend)
     if bk == "vllm":
-        if max_workers is not None:
-            print("✗ --max-workers 는 llama.cpp 백엔드 전용입니다.")
-            raise typer.Exit(code=2)
         from tui.backends.vllm.backend_runtime import stream_container_prepare
 
-        rc = stream_async(stream_container_prepare(profile))
+        rc = stream_async(stream_container_prepare(profile, max_workers=max_workers))
     else:
         from tui.backends.llamacpp.backend_runtime import stream_container_prepare
 

@@ -131,6 +131,7 @@ TUI의 모든 기능은 비대화형 서브커맨드로도 있습니다. 인자 
 ```bash
 llmux up <profile>                 # 컨테이너 시작
 llmux prepare <profile>            # 모델 다운로드 + 세팅만, 실행은 안 함
+llmux prepare <profile> -w 2       # 연결 2개로 천천히 (회선 양보)
 llmux update --check               # 새 llmux 릴리스가 있나?
 llmux logs <profile>               # 로그 follow
 llmux ps --json --running          # 기계가 읽는 상태, 양쪽 백엔드

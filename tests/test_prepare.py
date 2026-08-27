@@ -88,6 +88,26 @@ class GgufCacheTests(unittest.TestCase):
             )
 
 
+class PrepareWorkersTests(unittest.TestCase):
+    def test_unset_leaves_the_library_default(self) -> None:
+        with patch.object(prepare, "_common", lambda: {}):
+            self.assertIsNone(prepare.prepare_max_workers())
+            self.assertEqual(prepare.workers_env(None), [])
+
+    def test_env_file_value_is_injected(self) -> None:
+        with patch.object(prepare, "_common", lambda: {"PREPARE_MAX_WORKERS": "2"}):
+            self.assertEqual(prepare.workers_env(None), ["-e", "LLMUX_PREPARE_WORKERS=2"])
+
+    def test_an_explicit_count_wins_over_the_env_file(self) -> None:
+        with patch.object(prepare, "_common", lambda: {"PREPARE_MAX_WORKERS": "2"}):
+            self.assertEqual(prepare.workers_env(8), ["-e", "LLMUX_PREPARE_WORKERS=8"])
+
+    def test_a_junk_value_is_rejected_loudly(self) -> None:
+        with patch.object(prepare, "_common", lambda: {"PREPARE_MAX_WORKERS": "many"}):
+            with self.assertRaises(ValueError):
+                prepare.prepare_max_workers()
+
+
 class GgufShardNameTests(unittest.TestCase):
     def test_a_split_shard_expands_to_every_sibling(self) -> None:
         self.assertEqual(

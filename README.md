@@ -143,6 +143,7 @@ launches the TUI, any subcommand bypasses it:
 ```bash
 llmux up <profile>                 # start a container
 llmux prepare <profile>            # download the model + render setup, don't start
+llmux prepare <profile> -w 2       # throttle to 2 connections (leave the line alone)
 llmux update --check               # is a newer llmux release out?
 llmux logs <profile>               # follow logs
 llmux ps --json --running          # machine-readable status, both backends

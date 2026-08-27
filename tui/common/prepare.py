@@ -31,21 +31,28 @@ _PROGRESS_INTERVAL = 1.0
 # the HF-format weights next to it, so pulling both doubles the download.
 _VLLM_IGNORE_PATTERNS = ["original/**"]
 
+# HF caps a single connection at a few MB/s, so the worker count is really a
+# bandwidth dial — see PREPARE_MAX_WORKERS in .env.common.
+_WORKERS_SNIPPET = (
+    "workers=os.environ.get('LLMUX_PREPARE_WORKERS');"
+    "extra={'max_workers': int(workers)} if workers else {};"
+)
+
 _VLLM_DOWNLOAD_SNIPPET = (
     "import os;"
     "from huggingface_hub import snapshot_download;"
     "ignore=os.environ['LLMUX_PREPARE_IGNORE'].split(',');"
-    "print('skipping (vLLM does not load it):', ignore);"
+    + _WORKERS_SNIPPET +
+    "print('skipping (vLLM does not load it):', ignore, extra);"
     "print('snapshot:', snapshot_download("
-    "os.environ['LLMUX_PREPARE_MODEL'], ignore_patterns=ignore))"
+    "os.environ['LLMUX_PREPARE_MODEL'], ignore_patterns=ignore, **extra))"
 )
 
 _GGUF_DOWNLOAD_SNIPPET = (
     "import os;"
     "from huggingface_hub import snapshot_download;"
     "allow=os.environ['LLMUX_PREPARE_ALLOW'].split(',');"
-    "workers=os.environ.get('LLMUX_PREPARE_WORKERS');"
-    "extra={'max_workers': int(workers)} if workers else {};"
+    + _WORKERS_SNIPPET +
     "print('fetching:', allow, extra);"
     "print('snapshot:', snapshot_download("
     "os.environ['LLMUX_PREPARE_MODEL'], allow_patterns=allow, **extra))"
@@ -69,6 +76,26 @@ def gguf_shard_names(hf_file: str) -> list[str]:
     prefix = f"{directory}/" if directory else ""
     stem, total = match.group("stem"), int(match.group("total"))
     return [f"{prefix}{stem}-{i:05d}-of-{total:05d}.gguf" for i in range(1, total + 1)]
+
+
+def prepare_max_workers() -> int | None:
+    """Download connections from .env.common (None when unset)."""
+    raw = _common().get("PREPARE_MAX_WORKERS", "").strip()
+    if not raw:
+        return None
+    if not raw.isdigit() or int(raw) < 1:
+        raise ValueError(
+            f"PREPARE_MAX_WORKERS must be a positive integer, got {raw!r}"
+        )
+    return int(raw)
+
+
+def workers_env(max_workers: int | None) -> list[str]:
+    """`docker run` args pinning the worker count, empty when nothing is set."""
+    resolved = max_workers if max_workers is not None else prepare_max_workers()
+    if resolved is None:
+        return []
+    return ["-e", f"LLMUX_PREPARE_WORKERS={resolved}"]
 
 
 def downloader_image() -> str:
@@ -189,6 +216,7 @@ async def stream_vllm_download(
     cache_path: str,
     token: str,
     container_name: str,
+    max_workers: int | None = None,
 ):
     """Download a HF snapshot with the image's own huggingface_hub."""
     await _run("docker", "rm", "-f", container_name, timeout=30)
@@ -198,7 +226,7 @@ async def stream_vllm_download(
         "-v", f"{cache_path}:/root/.cache/huggingface",
         "-e", f"LLMUX_PREPARE_MODEL={model_id}",
         "-e", f"LLMUX_PREPARE_IGNORE={','.join(_VLLM_IGNORE_PATTERNS)}",
-    ]
+    ] + workers_env(max_workers)
     if token:
         args += ["-e", f"HF_TOKEN={token}", "-e", f"HUGGING_FACE_HUB_TOKEN={token}"]
     args += ["--entrypoint", "python3", image_ref, "-c", _VLLM_DOWNLOAD_SNIPPET]
@@ -286,8 +314,7 @@ async def stream_llamacpp_download(
         "-e", f"LLMUX_PREPARE_MODEL={hf_repo}",
         "-e", f"LLMUX_PREPARE_ALLOW={','.join(gguf_shard_names(hf_file))}",
     ]
-    if max_workers is not None:
-        args += ["-e", f"LLMUX_PREPARE_WORKERS={max_workers}"]
+    args += workers_env(max_workers)
     if token:
         args += ["-e", f"HF_TOKEN={token}", "-e", f"HUGGING_FACE_HUB_TOKEN={token}"]
     args += ["--entrypoint", "python3", image_ref, "-c", _GGUF_DOWNLOAD_SNIPPET]
