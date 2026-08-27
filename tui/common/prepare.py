@@ -44,9 +44,11 @@ _GGUF_DOWNLOAD_SNIPPET = (
     "import os;"
     "from huggingface_hub import snapshot_download;"
     "allow=os.environ['LLMUX_PREPARE_ALLOW'].split(',');"
-    "print('fetching:', allow);"
+    "workers=os.environ.get('LLMUX_PREPARE_WORKERS');"
+    "extra={'max_workers': int(workers)} if workers else {};"
+    "print('fetching:', allow, extra);"
     "print('snapshot:', snapshot_download("
-    "os.environ['LLMUX_PREPARE_MODEL'], allow_patterns=allow))"
+    "os.environ['LLMUX_PREPARE_MODEL'], allow_patterns=allow, **extra))"
 )
 
 _SPLIT_SHARD_RE = re.compile(
@@ -241,12 +243,14 @@ async def stream_llamacpp_download(
     cache_path: str,
     token: str,
     container_name: str,
+    max_workers: int | None = None,
 ):
     """Fetch a GGUF — every shard of a split one — into the host HF cache.
 
     The transfer runs in the PREPARE_DOWNLOADER_IMAGE container, not the
     llama.cpp server image: the weights are pulled by huggingface_hub and never
-    reach a GPU.
+    reach a GPU. HF caps a single connection at a few MB/s, so `max_workers` is
+    the knob for how much of the line the download is allowed to take.
     """
     cached = gguf_in_cache(cache_path, hf_repo, hf_file)
     if cached is not None:
@@ -282,6 +286,8 @@ async def stream_llamacpp_download(
         "-e", f"LLMUX_PREPARE_MODEL={hf_repo}",
         "-e", f"LLMUX_PREPARE_ALLOW={','.join(gguf_shard_names(hf_file))}",
     ]
+    if max_workers is not None:
+        args += ["-e", f"LLMUX_PREPARE_WORKERS={max_workers}"]
     if token:
         args += ["-e", f"HF_TOKEN={token}", "-e", f"HUGGING_FACE_HUB_TOKEN={token}"]
     args += ["--entrypoint", "python3", image_ref, "-c", _GGUF_DOWNLOAD_SNIPPET]
