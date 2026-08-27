@@ -49,17 +49,24 @@ _GGUF_DOWNLOAD_SNIPPET = (
     "os.environ['LLMUX_PREPARE_MODEL'], allow_patterns=allow))"
 )
 
-_SPLIT_SHARD_RE = re.compile(r"^(?P<stem>.+)-\d{5}-of-\d{5}\.gguf$")
+_SPLIT_SHARD_RE = re.compile(
+    r"^(?P<stem>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$"
+)
 
 
-def gguf_allow_patterns(hf_file: str) -> list[str]:
-    """Every shard of a split GGUF, or just the file when it is not split."""
+def gguf_shard_names(hf_file: str) -> list[str]:
+    """Every shard of a split GGUF, or just the file when it is not split.
+
+    Shards are far from equal — unsloth's first one can be 10MB against a 50GB
+    sibling — so a profile's `hf_file` is only ever the entry point.
+    """
     directory, _, name = hf_file.rpartition("/")
     match = _SPLIT_SHARD_RE.match(name)
     if match is None:
         return [hf_file]
     prefix = f"{directory}/" if directory else ""
-    return [f"{prefix}{match.group('stem')}-*-of-*.gguf"]
+    stem, total = match.group("stem"), int(match.group("total"))
+    return [f"{prefix}{stem}-{i:05d}-of-{total:05d}.gguf" for i in range(1, total + 1)]
 
 
 def downloader_image() -> str:
@@ -208,18 +215,22 @@ def _repo_cache_dir(cache_path: str, hf_repo: str) -> Path:
 
 
 def gguf_in_cache(cache_path: str, hf_repo: str, hf_file: str) -> Path | None:
-    """The cached GGUF for `hf_repo`/`hf_file`, or None.
+    """The cached entry point for `hf_repo`/`hf_file`, or None.
 
-    snapshot_download only links the snapshot entry once the blob is complete,
-    so a hit here means the file is whole.
+    Every shard has to be there, not just the one the profile names: a partial
+    set would otherwise read as a hit and skip the rest of the download.
+    snapshot_download links a snapshot entry only once its blob is complete, so
+    a full set of links means the model is whole.
     """
     repo_dir = _repo_cache_dir(cache_path, hf_repo)
     snapshots = repo_dir / "snapshots"
     if not snapshots.is_dir():
         return None
-    for match in sorted(snapshots.glob(f"*/{hf_file}")):
-        if match.exists():
-            return match
+    shards = gguf_shard_names(hf_file)
+    for snapshot in sorted(snapshots.iterdir()):
+        paths = [snapshot / shard for shard in shards]
+        if all(path.exists() for path in paths):
+            return paths[0]
     return None
 
 
@@ -269,7 +280,7 @@ async def stream_llamacpp_download(
         "--name", container_name,
         "-v", f"{cache_path}:/root/.cache/huggingface",
         "-e", f"LLMUX_PREPARE_MODEL={hf_repo}",
-        "-e", f"LLMUX_PREPARE_ALLOW={','.join(gguf_allow_patterns(hf_file))}",
+        "-e", f"LLMUX_PREPARE_ALLOW={','.join(gguf_shard_names(hf_file))}",
     ]
     if token:
         args += ["-e", f"HF_TOKEN={token}", "-e", f"HUGGING_FACE_HUB_TOKEN={token}"]

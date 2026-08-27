@@ -62,6 +62,25 @@ class GgufCacheTests(unittest.TestCase):
                 prepare.gguf_in_cache(str(tmp), "o/r", "m.gguf"), expected
             )
 
+    def test_a_lone_first_shard_is_not_a_hit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            self._cache(tmp, filename="m-00001-of-00003.gguf")
+            self.assertIsNone(
+                prepare.gguf_in_cache(str(tmp), "o/r", "m-00001-of-00003.gguf")
+            )
+
+    def test_every_shard_present_is_a_hit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            first = self._cache(tmp, filename="m-00001-of-00003.gguf")
+            snap = first.parent
+            (snap / "m-00002-of-00003.gguf").write_text("gguf")
+            (snap / "m-00003-of-00003.gguf").write_text("gguf")
+            self.assertEqual(
+                prepare.gguf_in_cache(str(tmp), "o/r", "m-00001-of-00003.gguf"), first
+            )
+
     def test_missing_file_is_none(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             self.assertIsNone(
@@ -69,15 +88,19 @@ class GgufCacheTests(unittest.TestCase):
             )
 
 
-class GgufAllowPatternTests(unittest.TestCase):
+class GgufShardNameTests(unittest.TestCase):
     def test_a_split_shard_expands_to_every_sibling(self) -> None:
         self.assertEqual(
-            prepare.gguf_allow_patterns("UD-Q3_K_XL/m-00001-of-00003.gguf"),
-            ["UD-Q3_K_XL/m-*-of-*.gguf"],
+            prepare.gguf_shard_names("UD-Q3_K_XL/m-00002-of-00003.gguf"),
+            [
+                "UD-Q3_K_XL/m-00001-of-00003.gguf",
+                "UD-Q3_K_XL/m-00002-of-00003.gguf",
+                "UD-Q3_K_XL/m-00003-of-00003.gguf",
+            ],
         )
 
     def test_an_unsplit_file_is_taken_as_is(self) -> None:
-        self.assertEqual(prepare.gguf_allow_patterns("m.gguf"), ["m.gguf"])
+        self.assertEqual(prepare.gguf_shard_names("m.gguf"), ["m.gguf"])
 
 
 async def _present(_image_ref: str) -> bool:
@@ -110,7 +133,7 @@ class LlamacppDownloadTests(unittest.IsolatedAsyncioTestCase):
             tmp = Path(tmpdir)
             snap = tmp / "hub" / "models--o--r" / "snapshots" / "abc" / "UD-Q3"
             snap.mkdir(parents=True)
-            hf_file = "UD-Q3/m-00001-of-00003.gguf"
+            hf_file = "UD-Q3/m-00001-of-00002.gguf"
             seen: list[list[str]] = []
 
             async def fake_run(*args, **kwargs):
@@ -118,8 +141,9 @@ class LlamacppDownloadTests(unittest.IsolatedAsyncioTestCase):
 
             async def fake_stream(args):
                 seen.append(args)
-                yield ("log", "Fetching 3 files")
-                (snap / "m-00001-of-00003.gguf").write_text("gguf")
+                yield ("log", "Fetching 2 files")
+                (snap / "m-00001-of-00002.gguf").write_text("gguf")
+                (snap / "m-00002-of-00002.gguf").write_text("gguf")
                 yield ("rc", 0)
 
             with patch.object(prepare, "_run", fake_run), \
@@ -134,9 +158,12 @@ class LlamacppDownloadTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertEqual(rc, 0)
-            self.assertTrue(any("Fetching 3 files" in line for line in logs))
+            self.assertTrue(any("Fetching 2 files" in line for line in logs))
             args = seen[0]
-            self.assertIn("LLMUX_PREPARE_ALLOW=UD-Q3/m-*-of-*.gguf", args)
+            self.assertIn(
+                "LLMUX_PREPARE_ALLOW=UD-Q3/m-00001-of-00002.gguf,UD-Q3/m-00002-of-00002.gguf",
+                args,
+            )
             self.assertIn("downloader:img", args)
             self.assertNotIn("-hf", args)
 
