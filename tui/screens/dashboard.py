@@ -29,7 +29,7 @@ from tui.common.http import list_served_models, run_bench
 from tui.common.i18n import t
 from tui.common.mem import estimate_model_memory
 from tui.common.metrics import ThroughputTracker, fetch_token_counters
-from tui.common.widgets import BackendPickerModal, ConfirmModal
+from tui.common.widgets import BackendPickerModal, ConfirmModal, TextPromptModal
 
 
 class DashboardScreen(Screen):
@@ -70,6 +70,7 @@ class DashboardScreen(Screen):
         self._refresh_timer = None
         self._tps: dict[str, str] = {}
         self._tps_tracker = ThroughputTracker()
+        self._preferred_profile_name: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -145,7 +146,13 @@ class DashboardScreen(Screen):
                 severity="error",
                 timeout=8,
             )
-            running = set()
+            self.query_one("#status-bar", Static).update(
+                t(
+                    " [red]Docker status unavailable[/] · showing last verified state",
+                    " [red]Docker 상태 확인 불가[/] · 마지막 확인 상태 표시 중",
+                )
+            )
+            return
 
         rows: list[DashboardRow] = []
         try:
@@ -223,9 +230,18 @@ class DashboardScreen(Screen):
                 key=key,
             )
 
-        if prev_key is not None:
+        preferred_key: str | None = None
+        if self._preferred_profile_name is not None:
+            for row in rows:
+                if row.profile_name == self._preferred_profile_name:
+                    preferred_key = f"{row.backend}:{row.profile_name}"
+                    break
+            self._preferred_profile_name = None
+
+        target_key = preferred_key or prev_key
+        if target_key is not None:
             for idx, r in enumerate(rows):
-                if f"{r.backend}:{r.profile_name}" == prev_key:
+                if f"{r.backend}:{r.profile_name}" == target_key:
                     try:
                         table.move_cursor(row=idx)
                     except Exception:
@@ -389,16 +405,28 @@ class DashboardScreen(Screen):
                 lines.append("")
             lines.append("[b]GPU conflict:[/b]")
             lines += [f"  • {m}" for m in gpu_msgs]
+        hard_conflict = bool(port_msgs or ext_msgs or probe_msgs)
         lines.append("")
-        lines.append("Proceed anyway?")
+        lines.append(
+            "Resolve the port check before starting."
+            if hard_conflict
+            else "Proceed despite the GPU overlap?"
+        )
         message = "\n".join(lines)
+
+        if hard_conflict:
+            self.app.push_screen(
+                ConfirmModal(message, confirm_label="Close", variant="error"),
+                lambda _confirmed: None,
+            )
+            return
 
         def after(proceed: bool) -> None:
             if proceed:
                 on_ok()
 
         self.app.push_screen(
-            ConfirmModal(message, confirm_label="Start anyway", variant="warning"),
+            ConfirmModal(message, confirm_label="Start with GPU overlap", variant="warning"),
             after,
         )
 
@@ -437,6 +465,10 @@ class DashboardScreen(Screen):
 
             p = vbackend.load_profile(name)
             self.app.push_screen(ProfileFormScreen(p), self._after_mutation)
+        elif action == "clone":
+            self._prompt_clone(name, "vllm")
+        elif action == "render_env":
+            self._render_profile_env(name, "vllm")
         elif action == "edit_config":
             from tui.backends.vllm.screens.config import ConfigFormScreen
 
@@ -553,10 +585,55 @@ class DashboardScreen(Screen):
             from tui.backends.llamacpp.screens.profile import ProfileFormScreen
 
             self.app.push_screen(ProfileFormScreen(profile), self._after_mutation)
+        elif action == "clone-profile":
+            self._prompt_clone(name, "llamacpp")
+        elif action == "render-env":
+            self._render_profile_env(name, "llamacpp")
         elif action == "delete-profile":
             from tui.backends.llamacpp.screens.profile import ProfileDeleteScreen
 
             self.app.push_screen(ProfileDeleteScreen(name), self._after_mutation)
+
+    def _prompt_clone(self, source: str, backend: str) -> None:
+        def after(destination: str | None) -> None:
+            if not destination:
+                return
+            try:
+                clone = profile_store.clone_profile(source, destination, backend)
+            except ValueError as exc:
+                self.notify(str(exc), severity="error", timeout=8)
+                return
+            self.notify(
+                t(
+                    f"Cloned {source} → {clone.name}. Change port/GPU before running both.",
+                    f"{source} → {clone.name} 복제됨. 둘 다 실행하기 전에 포트/GPU를 변경하세요.",
+                ),
+                timeout=8,
+            )
+            self._after_mutation(clone.name)
+
+        self.app.push_screen(
+            TextPromptModal(
+                t(f"Clone {source} as", f"{source} 복제 이름"),
+                placeholder="new-profile",
+            ),
+            after,
+        )
+
+    def _render_profile_env(self, name: str, backend: str) -> None:
+        profile = profile_store.load_profile(name, backend)
+        if profile is None:
+            self.notify(
+                t(f"Profile not found: {name}", f"프로필을 찾을 수 없습니다: {name}"),
+                severity="error",
+            )
+            return
+        try:
+            path = profile_store.render_env(profile)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.notify(str(exc), severity="error", timeout=8)
+            return
+        self.notify(t(f"Rendered {path}", f"렌더링 완료: {path}"), timeout=8)
 
     def _confirm_llamacpp_stop(self, name: str) -> None:
         def on_ok(ok: bool) -> None:
@@ -706,6 +783,8 @@ class DashboardScreen(Screen):
             severity="information" if ok else "error",
             timeout=15 if ok else 20,
         )
+        if ok:
+            self.app.exit()
 
     def action_stop_container(self) -> None:
         row = self._selected_row()
@@ -868,6 +947,8 @@ class DashboardScreen(Screen):
         )
 
     def _after_mutation(self, result: object = None) -> None:
+        if isinstance(result, str) and result:
+            self._preferred_profile_name = result
         self._reload()
 
     def _mem_area_visible(self) -> bool:

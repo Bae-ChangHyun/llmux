@@ -268,6 +268,26 @@ def _compose_env(profile: Profile) -> dict[str, str]:
     return env
 
 
+def _resolve_runtime_image(
+    profile: Profile, *, use_default_image: bool = False, tag: str = ""
+) -> str:
+    if use_default_image:
+        if COMMON_ENV.exists():
+            common_image = _parse_env_file(COMMON_ENV).get("LLAMACPP_IMAGE", "").strip()
+            if common_image:
+                return common_image
+        return LLAMACPP_OFFICIAL_IMAGE
+    if tag.strip():
+        return tag.strip()
+    if profile.image_tag.strip():
+        return profile.image_tag.strip()
+    if COMMON_ENV.exists():
+        common_image = _parse_env_file(COMMON_ENV).get("LLAMACPP_IMAGE", "").strip()
+        if common_image:
+            return common_image
+    return LLAMACPP_OFFICIAL_IMAGE
+
+
 def _compose_base_args(profile: Profile) -> list[str]:
     """docker compose base args. --env-file is only appended when the file
     actually exists — otherwise `docker compose` aborts up-front on a missing
@@ -703,6 +723,7 @@ async def stream_container_up(
     use_dev: bool = False,
     use_default_image: bool = False,
     tag: str = "",
+    pull: bool = False,
     repo_url: str = "",
     branch: str = "",
 ):
@@ -726,16 +747,23 @@ async def stream_container_up(
 
     Yields ("log", str) lines and a final ("rc", int).
     """
+    stored = profile_store.load_profile(profile_name, "llamacpp")
+    if stored is None:
+        yield ("log", f"✗ 프로필 없음: llamacpp/{profile_name} (profiles.yaml 확인)")
+        yield ("rc", 1)
+        return
+
+    if tag and not use_dev:
+        error = dev_build.image_tag_error(tag)
+        if error:
+            yield ("log", f"✗ 잘못된 이미지 reference: {error}")
+            yield ("rc", 1)
+            return
+
     ok, env_messages = validate_common_env(COMMON_ENV)
     for message in env_messages:
         yield ("log", message)
     if not ok:
-        yield ("rc", 1)
-        return
-
-    stored = profile_store.load_profile(profile_name, "llamacpp")
-    if stored is None:
-        yield ("log", f"✗ 프로필 없음: llamacpp/{profile_name} (profiles.yaml 확인)")
         yield ("rc", 1)
         return
 
@@ -755,7 +783,12 @@ async def stream_container_up(
     #
     # Must run BEFORE the image-override block: save_profile() persists
     # `stored`, and that block assigns a one-off tag onto it.
-    ok, cfg_messages = _ensure_profile_config(stored, profile)
+    try:
+        ok, cfg_messages = _ensure_profile_config(stored, profile)
+    except (OSError, RuntimeError, ValueError) as exc:
+        yield ("log", f"✗ config 저장 실패: {exc}")
+        yield ("rc", 1)
+        return
     for message in cfg_messages:
         yield ("log", message)
     if not ok:
@@ -765,13 +798,10 @@ async def stream_container_up(
     # Apply TUI-side image override (a Dev Build / Custom Tag / Default Image
     # selection trumps whatever's pinned on the profile). This is identical to
     # how the vllm screen passes use_dev/tag down to its stream_container_up.
-    resolved_image_tag = profile.image_tag
-    if use_default_image:
-        # Explicit "Default Image" — clear any pinned image_tag so neither
-        # LLAMACPP_IMAGE nor LLAMACPP_DEV_TAG is rendered into the per-profile
-        # .env and base compose uses its built-in default image.
-        resolved_image_tag = ""
-    elif use_dev:
+    resolved_image_tag = _resolve_runtime_image(
+        profile, use_default_image=use_default_image, tag=tag
+    )
+    if use_dev:
         # Resolve repo/branch defaults so callers can pass empty strings.
         default_repo, default_branch = get_dev_build_defaults()
         resolved_repo = (repo_url or default_repo).strip()
@@ -786,7 +816,12 @@ async def stream_container_up(
         # repo/branch labels on every image, so `<prefix>:master` from
         # ggml-org and `<prefix>:master` from a fork collide on tag name —
         # reusing blindly would silently start the wrong source.
-        exists = await dev_build.image_exists_locally(LLAMACPP_DEV_SPEC, dev_tag)
+        try:
+            exists = await dev_build.image_exists_locally(LLAMACPP_DEV_SPEC, dev_tag)
+        except RuntimeError as exc:
+            yield ("log", f"✗ Docker 이미지 확인 실패: {exc}")
+            yield ("rc", 1)
+            return
 
         if tag and not exists:
             # An explicit --tag names an image the user expects to already
@@ -809,12 +844,17 @@ async def stream_container_up(
         # from another repo/branch. Applying it to an explicit tag would rebuild
         # over the user's own image. vLLM guards this the same way
         # (`if not tag and not needs_build`).
-        matches = exists and (
-            bool(tag)
-            or await dev_build.image_matches(
-                LLAMACPP_DEV_SPEC, dev_tag, resolved_repo, resolved_branch
+        try:
+            matches = exists and (
+                bool(tag)
+                or await dev_build.image_matches(
+                    LLAMACPP_DEV_SPEC, dev_tag, resolved_repo, resolved_branch
+                )
             )
-        )
+        except RuntimeError as exc:
+            yield ("log", f"✗ Docker 이미지 metadata 확인 실패: {exc}")
+            yield ("rc", 1)
+            return
         if not exists:
             yield ("log", f"▸ Dev image {resolved_image_tag} not found — building from {resolved_repo}@{resolved_branch}")
         elif not matches:
@@ -827,8 +867,7 @@ async def stream_container_up(
                 if event[0] == "rc" and event[1] != 0:
                     return
     elif tag:
-        # Custom Tag: pass through as-is (e.g. `ghcr.io/foo/bar:v1`).
-        resolved_image_tag = tag
+        resolved_image_tag = tag.strip()
 
     # Apply the resolved tag to BOTH objects:
     #  - `stored` (StoredProfile) feeds profile_store.render_env() → the
@@ -855,7 +894,13 @@ async def stream_container_up(
         and resolved_image_tag.startswith(f"{LLAMACPP_DEV_SPEC.image_prefix}:")
     ):
         dev_tag = resolved_image_tag.split(":", 1)[1]
-        if not await dev_build.image_exists_locally(LLAMACPP_DEV_SPEC, dev_tag):
+        try:
+            exists = await dev_build.image_exists_locally(LLAMACPP_DEV_SPEC, dev_tag)
+        except RuntimeError as exc:
+            yield ("log", f"✗ Docker 이미지 확인 실패: {exc}")
+            yield ("rc", 1)
+            return
+        if not exists:
             yield ("log", f"✗ Dev image {resolved_image_tag} not found locally.")
             yield ("log", "  Build it first:")
             yield ("log", f"  uv run llmux image build-dev --backend llamacpp --tag {dev_tag}")
@@ -896,15 +941,12 @@ async def stream_container_up(
         # the default; a non-dev custom ref is used verbatim.
         env["LLAMACPP_IMAGE"] = resolved_image_tag
         env["LLAMACPP_DEV_TAG"] = ""
-    # `--pull never` because the image is either:
-    #   * a locally-built `llamacpp-dev:<tag>` (no remote to pull from), or
-    #   * an explicitly-versioned ghcr/registry image the user already pulled
-    #     via `llmux image pull` or a previous run.
-    # Letting docker compose's default `missing` policy fire would surface as
-    # a surprise "Pulling …" line that confuses users picking a known-local
-    # image; if the image really is gone, the clear "image not found" error
-    # is better than a silent re-download.
-    cmd = [*_compose_base_args(profile), "up", "-d", "--pull", "never"]
+    pull_policy = (
+        "never" if resolved_image_tag.startswith(f"{LLAMACPP_DEV_SPEC.image_prefix}:")
+        else "always" if pull
+        else "missing"
+    )
+    cmd = [*_compose_base_args(profile), "up", "-d", "--pull", pull_policy]
 
     async for event in _stream(cmd, env=env):
         if event[0] != "rc":
@@ -937,7 +979,7 @@ async def stream_container_up(
 
         yield ("log", f"✓ 프로필 '{profile_name}' 활성화됨")
         yield ("log", f"  Endpoint: http://localhost:{profile.port}/v1")
-        yield ("log", f"  Health:   curl http://localhost:{profile.port}/health")
+        yield ("log", f"  Ready:    curl http://localhost:{profile.port}/v1/models")
         yield ("rc", 0)
         return
 
@@ -948,6 +990,12 @@ async def stream_container_prepare(profile_name: str, *, max_workers: int | None
     Everything `up` does before `docker compose up`, plus the weight download —
     and nothing after it. Mirrors vllm.stream_container_prepare.
     """
+    stored = profile_store.load_profile(profile_name, "llamacpp")
+    if stored is None:
+        yield ("log", f"✗ 프로필 없음: llamacpp/{profile_name} (profiles.yaml 확인)")
+        yield ("rc", 1)
+        return
+
     ok, env_messages = validate_common_env(COMMON_ENV)
     for message in env_messages:
         yield ("log", message)
@@ -955,15 +1003,14 @@ async def stream_container_prepare(profile_name: str, *, max_workers: int | None
         yield ("rc", 1)
         return
 
-    stored = profile_store.load_profile(profile_name, "llamacpp")
-    if stored is None:
-        yield ("log", f"✗ 프로필 없음: llamacpp/{profile_name} (profiles.yaml 확인)")
-        yield ("rc", 1)
-        return
-
     profile = load_profile(profile_name)
 
-    ok, cfg_messages = _ensure_profile_config(stored, profile)
+    try:
+        ok, cfg_messages = _ensure_profile_config(stored, profile)
+    except (OSError, RuntimeError, ValueError) as exc:
+        yield ("log", f"✗ config 저장 실패: {exc}")
+        yield ("rc", 1)
+        return
     for message in cfg_messages:
         yield ("log", message)
     if not ok:
@@ -994,8 +1041,14 @@ async def stream_container_prepare(profile_name: str, *, max_workers: int | None
             yield ("log", f"⚠ {line[len('warning:'):].strip()}")
     yield ("log", f"▸ command 렌더: {_override_path(profile_name)}")
 
-    image_ref = profile.image_tag or LLAMACPP_OFFICIAL_IMAGE
-    if not await prepare.image_present(image_ref):
+    image_ref = _resolve_runtime_image(profile)
+    try:
+        present = await prepare.image_present(image_ref)
+    except RuntimeError as exc:
+        yield ("log", f"✗ Docker 이미지 확인 실패: {exc}")
+        yield ("rc", 1)
+        return
+    if not present:
         if image_ref.startswith(f"{LLAMACPP_DEV_SPEC.image_prefix}:"):
             dev_tag = image_ref.split(":", 1)[1]
             yield ("log", f"✗ Dev image {image_ref} 가 로컬에 없습니다.")
@@ -1053,6 +1106,15 @@ async def _container_exists(container_name: str) -> bool | None:
     return container_name in out.strip().splitlines()
 
 
+async def _remove_compose_network(project_name: str) -> tuple[int, str]:
+    rc, out = await _docker_run(
+        "docker", "network", "rm", f"{project_name}_default", timeout=10
+    )
+    if rc == 0 or "No such network" in out:
+        return 0, ""
+    return rc or 1, out.strip() or "docker network rm failed"
+
+
 async def container_down(profile_name: str) -> tuple[int, str]:
     """compose down (clean network teardown), falling back to docker rm -f for
     orphaned containers without an override file."""
@@ -1094,11 +1156,12 @@ async def container_down(profile_name: str) -> tuple[int, str]:
         )
         if rc_rm != 0:
             return rc_rm, out_rm.strip() or "✗ docker rm -f 실패"
-        # Errors ignored — the network may not exist, or may still hold an
-        # external container; neither is fatal for the stop itself.
-        await _docker_run(
-            "docker", "network", "rm", f"{profile.name}_default", timeout=10
-        )
+        network_rc, network_out = await _remove_compose_network(profile.name)
+        if network_rc != 0:
+            return network_rc, (
+                f"✗ '{profile_name}' 컨테이너는 중지됐지만 네트워크 정리 실패: "
+                f"{network_out}"
+            )
         detail = f" (compose down 실패: {compose_err})" if compose_err else ""
         return 0, f"✓ '{profile_name}' 중지 완료 (rm -f){detail}{render_warning}"
 

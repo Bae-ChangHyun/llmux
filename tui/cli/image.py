@@ -10,6 +10,7 @@ import typer
 from tui.backends.llamacpp.backend import LLAMACPP_OFFICIAL_REPO
 from tui.backends.vllm.backend_inspect import VLLM_OFFICIAL_REPO
 from tui.cli._runtime import emit_json, emit_table, run_async, stream_async
+from tui.common import system_operations
 
 app = typer.Typer(help="Docker image inventory + dev image build.", no_args_is_help=True)
 
@@ -17,9 +18,12 @@ app = typer.Typer(help="Docker image inventory + dev image build.", no_args_is_h
 @app.command("list")
 def list_images(
     repo: str = typer.Option(
-        "vllm/vllm-openai", "--repo", help="Image repo to list locally."
+        "", "--repo", help="Image repo override; empty = backend default."
     ),
-    dev: bool = typer.Option(False, "--dev", help="Also list local vllm-dev:* images."),
+    backend: str = typer.Option(
+        "vllm", "--backend", "-b", help="Backend whose images to list."
+    ),
+    dev: bool = typer.Option(False, "--dev", help="Also list local backend dev images."),
     remote: bool = typer.Option(
         False, "--remote",
         help="Query DockerHub for the latest stable + nightly tags (vllm/vllm-openai).",
@@ -29,25 +33,43 @@ def list_images(
     """List local (and optionally remote) docker images."""
     from tui.backends.vllm.backend_inspect import (
         get_dev_images,
-        get_docker_images,
+        get_docker_images as get_vllm_images,
         get_dockerhub_nightly_date,
         get_dockerhub_release_version,
     )
 
+    if backend not in _PULL_DEFAULTS:
+        raise typer.BadParameter(
+            f"unknown backend: {backend!r} (choose vllm or llamacpp)",
+            param_hint="--backend",
+        )
+    if remote and backend != "vllm":
+        raise typer.BadParameter(
+            "remote stable/nightly inventory is available only for the vLLM DockerHub repository",
+            param_hint="--remote",
+        )
+    repo = repo or _PULL_DEFAULTS[backend][0]
     rows: list[dict] = []
     failures: list[str] = []
 
     async def _collect():
-        for img in await get_docker_images(repo=repo):
+        if backend == "vllm":
+            local_images = await get_vllm_images(repo=repo)
+        else:
+            from tui.backends.llamacpp.backend import get_docker_images as get_llama_images
+
+            local_images = await get_llama_images(repo=repo)
+        for img in local_images:
             rows.append({"source": "local", **asdict(img)})
         if dev:
-            for img in await get_dev_images():
-                rows.append({"source": "local-dev", **asdict(img)})
-            # llama.cpp dev images live under a different prefix.
-            from tui.backends.llamacpp.backend_runtime import LLAMACPP_DEV_SPEC
-            from tui.common.dev_build import list_local_dev_images
+            if backend == "vllm":
+                dev_images = await get_dev_images()
+            else:
+                from tui.backends.llamacpp.backend_runtime import LLAMACPP_DEV_SPEC
+                from tui.common.dev_build import list_local_dev_images
 
-            for img in await list_local_dev_images(LLAMACPP_DEV_SPEC):
+                dev_images = await list_local_dev_images(LLAMACPP_DEV_SPEC)
+            for img in dev_images:
                 rows.append({"source": "local-dev", **asdict(img)})
         if remote:
             release = await get_dockerhub_release_version()
@@ -127,10 +149,10 @@ def pull_image(
             param_hint="TAG",
         )
 
-    import subprocess
-
     full = f"{repo}:{tag}"
-    rc = subprocess.run(["docker", "pull", full]).returncode
+    rc, lines = run_async(system_operations.pull_image(full))
+    for line in lines:
+        typer.echo(line)
     raise typer.Exit(code=rc)
 
 
@@ -149,13 +171,9 @@ def remove_image(
     ),
 ) -> None:
     """`docker rmi <ref>` — drop a local image without leaving the CLI."""
-    import subprocess
-
-    cmd = ["docker", "rmi"]
-    if force:
-        cmd.append("--force")
-    cmd.append(ref)
-    rc = subprocess.run(cmd).returncode
+    rc, output = run_async(system_operations.remove_image(ref, force=force))
+    if output:
+        typer.echo(output)
     raise typer.Exit(code=rc)
 
 

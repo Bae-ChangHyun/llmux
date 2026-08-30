@@ -31,6 +31,8 @@ from tui.backends.vllm.backend import (
     get_dockerhub_nightly_date,
 )
 from tui.common.i18n import t
+from tui.common.dev_build import image_tag_error
+from tui.backends.vllm.backend_inspect import resolve_vllm_image_ref
 
 
 VER_PINNED = "pinned_image"
@@ -384,7 +386,7 @@ class ContainerUpScreen(Screen):
 
     @on(Button.Pressed, "#start-btn")
     def _on_start(self) -> None:
-        self._do_start()
+        self.action_confirm_start()
 
     def action_confirm_start(self) -> None:
         """Enter: commit the highlighted version and start.
@@ -414,9 +416,17 @@ class ContainerUpScreen(Screen):
         pressed = radio_set.pressed_button
         if pressed is None:
             return
-        if pressed.id == VER_CUSTOM and not self.query_one("#custom-tag-input", Input).value.strip():
-            self.query_one("#custom-tag-input", Input).focus()
-            return
+        if pressed.id == VER_CUSTOM:
+            custom = self.query_one("#custom-tag-input", Input)
+            value = custom.value.strip()
+            if not value:
+                custom.focus()
+                return
+            error = image_tag_error(resolve_vllm_image_ref(value))
+            if error:
+                self.notify(error, severity="error", timeout=8)
+                custom.focus()
+                return
         if pressed.id == VER_DEV and not self.query_one("#dev-repo-input", Input).value.strip():
             self.query_one("#dev-repo-input", Input).focus()
             return

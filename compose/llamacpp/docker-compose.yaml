@@ -19,7 +19,7 @@ services:
     runtime: nvidia
     restart: unless-stopped
     ports:
-      - "${LLAMA_PORT:?LLAMA_PORT is required — the profile env was not rendered}:8080"
+      - "127.0.0.1:${LLAMA_PORT:?LLAMA_PORT is required — the profile env was not rendered}:8080"
     volumes:
       # vllm 과 동일 — HF cache 만 mount. llama-server 가 컨테이너 안에서 직접 받음.
       - ${HF_CACHE_PATH}:/root/.cache/huggingface

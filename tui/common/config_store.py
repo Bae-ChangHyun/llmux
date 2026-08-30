@@ -71,8 +71,29 @@ def rename_config(backend: str, old: str, new: str) -> list[str]:
     referencing = referencing_profiles(backend, old)
     src.rename(dst)
     updated: list[str] = []
-    for p in referencing:
-        p.config_name = new
-        profile_store.save_profile(p)
-        updated.append(p.name)
+    changed: list[profile_store.StoredProfile] = []
+    try:
+        for p in referencing:
+            p.config_name = new
+            profile_store.save_profile(p)
+            changed.append(p)
+            updated.append(p.name)
+    except (OSError, RuntimeError) as exc:
+        rollback_errors: list[str] = []
+        for p in reversed(changed):
+            p.config_name = old
+            try:
+                profile_store.save_profile(p)
+            except (OSError, RuntimeError) as rollback_exc:
+                rollback_errors.append(f"profile {p.name}: {rollback_exc}")
+        try:
+            dst.rename(src)
+        except OSError as rollback_exc:
+            rollback_errors.append(f"config file: {rollback_exc}")
+        if rollback_errors:
+            raise RuntimeError(
+                f"config rename failed ({exc}); rollback failed: "
+                + "; ".join(rollback_errors)
+            ) from exc
+        raise
     return updated

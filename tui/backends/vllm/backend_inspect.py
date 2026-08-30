@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
 import urllib.request
 
+from tui.common import profile_store
 from tui.common.docker import (  # noqa: F401 — re-exported for backward compat
     GpuInfo,
     format_gpu_bar,
@@ -28,6 +30,12 @@ logger = logging.getLogger(__name__)
 
 
 VLLM_OFFICIAL_REPO = "vllm/vllm-openai"
+
+
+def resolve_vllm_image_ref(image_tag: str) -> str:
+    if "/" in image_tag or ":" in image_tag:
+        return image_tag
+    return f"{VLLM_OFFICIAL_REPO}:{image_tag}"
 
 
 async def get_docker_images(repo: str = VLLM_OFFICIAL_REPO) -> list[DockerImage]:
@@ -290,17 +298,30 @@ async def extract_vllm_params(image_tag: str = "") -> set[str]:
     """Extract valid vllm serve parameters from a docker image."""
     import json
 
-    if not image_tag:
-        image_tag = await get_local_latest_tag()
-        if image_tag == "none":
-            return set()
+    if image_tag:
+        image_ref = resolve_vllm_image_ref(image_tag)
+    else:
+        image_ref = _configured_vllm_image()
+        if not image_ref:
+            local_tag = await get_local_latest_tag()
+            if local_tag == "none":
+                raise RuntimeError(
+                    "no vLLM image is configured or available locally for flag discovery"
+                )
+            image_ref = f"{VLLM_OFFICIAL_REPO}:{local_tag}"
 
-    cache_file = _VLLM_PARAMS_CACHE_DIR / f".vllm-params-{image_tag}.json"
-    if cache_file.exists():
+    from tui.common.docker import image_identity
+
+    identity = await image_identity(image_ref)
+    cache_file = None
+    if identity is not None:
+        cache_key = hashlib.sha256(f"{image_ref}@{identity}".encode()).hexdigest()[:16]
+        cache_file = _VLLM_PARAMS_CACHE_DIR / f".vllm-params-{cache_key}.json"
+    if cache_file is not None and cache_file.exists():
         try:
             return set(json.loads(cache_file.read_text()))
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            raise RuntimeError(f"invalid vLLM flag cache {cache_file}: {exc}") from exc
 
     rc, out = await run_command(
         "docker",
@@ -308,22 +329,36 @@ async def extract_vllm_params(image_tag: str = "") -> set[str]:
         "--rm",
         "--entrypoint",
         "python3",
-        _configured_vllm_image() or f"{VLLM_OFFICIAL_REPO}:{image_tag}",
+        image_ref,
         "-c",
         _EXTRACT_SCRIPT,
         timeout=30,
     )
     if rc != 0 or not out.strip():
-        return set()
+        raise RuntimeError(
+            f"could not inspect vLLM flags from {image_ref}: "
+            f"{out.strip() or 'docker run failed'}"
+        )
 
     for line in reversed(out.strip().splitlines()):
         line = line.strip()
         if line.startswith("["):
             try:
                 params = json.loads(line)
-                _VLLM_PARAMS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-                cache_file.write_text(json.dumps(params))
+                if identity is None:
+                    identity = await image_identity(image_ref)
+                    if identity is not None:
+                        cache_key = hashlib.sha256(
+                            f"{image_ref}@{identity}".encode()
+                        ).hexdigest()[:16]
+                        cache_file = (
+                            _VLLM_PARAMS_CACHE_DIR
+                            / f".vllm-params-{cache_key}.json"
+                        )
+                if cache_file is not None:
+                    _VLLM_PARAMS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                    profile_store._atomic_write(cache_file, json.dumps(params))
                 return set(params)
             except json.JSONDecodeError:
                 continue
-    return set()
+    raise RuntimeError(f"could not parse vLLM flags from {image_ref}")

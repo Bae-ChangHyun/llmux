@@ -182,6 +182,17 @@ async def gather_conflict_warnings(profile_name: str, backend: str) -> list[str]
     return warnings
 
 
+def partition_conflict_warnings(warnings: list[str]) -> tuple[list[str], list[str]]:
+    soft: list[str] = []
+    hard: list[str] = []
+    for warning in warnings:
+        if warning.startswith("GPU conflict:"):
+            soft.append(warning)
+        else:
+            hard.append(warning)
+    return hard, soft
+
+
 async def docker_logs_once(container_name: str, *, tail: int) -> int:
     """Print the last `tail` log lines for a container and exit (no follow).
 
@@ -189,11 +200,15 @@ async def docker_logs_once(container_name: str, *, tail: int) -> int:
     same async-subprocess wrapper the follow path uses, instead of a bare
     `subprocess.run` call.
     """
-    proc = await asyncio.create_subprocess_exec(
-        "docker", "logs", "--tail", str(tail), container_name,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "logs", "--tail", str(tail), container_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except FileNotFoundError:
+        print("Error: docker executable not found", file=sys.stderr)
+        return 127
     if proc.stdout is not None:
         while True:
             line = await proc.stdout.readline()
@@ -211,11 +226,15 @@ async def docker_logs_follow(container_name: str, *, tail: int) -> int:
     prints "Error: No such container" as a log line and the stream simply ends,
     so a hardcoded 0 would report success for a container that never existed.
     """
-    proc = await asyncio.create_subprocess_exec(
-        "docker", "logs", "-f", "--tail", str(tail), container_name,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "logs", "-f", "--tail", str(tail), container_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except FileNotFoundError:
+        print("Error: docker executable not found", file=sys.stderr)
+        return 127
     try:
         if proc.stdout is not None:
             while True:

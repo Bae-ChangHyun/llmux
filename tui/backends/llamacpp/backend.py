@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -232,16 +233,6 @@ def load_profile(name: str) -> Profile:
     stored = profile_store.load_profile(name, "llamacpp")
     if stored is None:
         return Profile(name=name)
-    try:
-        profile_store.render_env(stored)
-    except ValueError:
-        # A value the .env renderer refuses (quote/newline/control char, e.g.
-        # from a hand-edited profiles.yaml) must not take down every read path:
-        # this same load_profile backs `ps`, the dashboard scan, and the
-        # pre-flight of *other* profiles. Skip the .env refresh and let the
-        # profile load; stream_container_up re-renders and fails loudly for the
-        # one profile that is actually broken.
-        pass
     return _to_profile(stored)
 
 
@@ -324,8 +315,10 @@ def load_config(name: str) -> Config:
         return Config(name=name)
     text = path.read_text()
     raw = yaml.safe_load(text)
-    if not isinstance(raw, dict):
+    if raw is None:
         raw = {}
+    elif not isinstance(raw, dict):
+        raise ValueError(f"{path} must contain a YAML mapping, got {type(raw).__name__}")
     params = {str(k): v for k, v in raw.items()}
     # A disabled marker whose key is also active is ignored — active wins.
     disabled = {
@@ -338,7 +331,10 @@ def save_config(config: Config) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     existing = config.path.read_text() if config.path.exists() else None
     text = dump_active_config(existing, config.params)
-    config.path.write_text(text + render_disabled_markers(config.disabled_params))
+    profile_store._atomic_write(
+        config.path,
+        text + render_disabled_markers(config.disabled_params),
+    )
 
 
 def delete_config(name: str) -> None:
@@ -372,11 +368,24 @@ def format_config_param_value(value: Any) -> str:
     return str(value)
 
 
-async def extract_llama_server_flags() -> set[str]:
-    """llama-server --help 를 docker 로 실행해 --foo-bar 플래그들 파싱.
-    실패 시 빈 set 반환."""
-    env = _parse_env_file(ROOT / ".env.common")
-    image = env.get("LLAMACPP_IMAGE", "") or LLAMACPP_OFFICIAL_IMAGE
+async def extract_llama_server_flags(image_ref: str = "") -> set[str]:
+    if image_ref:
+        image = image_ref
+    else:
+        env = _parse_env_file(COMMON_ENV) if COMMON_ENV.exists() else {}
+        image = env.get("LLAMACPP_IMAGE", "") or LLAMACPP_OFFICIAL_IMAGE
+    from tui.common.docker import image_identity
+
+    identity = await image_identity(image)
+    cache_file = None
+    if identity is not None:
+        cache_key = hashlib.sha256(f"{image}@{identity}".encode()).hexdigest()[:16]
+        cache_file = CONFIG_DIR / f".llamacpp-params-{cache_key}.json"
+    if cache_file is not None and cache_file.exists():
+        try:
+            return set(json.loads(cache_file.read_text()))
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            raise RuntimeError(f"invalid llama.cpp flag cache {cache_file}: {exc}") from exc
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -387,22 +396,33 @@ async def extract_llama_server_flags() -> set[str]:
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
     except asyncio.TimeoutError:
-        # Don't leave the `docker run` orphaned when --help hangs — reap it like
-        # the other subprocess helpers do.
         if proc is not None:
             proc.kill()
             await proc.wait()
-        return set()
-    except FileNotFoundError:
-        return set()
+        raise RuntimeError(f"timed out inspecting llama.cpp flags from {image}")
+    except FileNotFoundError as exc:
+        raise RuntimeError("docker is not installed or not available in PATH") from exc
     if proc.returncode not in (0, 1):
-        return set()
+        raise RuntimeError(
+            f"could not inspect llama.cpp flags from {image}: docker exited "
+            f"with status {proc.returncode}"
+        )
     text = stdout.decode("utf-8", errors="replace")
     flags: set[str] = set()
     for match in re.finditer(r"--([a-zA-Z][a-zA-Z0-9-]+)", text):
         flag = match.group(1)
         if 2 <= len(flag) <= 40:
             flags.add(flag)
+    if not flags:
+        raise RuntimeError(f"could not parse llama.cpp flags from {image}")
+    if identity is None:
+        identity = await image_identity(image)
+        if identity is not None:
+            cache_key = hashlib.sha256(f"{image}@{identity}".encode()).hexdigest()[:16]
+            cache_file = CONFIG_DIR / f".llamacpp-params-{cache_key}.json"
+    if cache_file is not None:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        profile_store._atomic_write(cache_file, json.dumps(sorted(flags)))
     return flags
 
 
@@ -413,11 +433,15 @@ async def stream_logs(container_name: str, *, tail: int = 100):
     `tui.backends.vllm.backend_runtime.stream_container_logs` — both backends
     expose `(container_name, *, tail: int = 100)` so the CLI follow path can
     call either interchangeably."""
-    proc = await asyncio.create_subprocess_exec(
-        "docker", "logs", "-f", "--tail", str(tail), container_name,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "logs", "-f", "--tail", str(tail), container_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except FileNotFoundError:
+        yield "Error: docker executable not found"
+        return
     if proc.stdout is None:
         return
     try:

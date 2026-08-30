@@ -53,7 +53,7 @@
     <p><strong>Cause.</strong> This is almost always a model still downloading or loading. The health checks only pass once the server is actually serving:</p>
     <ul>
       <li>vLLM's healthcheck has a <strong>600s <code>start_period</code></strong>; llmux additionally waits for <code>/v1/models</code> to return a served model id.</li>
-      <li>llama.cpp's healthcheck has a <strong>300s <code>start_period</code></strong>; llmux waits for <code>/health</code> to respond.</li>
+      <li>llama.cpp's healthcheck has a <strong>300s <code>start_period</code></strong>; llmux additionally waits for <code>/v1/models</code> to return a served model id.</li>
     </ul>
     <p>A first start that downloads weights — a multi-GB HF repo, or a GGUF pulled by <code>llama-server</code> — can easily exceed those windows on a slow link.</p>
     <p><strong>Fix.</strong> Stream the logs and watch the download/load progress. Once the model finishes loading, the status flips to <code>healthy</code> on the next refresh. Subsequent starts reuse the cached files and come up fast.</p>
@@ -101,10 +101,8 @@
 
     <h2 id="env-common-not-found"><code>.env.common</code> not found</h2>
     <p><strong>Symptom.</strong> The start fails with <code>Error: .env.common not found</code> (vLLM) or <code>✗ .env.common 없음</code> (llama.cpp).</p>
-    <p><strong>Cause.</strong> <code>.env.common</code> holds shared host paths and tokens and is gitignored — it does not exist until you create it.</p>
-    <p><strong>Fix.</strong></p>
-    <pre data-lang="bash"><code>cp .env.common.example .env.common
-$EDITOR .env.common      # set HF_CACHE_PATH, MODEL_DIR, HF_TOKEN, ...</code></pre>
+    <p><strong>Cause.</strong> <code>.env.common</code> holds shared host paths and tokens and is gitignored. The first-run wizard may not have completed.</p>
+    <p><strong>Fix.</strong> Run <code>llmux</code> and complete the wizard. For a manual checkout, you can instead copy <code>.env.common.example</code> and edit it.</p>
     <p>Then run <code>llmux env-check</code> to confirm. Note that <code>HF_CACHE_PATH</code> <strong>must be an absolute path</strong> — a relative value is rejected. If the profile uses LoRA, <code>LORA_BASE_PATH</code> must also be set and absolute.</p>
 
     <h2 id="gated-model-download-fails-missing-hf-token">Gated model download fails (missing <code>HF_TOKEN</code>)</h2>
@@ -137,7 +135,7 @@ llmux image build-dev --backend llamacpp --branch master       # llama.cpp</code
     <p>Or choose <strong>Official Release</strong> in the dialog, which resolves Docker Hub's current stable version and pulls it by explicit tag.</p>
 
     <h2 id="no-gpu-nvidia-smi-unavailable">No GPU / <code>nvidia-smi</code> unavailable</h2>
-    <p><strong>Symptom.</strong> A dev build logs that it could not detect the GPU and falls back to a multi-arch build; or starting any profile fails because the GPU runtime is not visible.</p>
+    <p><strong>Symptom.</strong> A dev build stops because it could not detect the GPU, or starting any profile fails because the GPU runtime is not visible.</p>
     <p><strong>Cause.</strong> The host has no working <code>nvidia-smi</code>, or Docker's NVIDIA Container Toolkit is not set up.</p>
     <p><strong>Fix.</strong></p>
     <ul>

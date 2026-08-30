@@ -87,6 +87,11 @@ class QuickSetupScreen(ModalScreen[str]):
                 yield Label(t("HuggingFace Model (e.g., meta-llama/Llama-3-8B)", "HuggingFace 모델 (예: meta-llama/Llama-3-8B)"))
                 yield Input(placeholder="org/model-name", id="model-input")
                 yield Static("", id="mem-estimate")
+                yield Label(t("Profile Name", "프로필 이름"))
+                yield Input(
+                    placeholder=t("auto-derived from model", "모델에서 자동 생성"),
+                    id="name-input",
+                )
                 yield Label(t("Recipe source model (optional)", "레시피 출처 모델 (선택)"))
                 yield Input(
                     placeholder=t("blank = the model above", "비우면 위 모델 사용"),
@@ -281,12 +286,27 @@ class QuickSetupScreen(ModalScreen[str]):
         gpu_mem = self.query_one("#gpu-mem-input", Input).value.strip()
         lora = self.query_one("#lora-switch", Switch).value
 
+        requested_name = self.query_one("#name-input", Input).value.strip()
         name_part = model.rsplit("/", 1)[-1]
-        safe_name = re.sub(r"[^a-zA-Z0-9-]", "-", name_part).lower().strip("-")
+        safe_name = requested_name or re.sub(
+            r"[^a-zA-Z0-9-]", "-", name_part
+        ).lower().strip("-")
 
         if not safe_name:
             self.notify(t("Could not derive a valid name from model", "모델에서 유효한 이름을 만들 수 없습니다"),
                         severity="error")
+            return
+
+        from tui.backends.vllm.backend import validate_name
+
+        if not validate_name(safe_name):
+            self.notify(
+                t(
+                    "Profile name must use lowercase letters, digits, dashes, or underscores",
+                    "프로필 이름은 소문자·숫자·대시·언더스코어만 사용할 수 있습니다",
+                ),
+                severity="error",
+            )
             return
 
         try:
@@ -342,8 +362,6 @@ class QuickSetupScreen(ModalScreen[str]):
             extra_params=extra_params,
             disabled_params=dict(disabled_params or {}),
         )
-        save_config(config)
-
         profile = Profile(
             name=safe_name,
             container_name=safe_name,
@@ -354,7 +372,21 @@ class QuickSetupScreen(ModalScreen[str]):
             model_id=model,
             enable_lora="true" if lora else "false",
         )
-        save_profile(profile)
+        try:
+            save_config(config)
+            save_profile(profile)
+        except (OSError, RuntimeError, ValueError) as exc:
+            try:
+                config.path.unlink(missing_ok=True)
+            except OSError as rollback_exc:
+                self.notify(
+                    f"{exc}; config rollback failed: {rollback_exc}",
+                    severity="error",
+                    timeout=10,
+                )
+                return
+            self.notify(str(exc), severity="error", timeout=8)
+            return
 
         self.notify(
             t(

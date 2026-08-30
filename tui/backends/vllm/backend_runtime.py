@@ -20,7 +20,11 @@ from .backend_common import (
     ContainerStatus,
     Profile,
 )
-from .backend_inspect import get_dockerhub_release_version, get_local_latest_tag
+from .backend_inspect import (
+    get_dockerhub_release_version,
+    get_local_latest_tag,
+    resolve_vllm_image_ref,
+)
 from .backend_process import run_command, run_command_with_options, stream_command
 from .backend_storage import (
     _parse_env_file,
@@ -116,11 +120,12 @@ def _ensure_profile_config(profile: Profile) -> tuple[bool, list[str]]:
         messages.append(f"Created default config: config/{profile.config_name}.yaml")
         return True, messages
 
-    config.path.write_text(
+    profile_store._atomic_write(
+        config.path,
         f"# Auto-generated default config for profile: {profile.name}\n"
         "# Set a valid Hugging Face model ID below, then start again.\n"
         "model: your-org/your-model\n"
-        "gpu-memory-utilization: 0.9\n"
+        "gpu-memory-utilization: 0.9\n",
     )
     messages.extend(
         [
@@ -201,6 +206,15 @@ async def _container_exists(container_name: str) -> bool | None:
     if rc != 0:
         return None
     return container_name in out.strip().splitlines()
+
+
+async def _remove_compose_network(project_name: str) -> tuple[int, str]:
+    rc, out = await run_command(
+        "docker", "network", "rm", f"{project_name}_default", timeout=10
+    )
+    if rc == 0 or "No such network" in out:
+        return 0, ""
+    return rc or 1, out.strip() or "docker network rm failed"
 
 
 async def _gpu_conflict_messages(profile: Profile) -> list[str]:
@@ -714,6 +728,13 @@ async def stream_container_up(
         yield ("rc", 1)
         return
 
+    if tag and not use_dev:
+        error = dev_build.image_tag_error(resolve_vllm_image_ref(tag))
+        if error:
+            yield ("log", f"Error: invalid image reference: {error}")
+            yield ("rc", 1)
+            return
+
     profile = load_profile(profile_name)
 
     conflict = await check_port_conflict(profile)
@@ -731,10 +752,7 @@ async def stream_container_up(
 
     try:
         ok, messages = _ensure_profile_config(profile)
-    except ValueError as exc:
-        # _ensure_profile_config persists the profile (save_profile), which
-        # rejects env_vars with forbidden characters — surface that through the
-        # log/rc contract instead of a raw traceback.
+    except (OSError, RuntimeError, ValueError) as exc:
         yield ("log", f"Error: cannot save {profile_name} — {exc}")
         yield ("rc", 1)
         return
@@ -744,14 +762,11 @@ async def stream_container_up(
         yield ("rc", 1)
         return
 
-    # load_profile() swallows a render failure so one bad profile can't break
-    # every read path — so re-render here, where it *is* this profile's start,
-    # and fail loudly with the offending key/character. Mirrors llamacpp.
     stored = profile_store.load_profile(profile_name, "vllm")
     if stored is not None:
         try:
             profile_store.render_env(stored)
-        except ValueError as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             yield ("log", f"Error: cannot render {profile_name}.env — {exc}")
             yield ("log", "  Fix the value in profiles.yaml (e.g. `llmux profile edit "
                           f"{profile_name} --unset <KEY>`).")
@@ -794,13 +809,17 @@ async def stream_container_up(
         # image `vllm-dev:<safe_branch>`, so a raw `feat/foo` here would look
         # up an invalid reference that can never match.
         image_tag = dev_build.sanitize_docker_tag(tag or resolved_branch)
-        rc, _ = await run_command(
-            "docker", "image", "inspect",
-            f"{VLLM_DEV_SPEC.image_prefix}:{image_tag}", timeout=20,
-        )
-        needs_build = rc != 0
-        if not tag and not needs_build:
-            needs_build = not await _dev_image_matches(image_tag, resolved_repo_url, resolved_branch)
+        try:
+            exists = await dev_build.image_exists_locally(VLLM_DEV_SPEC, image_tag)
+            needs_build = not exists
+            if not tag and exists:
+                needs_build = not await _dev_image_matches(
+                    image_tag, resolved_repo_url, resolved_branch
+                )
+        except RuntimeError as exc:
+            yield ("log", f"Error: Docker image probe failed — {exc}")
+            yield ("rc", 1)
+            return
 
         if needs_build:
             if tag:
@@ -815,7 +834,7 @@ async def stream_container_up(
                         yield ("log", line)
                 yield ("rc", 1)
                 return
-            if rc == 0:
+            if exists:
                 yield (
                     "log",
                     "Existing dev image metadata does not match the requested repository/branch. Rebuilding...",
@@ -849,14 +868,20 @@ async def stream_container_up(
         # Tag) take precedence and are handled above; absent those, honor the
         # profile's image_tag over the version-tag default. version_tag stays
         # empty so the shared block below skips version verification.
-        version_tag = ""
+        version_tag = profile.image_tag.rsplit(":", 1)[-1]
         # Mirror llama.cpp: a pinned dev image (vllm-dev:<tag>) that hasn't been
         # built yet would fail compose with an opaque "image not found" error.
         # Pre-check it exists locally and point the user at build-dev. (Non-dev
         # references are pulled/verified by compose itself.)
         if profile.image_tag.startswith(f"{VLLM_DEV_SPEC.image_prefix}:"):
             dev_tag = profile.image_tag.split(":", 1)[1]
-            if not await dev_build.image_exists_locally(VLLM_DEV_SPEC, dev_tag):
+            try:
+                exists = await dev_build.image_exists_locally(VLLM_DEV_SPEC, dev_tag)
+            except RuntimeError as exc:
+                yield ("log", f"Error: Docker image probe failed — {exc}")
+                yield ("rc", 1)
+                return
+            if not exists:
                 yield ("log", f"Error: Dev image {profile.image_tag} not found locally.")
                 yield ("log", "  Build it first:")
                 yield ("log", f"  uv run llmux image build-dev --backend vllm --tag {dev_tag}")
@@ -864,6 +889,11 @@ async def stream_container_up(
                 return
         yield ("log", f"Using image: {profile.image_tag}")
         env = _compose_env(profile, use_dev=False, vllm_image=profile.image_tag)
+        pull_policy = (
+            "never" if profile.image_tag.startswith(f"{VLLM_DEV_SPEC.image_prefix}:")
+            else "always" if pull
+            else "missing"
+        )
         compose_cmd = [
             "docker",
             "compose",
@@ -873,16 +903,18 @@ async def stream_container_up(
             profile.name,
             "up",
             "-d",
-            # Pinned image_tag implies the user already has the image
-            # locally — `--pull never` blocks a surprise re-pull from
-            # docker compose's default `missing` policy if the local
-            # image somehow drops out of `docker images`.
             "--pull",
-            "never",
+            pull_policy,
         ]
     else:
+        resolved_remote_release = False
+        explicit_image_ref = ""
         if tag:
-            version_tag = tag
+            if resolve_vllm_image_ref(tag) == tag:
+                explicit_image_ref = tag
+                version_tag = tag.rsplit(":", 1)[-1]
+            else:
+                version_tag = tag
         else:
             try:
                 version_tag = await get_local_latest_tag()
@@ -904,29 +936,27 @@ async def stream_container_up(
             yield ("rc", 1)
             return
         if version_tag == "none":
-            yield (
-                "log",
-                "Error: no versioned vllm/vllm-openai image found locally. "
-                "llmux refuses to start from `:latest` aliases because they don't "
-                "describe their actual contents.",
-            )
             release_version = await get_dockerhub_release_version()
-            if release_version != "unknown":
+            if release_version == "unknown":
                 yield (
                     "log",
-                    f"Pull a specific version first, e.g.: docker pull vllm/vllm-openai:{release_version}",
+                    "Error: no local versioned vllm/vllm-openai image and DockerHub "
+                    "is unreachable. Pull a specific version first: "
+                    "docker pull vllm/vllm-openai:<version>",
                 )
-            else:
-                yield (
-                    "log",
-                    "Pull a specific version first (docker pull vllm/vllm-openai:<version>), "
-                    "or choose Official Release in the UI.",
-                )
-            yield ("rc", 1)
-            return
+                yield ("rc", 1)
+                return
+            version_tag = release_version
+            resolved_remote_release = True
 
-        yield ("log", f"Using image: vllm/vllm-openai:{version_tag}")
-        env = _compose_env(profile, use_dev=False, version_tag=version_tag)
+        image_ref = explicit_image_ref or f"vllm/vllm-openai:{version_tag}"
+        yield ("log", f"Using image: {image_ref}")
+        if explicit_image_ref:
+            env = _compose_env(
+                profile, use_dev=False, vllm_image=explicit_image_ref
+            )
+        else:
+            env = _compose_env(profile, use_dev=False, version_tag=version_tag)
         compose_cmd = [
             "docker",
             "compose",
@@ -939,7 +969,7 @@ async def stream_container_up(
         ]
         if pull or version_tag == "nightly":
             compose_cmd.extend(["--pull", "always"])
-        elif tag:
+        elif tag or resolved_remote_release:
             compose_cmd.extend(["--pull", "missing"])
         else:
             compose_cmd.extend(["--pull", "never"])
@@ -1025,7 +1055,7 @@ async def stream_container_prepare(profile_name: str, *, max_workers: int | None
 
     try:
         ok, messages = _ensure_profile_config(profile)
-    except ValueError as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         yield ("log", f"Error: cannot save {profile_name} — {exc}")
         yield ("rc", 1)
         return
@@ -1039,7 +1069,7 @@ async def stream_container_prepare(profile_name: str, *, max_workers: int | None
     if stored is not None:
         try:
             path = profile_store.render_env(stored)
-        except ValueError as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             yield ("log", f"Error: cannot render {profile_name}.env — {exc}")
             yield ("rc", 1)
             return
@@ -1058,7 +1088,13 @@ async def stream_container_prepare(profile_name: str, *, max_workers: int | None
         yield ("rc", 1)
         return
 
-    if not await prepare.image_present(image_ref):
+    try:
+        present = await prepare.image_present(image_ref)
+    except RuntimeError as exc:
+        yield ("log", f"Error: Docker image probe failed — {exc}")
+        yield ("rc", 1)
+        return
+    if not present:
         if image_ref.startswith(f"{VLLM_DEV_SPEC.image_prefix}:"):
             dev_tag = image_ref.split(":", 1)[1]
             yield ("log", f"Error: Dev image {image_ref} not found locally.")
@@ -1163,6 +1199,9 @@ async def _verify_vllm_version(container_name: str, expected_tag: str):
 
 
 async def container_down(profile_name: str) -> tuple[int, str]:
+    stored = profile_store.load_profile(profile_name, "vllm")
+    if stored is None:
+        return 1, f"profile not found: vllm/{profile_name}"
     profile = load_profile(profile_name)
     exists = await _container_exists(profile.container_name)
     if exists is None:
@@ -1213,9 +1252,12 @@ async def container_down(profile_name: str) -> tuple[int, str]:
     rm_rc, rm_out = await run_command("docker", "rm", profile.container_name, timeout=30)
     if rm_rc != 0:
         return rm_rc, rm_out
-    # Errors ignored — the network may not exist, or may still hold an external
-    # container; neither is fatal for the stop itself.
-    await run_command("docker", "network", "rm", f"{profile.name}_default", timeout=10)
+    network_rc, network_out = await _remove_compose_network(profile.name)
+    if network_rc != 0:
+        return network_rc, (
+            f"{profile_name} container stopped, but network cleanup failed: "
+            f"{network_out}"
+        )
     return 0, (
         f"{profile_name} stopped via docker stop/rm "
         f"(compose down failed: {compose_err})"
@@ -1228,16 +1270,20 @@ async def stream_container_logs(container_name: str, *, tail: int = 100):
     `tail` controls how many recent lines `docker logs` prints before it
     starts following live output.
     """
-    proc = await asyncio.create_subprocess_exec(
-        "docker",
-        "logs",
-        "-f",
-        "--tail",
-        str(tail),
-        container_name,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "logs",
+            "-f",
+            "--tail",
+            str(tail),
+            container_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except FileNotFoundError:
+        yield "Error: docker executable not found"
+        return
     try:
         while True:
             line = await proc.stdout.readline()

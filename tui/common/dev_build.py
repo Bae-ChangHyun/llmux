@@ -26,6 +26,18 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+
+
+def sanitize_repo_url(repo_url: str) -> str:
+    parsed = urlsplit(repo_url)
+    if not parsed.scheme or parsed.hostname is None:
+        return repo_url
+    hostname = parsed.hostname
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    netloc = f"{hostname}:{parsed.port}" if parsed.port is not None else hostname
+    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
 
 
 @dataclass(frozen=True)
@@ -204,14 +216,17 @@ async def clone_or_update(spec: DevBuildSpec, repo_url: str, branch: str):
             return
         if current.strip() != repo_url:
             yield ("log", f"Error: existing {spec.src_dir.name} remote URL differs from the requested repository.")
-            yield ("log", f"Existing: {current.strip()}")
-            yield ("log", f"Requested: {repo_url}")
+            yield ("log", f"Existing: {sanitize_repo_url(current.strip())}")
+            yield ("log", f"Requested: {sanitize_repo_url(repo_url)}")
             yield ("log", f"Move or delete {spec.src_dir.name} yourself if you want to replace the checkout.")
             yield ("rc", 1)
             return
 
     if not spec.src_dir.exists():
         async for event in _stream(["git", "clone", repo_url, str(spec.src_dir)]):
+            if event[0] == "log":
+                yield ("log", str(event[1]).replace(repo_url, sanitize_repo_url(repo_url)))
+                continue
             if event[0] == "rc":
                 if event[1] != 0:
                     yield event
@@ -273,6 +288,7 @@ async def stream_build(
     `--build-arg torch_cuda_arch_list=...`.
     """
     resolved_repo = repo_url or spec.default_repo_url
+    metadata_repo = sanitize_repo_url(resolved_repo)
     resolved_branch = branch or spec.default_branch
     # docker tags reject `/` and a few other characters; branch names like
     # `releases/v0.21.0` are common so sanitize for the tag while keeping
@@ -289,7 +305,7 @@ async def stream_build(
     )
 
     yield ("log", f"Building {spec.backend} from source")
-    yield ("log", f"Repository: {resolved_repo}")
+    yield ("log", f"Repository: {metadata_repo}")
     yield ("log", f"Branch: {resolved_branch}")
     for extra in extra_log_lines:
         yield ("log", extra)
@@ -330,7 +346,7 @@ async def stream_build(
     for arg_k, arg_v in extra_build_args:
         cmd.extend(["--build-arg", f"{arg_k}={arg_v}"])
     cmd.extend([
-        "--label", f"{label_prefix}.repo.url={resolved_repo}",
+        "--label", f"{label_prefix}.repo.url={metadata_repo}",
         "--label", f"{label_prefix}.repo.branch={resolved_branch}",
         "--label", f"{label_prefix}.commit.hash={commit_hash}",
         "--label", f"{label_prefix}.build.date={build_date}",
@@ -390,7 +406,10 @@ async def get_image_label(image_ref: str, label: str) -> str:
         timeout=20,
     )
     if rc != 0:
-        return ""
+        lowered = out.lower()
+        if "no such image" in lowered or "no such object" in lowered:
+            return ""
+        raise RuntimeError(out.strip() or f"docker image inspect {image_ref} failed")
     value = out.strip()
     return "" if value == "<no value>" else value
 
@@ -405,7 +424,7 @@ async def image_matches(
     saved_branch = await get_image_label(image_ref, f"{label_prefix}.repo.branch")
     if not saved_repo or not saved_branch:
         return False
-    return saved_repo == repo_url and saved_branch == branch
+    return saved_repo == sanitize_repo_url(repo_url) and saved_branch == branch
 
 
 @dataclass
@@ -438,7 +457,13 @@ async def list_local_dev_images(spec: DevBuildSpec) -> list[DevImage]:
 
 
 async def image_exists_locally(spec: DevBuildSpec, image_tag: str) -> bool:
-    rc, _ = await _run(
-        "docker", "image", "inspect", f"{spec.image_prefix}:{image_tag}", timeout=20
+    image_ref = f"{spec.image_prefix}:{image_tag}"
+    rc, out = await _run(
+        "docker", "image", "inspect", image_ref, timeout=20
     )
-    return rc == 0
+    if rc == 0:
+        return True
+    lowered = out.lower()
+    if "no such image" in lowered or "no such object" in lowered:
+        return False
+    raise RuntimeError(out.strip() or f"docker image inspect {image_ref} failed")

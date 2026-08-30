@@ -24,6 +24,7 @@ HANDOFF.md
 
 # vLLM param cache (auto-populated from image introspection)
 config/vllm/.vllm-params-*.json
+config/llamacpp/.llamacpp-params-*.json
 
 # User configs (템플릿 example.* 만 트래킹. 프로필은 profiles.yaml 참고)
 config/vllm/*.yaml

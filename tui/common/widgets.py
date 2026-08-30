@@ -6,7 +6,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, OptionList, Static
+from textual.widgets import Button, Input, Label, OptionList, Static, Switch
 from textual.widgets.option_list import Option
 
 from tui.common.i18n import t
@@ -175,6 +175,78 @@ class TextPromptModal(ModalScreen[str | None]):
     def _submit(self) -> None:
         value = self.query_one("#prompt-input", Input).value.strip()
         self.dismiss(value or None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class DevBuildPromptModal(ModalScreen[dict[str, object] | None]):
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    DEFAULT_CSS = """
+    DevBuildPromptModal > Vertical {
+        width: 66;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: round $primary;
+    }
+    DevBuildPromptModal Label { margin-top: 1; color: $text-muted; }
+    DevBuildPromptModal .switch-row { height: 3; }
+    """
+
+    def __init__(self, backend: str, repo_url: str, branch: str) -> None:
+        super().__init__()
+        self._backend = backend
+        self._repo_url = repo_url
+        self._branch = branch
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(t("Build Development Image", "개발 이미지 빌드"), id="prompt-message")
+            yield Label(t("Repository URL", "저장소 URL"))
+            yield Input(value=self._repo_url, id="build-repo-input")
+            yield Label(t("Branch", "브랜치"))
+            yield Input(value=self._branch, id="build-branch-input")
+            yield Label(t("Output tag (optional)", "출력 태그 (선택)"))
+            yield Input(id="build-tag-input")
+            if self._backend == "vllm":
+                with Horizontal(classes="switch-row"):
+                    yield Label(t("Use upstream Dockerfile defaults", "upstream Dockerfile 기본값 사용"))
+                    yield Switch(id="build-official-switch")
+            else:
+                yield Label(t("CUDA architectures (optional, e.g. 89 or 86;89)", "CUDA architecture (선택, 예: 89 또는 86;89)"))
+                yield Input(id="build-cuda-input")
+                with Horizontal(classes="switch-row"):
+                    yield Label(t("Build for all architectures", "모든 architecture용 빌드"))
+                    yield Switch(id="build-multiarch-switch")
+            with Horizontal(classes="form-buttons"):
+                yield Button(t("Build", "빌드"), id="build-submit", variant="primary")
+                yield Button(t("Cancel", "취소"), id="build-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "build-cancel":
+            self.dismiss(None)
+            return
+        repo_url = self.query_one("#build-repo-input", Input).value.strip()
+        branch = self.query_one("#build-branch-input", Input).value.strip()
+        if not repo_url or not branch:
+            self.notify(t("Repository and branch are required", "저장소와 브랜치는 필수입니다"), severity="error")
+            return
+        result: dict[str, object] = {
+            "repo_url": repo_url,
+            "branch": branch,
+            "custom_tag": self.query_one("#build-tag-input", Input).value.strip(),
+            "official": False,
+            "cuda_arch": "",
+            "multi_arch": False,
+        }
+        if self._backend == "vllm":
+            result["official"] = self.query_one("#build-official-switch", Switch).value
+        else:
+            result["cuda_arch"] = self.query_one("#build-cuda-input", Input).value.strip()
+            result["multi_arch"] = self.query_one("#build-multiarch-switch", Switch).value
+        self.dismiss(result)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

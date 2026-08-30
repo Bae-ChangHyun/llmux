@@ -80,12 +80,12 @@ llmux --version            # print the installed version and exit</code></pre>
         </tr>
         <tr>
           <td><code>profile</code></td>
-          <td><code>list</code> · <code>show</code> · <code>new</code> · <code>edit</code> · <code>delete</code> · <code>quick-setup</code></td>
+          <td><code>list</code> · <code>show</code> · <code>new</code> · <code>edit</code> · <code>rename</code> · <code>clone</code> · <code>delete</code> · <code>quick-setup</code></td>
           <td><code>tui/cli/profile.py</code></td>
         </tr>
         <tr>
           <td><code>config</code></td>
-          <td><code>list</code> · <code>show</code> · <code>new</code> · <code>edit</code> · <code>clone</code> · <code>from-recipe</code> · <code>delete</code></td>
+          <td><code>list</code> · <code>show</code> · <code>new</code> · <code>edit</code> · <code>clone</code> · <code>rename</code> · <code>flags</code> · <code>from-recipe</code> · <code>delete</code></td>
           <td><code>tui/cli/config.py</code></td>
         </tr>
         <tr>
@@ -137,8 +137,10 @@ llmux --version            # print the installed version and exit</code></pre>
         <tr><td><code>profile show</code></td><td><code>key: value</code> text</td><td>object</td></tr>
         <tr><td><code>config list</code></td><td>config table</td><td>list of rows</td></tr>
         <tr><td><code>config show</code></td><td>YAML dump</td><td>object</td></tr>
+        <tr><td><code>config flags</code></td><td>supported flag table</td><td>object with backend, image, and flags</td></tr>
         <tr><td><code>image list</code></td><td>image table</td><td>list of rows</td></tr>
         <tr><td><code>system gpu</code></td><td>GPU table</td><td>list of rows</td></tr>
+        <tr><td><code>system disk</code></td><td>backend storage report</td><td>backend-tagged storage object</td></tr>
         <tr><td><code>system env-check</code></td><td>report text</td><td>findings object</td></tr>
       </tbody>
     </table>
@@ -168,10 +170,10 @@ llmux --version            # print the installed version and exit</code></pre>
         <tr><td><code>--tag</code>, <code>-t</code></td><td><code>""</code></td><td>both</td><td>Image tag override. vLLM: <code>vllm/vllm-openai:&lt;tag&gt;</code> or <code>vllm-dev:&lt;tag&gt;</code> with <code>--dev</code>. llama.cpp: full image ref (e.g. <code>ghcr.io/foo/bar:v1</code>) or <code>llamacpp-dev:&lt;tag&gt;</code> with <code>--dev</code>. Empty = profile's pinned <code>image_tag</code> or backend default.</td></tr>
         <tr><td><code>--dev</code></td><td><code>False</code></td><td>both</td><td>Use the locally-built dev image (<code>vllm-dev:&lt;tag&gt;</code> for vLLM, <code>llamacpp-dev:&lt;tag&gt;</code> for llama.cpp). Triggers a one-off build if the tag is missing locally or was built from a different repo/branch.</td></tr>
         <tr><td><code>--default-image</code></td><td><code>False</code></td><td>both</td><td>Mirrors the TUI's "Default Image" selection — explicitly drop the profile's pinned <code>image_tag</code> for this run only and fall back to the compose default. Useful when a profile has a stale dev tag pinned. Mutually exclusive with <code>--dev</code>.</td></tr>
-        <tr><td><code>--pull</code></td><td><code>False</code></td><td>vLLM</td><td>Force <code>--pull always</code> when bringing the container up. (Ignored for llama.cpp with a warning.)</td></tr>
+        <tr><td><code>--pull</code></td><td><code>False</code></td><td>both</td><td>Force <code>--pull always</code> for non-dev images. Locally built dev images remain <code>--pull never</code>.</td></tr>
         <tr><td><code>--repo-url</code></td><td><em>from <code>.env.common</code></em></td><td>both</td><td><code>--dev</code> only: override the source repo URL (default from <code>VLLM_REPO_URL</code> / <code>LLAMACPP_REPO_URL</code>).</td></tr>
         <tr><td><code>--branch</code></td><td><em>from <code>.env.common</code></em></td><td>both</td><td><code>--dev</code> only: override the source branch (default from <code>VLLM_BRANCH</code> / <code>LLAMACPP_BRANCH</code>).</td></tr>
-        <tr><td><code>--force</code></td><td><code>False</code></td><td>both</td><td>Skip the cross-backend port/GPU conflict pre-flight. Required to start a container when llmux detects a conflict (matches the TUI dashboard's pre-start gate).</td></tr>
+        <tr><td><code>--force</code></td><td><code>False</code></td><td>both</td><td>Allow a detected GPU overlap. Port conflicts and failed port probes always abort.</td></tr>
       </tbody>
     </table>
     <pre data-lang="bash"><code># Start a vLLM profile (official image, highest local versioned tag)
@@ -322,7 +324,7 @@ uv run llmux stats --once --json   # one machine-readable sample</code></pre>
     </div>
 
     <h2 id="profile-profile-crud-quick-setup"><code>profile</code> — profile CRUD + quick-setup</h2>
-    <pre data-lang="text"><code>llmux profile list|show|new|edit|delete|quick-setup …</code></pre>
+    <pre data-lang="text"><code>llmux profile list|show|new|edit|rename|clone|delete|quick-setup …</code></pre>
     <p>Profiles live in <code>profiles.yaml</code> at the repo root — the single source of truth for both backends. Fields not applicable to a backend stay at their defaults.</p>
 
     <h3 id="profile-list"><code>profile list</code></h3>
@@ -477,32 +479,44 @@ uv run llmux profile edit qwen3-8b --set VLLM_ATTENTION_BACKEND=FLASHINFER --uns
     <pre data-lang="bash"><code>uv run llmux profile delete old-profile --with-config --yes</code></pre>
 
     <h3 id="profile-quick-setup"><code>profile quick-setup</code></h3>
-    <p>Create a profile <strong>and</strong> a config from a model id in one step — mirrors the TUI's "Quick Setup". If <code>--name</code> is omitted, a name is derived from the model id (lowercased, non-alphanumerics replaced with <code>-</code>); collisions get a numeric suffix.</p>
-    <div class="admonition warning">
-      <p class="admonition-title">vLLM only</p>
-      <p><code>quick-setup</code> currently supports <code>--backend vllm</code> only. For llama.cpp use <code>profile new --backend llamacpp</code> directly (it needs <code>hf_repo</code> / <code>hf_file</code>).</p>
-    </div>
-    <pre data-lang="text"><code>llmux profile quick-setup MODEL [OPTIONS]</code></pre>
+    <p>Create a profile <strong>and</strong> a config in one step — mirrors the TUI's "Quick Setup" for both backends. vLLM takes a model id; llama.cpp takes <code>--hf-repo</code> and <code>--hf-file</code>. If <code>--name</code> is omitted, a name is derived from the model or repository; collisions get a numeric suffix.</p>
+    <pre data-lang="text"><code>llmux profile quick-setup [MODEL] [OPTIONS]</code></pre>
     <table>
       <thead><tr><th>Argument</th><th>Description</th></tr></thead>
-      <tbody><tr><td><code>MODEL</code></td><td>HF model id, e.g. <code>Qwen/Qwen3-8B</code>. Required.</td></tr></tbody>
+      <tbody><tr><td><code>MODEL</code></td><td>vLLM model id, e.g. <code>Qwen/Qwen3-8B</code>. Required only for vLLM.</td></tr></tbody>
     </table>
     <table>
       <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
       <tbody>
-        <tr><td><code>--backend</code>, <code>-b</code></td><td><code>vllm</code></td><td>Backend (vLLM only is currently accepted).</td></tr>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><code>vllm</code></td><td><code>vllm</code> or <code>llamacpp</code>.</td></tr>
         <tr><td><code>--name</code>, <code>-n</code></td><td><em>derived from model</em></td><td>Profile name.</td></tr>
-        <tr><td><code>--port</code>, <code>-p</code></td><td><code>8000</code></td><td>Host port.</td></tr>
+        <tr><td><code>--port</code>, <code>-p</code></td><td><code>0</code></td><td>Host port; <code>0</code> selects the backend default (8000 / 8080).</td></tr>
         <tr><td><code>--gpu-id</code>, <code>-g</code></td><td><code>"0"</code></td><td>GPU id(s), comma-separated.</td></tr>
         <tr><td><code>--gpu-mem</code></td><td><code>"0.9"</code></td><td>vLLM <code>gpu-memory-utilization</code> (0.0–1.0).</td></tr>
         <tr><td><code>--lora / --no-lora</code></td><td><code>--no-lora</code></td><td>Enable LoRA.</td></tr>
-        <tr><td><code>--copy-from</code></td><td><code>""</code></td><td>Copy <code>extra_params</code> from an existing config name.</td></tr>
+        <tr><td><code>--recipe</code></td><td><code>False</code></td><td>vLLM: apply the model's official recipe during Quick Setup.</td></tr>
+        <tr><td><code>--recipe-from</code></td><td><em>MODEL</em></td><td>vLLM: borrow another model's recipe while keeping the requested model id.</td></tr>
+        <tr><td><code>--variant</code></td><td><em>auto</em></td><td>vLLM: select a recipe precision variant.</td></tr>
+        <tr><td><code>--feature</code></td><td><em>none</em></td><td>vLLM: repeatable recipe feature.</td></tr>
+        <tr><td><code>--hf-repo</code></td><td><em>none</em></td><td>llama.cpp Hugging Face GGUF repository.</td></tr>
+        <tr><td><code>--hf-file</code></td><td><em>none</em></td><td>llama.cpp GGUF filename.</td></tr>
+        <tr><td><code>--ctx-size</code></td><td><code>32768</code></td><td>llama.cpp context size.</td></tr>
+        <tr><td><code>--n-gpu-layers</code></td><td><code>99</code></td><td>llama.cpp GPU layers.</td></tr>
+        <tr><td><code>--batch-size</code></td><td><em>backend default</em></td><td>llama.cpp logical batch size.</td></tr>
+        <tr><td><code>--cache-type-k</code> / <code>--cache-type-v</code></td><td><code>bf16</code></td><td>llama.cpp KV cache types.</td></tr>
+        <tr><td><code>--flash-attn / --no-flash-attn</code></td><td><code>--flash-attn</code></td><td>llama.cpp flash attention.</td></tr>
+        <tr><td><code>--jinja / --no-jinja</code></td><td><code>--jinja</code></td><td>llama.cpp chat-template support.</td></tr>
+        <tr><td><code>--override-tensors</code></td><td><em>none</em></td><td>llama.cpp tensor override regex.</td></tr>
+        <tr><td><code>--copy-from</code></td><td><em>none</em></td><td>Copy parameters from an existing config.</td></tr>
       </tbody>
     </table>
     <pre data-lang="bash"><code>uv run llmux profile quick-setup Qwen/Qwen3-8B --gpu-id 0,1 --gpu-mem 0.92</code></pre>
+    <pre data-lang="bash"><code>uv run llmux profile quick-setup --backend llamacpp \
+  --hf-repo unsloth/gemma-3-4b-it-GGUF \
+  --hf-file gemma-3-4b-it-q4_k_m.gguf</code></pre>
 
     <h2 id="config-config-yaml-crud"><code>config</code> — config (YAML) CRUD</h2>
-    <pre data-lang="text"><code>llmux config list|show|new|edit|clone|delete …</code></pre>
+    <pre data-lang="text"><code>llmux config list|show|new|edit|clone|rename|flags|from-recipe|delete …</code></pre>
     <p>Per-model engine configs live in <code>config/&lt;backend&gt;/&lt;name&gt;.yaml</code>:</p>
     <ul>
       <li><strong>vLLM</strong> — <code>config/vllm/&lt;name&gt;.yaml</code>: <code>model:</code> + <code>gpu-memory-utilization:</code> plus arbitrary <code>vllm serve</code> flags.</li>
@@ -609,6 +623,21 @@ uv run llmux config edit qwen3-8b --enable enforce-eager</code></pre>
     </table>
     <pre data-lang="bash"><code>uv run llmux config clone qwen3-0-6b qwen3-0-6b-experiment</code></pre>
 
+    <h3 id="config-flags"><code>config flags</code></h3>
+    <p>Inspect the flags supported by the actual vLLM or llama.cpp image. Discovery is cached by image identity, so a moving tag is re-read after its image changes.</p>
+    <pre data-lang="text"><code>llmux config flags [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><code>vllm</code></td><td>Backend whose server flags to inspect.</td></tr>
+        <tr><td><code>--image</code></td><td><em>configured/default image</em></td><td>Discover directly from this Docker image.</td></tr>
+        <tr><td><code>--profile</code></td><td><em>none</em></td><td>Use the profile's backend and pinned image. Mutually exclusive with <code>--image</code>.</td></tr>
+        <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit the backend, image input, and sorted flag list as JSON.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux config flags --profile qwen3-8b
+uv run llmux config flags --backend llamacpp --image ghcr.io/me/llama:v1 --json</code></pre>
+
     <h3 id="config-from-recipe"><code>config from-recipe</code></h3>
     <p>Create a vLLM config from the model's official <a href="https://github.com/vllm-project/recipes">vllm-project/recipes</a> recipe. The TUI shows an interactive review window (see <a href="../guide/configs.html#import-a-vllm-recipe">Import a vLLM recipe</a>); this headless form picks a variant with <code>--variant</code>, or auto-picks the highest-quality one that fits the detected GPU.</p>
     <pre data-lang="text"><code>llmux config from-recipe MODEL_ID [OPTIONS]</code></pre>
@@ -679,14 +708,16 @@ uv run llmux config from-recipe Qwen/Qwen3-32B --name my-model --merge</code></p
     <table>
       <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
       <tbody>
-        <tr><td><code>--repo</code></td><td><code>vllm/vllm-openai</code></td><td>Image repo to list locally.</td></tr>
-        <tr><td><code>--dev</code></td><td><code>False</code></td><td>Also list local <code>vllm-dev:*</code> <strong>and</strong> <code>llamacpp-dev:*</code> images.</td></tr>
-        <tr><td><code>--remote</code></td><td><code>False</code></td><td>Query DockerHub for the latest stable + nightly tags of <code>vllm/vllm-openai</code>.</td></tr>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><code>vllm</code></td><td>Select the vLLM or llama.cpp image repository.</td></tr>
+        <tr><td><code>--repo</code></td><td><em>backend default</em></td><td>Override the repository to list locally.</td></tr>
+        <tr><td><code>--dev</code></td><td><code>False</code></td><td>Also list the selected backend's local dev images.</td></tr>
+        <tr><td><code>--remote</code></td><td><code>False</code></td><td>Query vLLM's DockerHub stable + nightly tags. Rejected for llama.cpp.</td></tr>
         <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit JSON instead of a table.</td></tr>
       </tbody>
     </table>
     <p>Columns: <code>source</code> (<code>local</code> / <code>local-dev</code> / <code>remote</code>), <code>repository</code>, <code>tag</code>, <code>size</code>, <code>created</code>.</p>
     <pre data-lang="bash"><code>uv run llmux image list --dev
+uv run llmux image list --backend llamacpp --dev
 uv run llmux image list --remote --json</code></pre>
 
     <h3 id="image-pull"><code>image pull</code></h3>
@@ -694,12 +725,13 @@ uv run llmux image list --remote --json</code></pre>
     <pre data-lang="text"><code>llmux image pull TAG [OPTIONS]</code></pre>
     <table>
       <thead><tr><th>Argument</th><th>Description</th></tr></thead>
-      <tbody><tr><td><code>TAG</code></td><td>Image tag, e.g. <code>v0.20.1</code> or <code>nightly</code>. Required.</td></tr></tbody>
+      <tbody><tr><td><code>TAG</code></td><td>Image tag. Required for vLLM; llama.cpp defaults to <code>server-cuda</code>.</td></tr></tbody>
     </table>
     <table>
       <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
       <tbody>
-        <tr><td><code>--repo</code></td><td><code>vllm/vllm-openai</code></td><td>Image repo to pull from.</td></tr>
+        <tr><td><code>--backend</code></td><td><code>vllm</code></td><td>Select backend-aware repository and tag defaults.</td></tr>
+        <tr><td><code>--repo</code></td><td><em>backend default</em></td><td>Image repository override.</td></tr>
       </tbody>
     </table>
     <pre data-lang="bash"><code>uv run llmux image pull v0.20.1
@@ -777,15 +809,24 @@ uv run llmux system gpu --json</code></pre>
 # → ~17.2GB (model: 15.3GB + KV: 1.9GB)</code></pre>
 
     <h3 id="system-disk"><code>system disk</code></h3>
-    <p>Show the llama.cpp model directory, its GGUF inventory + sizes, and <code>df -h</code> filesystem usage for the partition that hosts it. Mirrors the TUI's System → Disk / Model Dir tab. The vLLM equivalent (HF cache usage) lives in the TUI's System → Disk / HF Cache tab.</p>
-    <pre data-lang="text"><code>llmux system disk</code></pre>
-    <pre data-lang="bash"><code>uv run llmux system disk
+    <p>Show backend storage and <code>df -h</code> usage. vLLM reports its host Hugging Face cache; llama.cpp reports its model directory, GGUF inventory, and HF GGUF cache. The JSON success and failure payloads both identify the selected backend.</p>
+    <pre data-lang="text"><code>llmux system disk [OPTIONS]</code></pre>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--backend</code>, <code>-b</code></td><td><code>llamacpp</code></td><td><code>vllm</code> or <code>llamacpp</code>.</td></tr>
+        <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit a backend-tagged storage object.</td></tr>
+      </tbody>
+    </table>
+    <pre data-lang="bash"><code>uv run llmux system disk --backend llamacpp
 # Model dir : /home/me/Project/llmux/models
 # GGUF files: 2 (total 17.1 GB)
-# df ...: used 583G, avail 285G (68%)</code></pre>
+# df ...: used 583G, avail 285G (68%)
+
+uv run llmux system disk --backend vllm --json</code></pre>
 
     <h3 id="system-env-check"><code>system env-check</code></h3>
-    <p>Validate <code>.env.common</code> and report key paths. Checks that the file exists, that <code>HF_TOKEN</code> / <code>HF_CACHE_PATH</code> / <code>VLLM_VERSION</code> are set, and that <code>HF_CACHE_PATH</code> is absolute. Also available as the top-level alias <code>llmux env-check</code>.</p>
+    <p>Validate <code>.env.common</code> and report key paths. Checks that the file exists and that required paths such as <code>HF_CACHE_PATH</code> are set and absolute. <code>HF_TOKEN</code> is optional, and the runtime injects the selected vLLM version at start time. Also available as <code>llmux env-check</code>.</p>
     <pre data-lang="text"><code>llmux system env-check [OPTIONS]</code></pre>
     <table>
       <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
@@ -793,7 +834,7 @@ uv run llmux system gpu --json</code></pre>
         <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit JSON findings instead of a text report.</td></tr>
       </tbody>
     </table>
-    <p>Exits <code>0</code> when everything checks out, <code>1</code> when <code>.env.common</code> is missing or any issue is found. <code>HF_TOKEN</code> is masked in the text report (shown as <code>&lt;set, N chars&gt;</code>).</p>
+    <p>Exits <code>0</code> when everything checks out, <code>1</code> when <code>.env.common</code> is missing or any issue is found. Text output masks <code>HF_TOKEN</code>; JSON exposes only <code>set</code> and <code>length</code>, never the token value.</p>
     <pre data-lang="bash"><code>uv run llmux env-check
 uv run llmux system env-check --json</code></pre>
     <p>See <a href="env-common.html"><code>.env.common</code> Reference</a> for every variable this command validates.</p>
@@ -806,7 +847,7 @@ uv run llmux system env-check --json</code></pre>
       <tbody>
         <tr><td><code>--check</code></td><td><code>False</code></td><td>Only report; never touch the checkout.</td></tr>
         <tr><td><code>--yes</code>, <code>-y</code></td><td><code>False</code></td><td>Update without asking for confirmation.</td></tr>
-        <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit the status as JSON (<code>state</code> = <code>behind</code> / <code>current</code> / <code>unknown</code>, plus <code>latest_tag</code>, <code>local_version</code>, <code>url</code>, <code>detail</code>, <code>checkout</code>).</td></tr>
+        <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit exactly one JSON document. Use with <code>--check</code> for status only or <code>--yes</code> to apply an update without a prompt.</td></tr>
       </tbody>
     </table>
     <pre data-lang="bash"><code>llmux update --check          # "llmux is up to date (v2.6.0)."

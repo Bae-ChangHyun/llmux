@@ -6,7 +6,7 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from tui.common import prepare
 
@@ -20,6 +20,34 @@ async def _drain(agen) -> tuple[list[str], int]:
         else:
             logs.append(str(data))
     return logs, rc
+
+
+class ImageProbeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_image_is_false(self) -> None:
+        with patch.object(
+            prepare,
+            "_run",
+            AsyncMock(return_value=(1, "Error response from daemon: No such image: x")),
+        ):
+            self.assertFalse(await prepare.image_present("x"))
+
+    async def test_docker_probe_failure_is_not_reported_as_missing(self) -> None:
+        with patch.object(
+            prepare,
+            "_run",
+            AsyncMock(return_value=(1, "Cannot connect to the Docker daemon")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Cannot connect"):
+                await prepare.image_present("x")
+
+    async def test_missing_docker_binary_is_not_reported_as_missing(self) -> None:
+        with patch.object(
+            prepare,
+            "_run",
+            AsyncMock(return_value=(-1, "Executable not found: docker")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Executable not found"):
+                await prepare.image_present("x")
 
 
 class StreamLinesTests(unittest.IsolatedAsyncioTestCase):
@@ -155,12 +183,14 @@ class LlamacppDownloadTests(unittest.IsolatedAsyncioTestCase):
             snap.mkdir(parents=True)
             hf_file = "UD-Q3/m-00001-of-00002.gguf"
             seen: list[list[str]] = []
+            seen_env: list[dict[str, str] | None] = []
 
             async def fake_run(*args, **kwargs):
                 return 0, ""
 
-            async def fake_stream(args):
+            async def fake_stream(args, *, env=None):
                 seen.append(args)
+                seen_env.append(env)
                 yield ("log", "Fetching 2 files")
                 (snap / "m-00001-of-00002.gguf").write_text("gguf")
                 (snap / "m-00002-of-00002.gguf").write_text("gguf")
@@ -186,6 +216,38 @@ class LlamacppDownloadTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("downloader:img", args)
             self.assertNotIn("-hf", args)
+            self.assertNotIn("tok", " ".join(args))
+            self.assertEqual(seen_env[0]["HF_TOKEN"], "tok")
+            self.assertEqual(seen_env[0]["HUGGING_FACE_HUB_TOKEN"], "tok")
+
+    async def test_vllm_token_is_not_exposed_in_docker_arguments(self) -> None:
+        seen: list[tuple[list[str], dict[str, str] | None]] = []
+
+        async def fake_run(*args, **kwargs):
+            return 0, ""
+
+        async def fake_stream(args, *, env=None):
+            seen.append((args, env))
+            yield ("rc", 0)
+
+        with patch.object(prepare, "_run", fake_run), patch.object(
+            prepare, "stream_lines", fake_stream
+        ):
+            _, rc = await _drain(
+                prepare.stream_vllm_download(
+                    image_ref="vllm:test",
+                    model_id="o/r",
+                    cache_path="/tmp/cache",
+                    token="hf_secret",
+                    container_name="prepare-test",
+                )
+            )
+
+        self.assertEqual(rc, 0)
+        args, env = seen[0]
+        self.assertNotIn("hf_secret", " ".join(args))
+        self.assertEqual(env["HF_TOKEN"], "hf_secret")
+        self.assertEqual(env["HUGGING_FACE_HUB_TOKEN"], "hf_secret")
 
     async def test_exit_before_download_completes_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

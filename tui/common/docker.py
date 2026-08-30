@@ -43,6 +43,27 @@ async def run_command(*args: str, timeout: float = 10) -> tuple[int, str]:
     return proc.returncode or 0, stdout.decode("utf-8", errors="replace")
 
 
+async def image_identity(image_ref: str) -> str | None:
+    rc, output = await run_command(
+        "docker",
+        "image",
+        "inspect",
+        image_ref,
+        "--format",
+        "{{.Id}}",
+        timeout=20,
+    )
+    if rc == 0:
+        identity = output.strip()
+        if not identity:
+            raise RuntimeError(f"docker image inspect {image_ref} returned no image ID")
+        return identity
+    lowered = output.lower()
+    if "no such image" in lowered or "no such object" in lowered:
+        return None
+    raise RuntimeError(output.strip() or f"docker image inspect {image_ref} failed")
+
+
 async def gpu_probe_failed() -> bool:
     """True only when nvidia-smi exists but cannot be queried.
 
@@ -195,12 +216,12 @@ async def get_disk_usage(path: str) -> tuple[str, str, str]:
     System / Disk view so the same parsing rules apply."""
     rc, out = await run_command("df", "-h", path, timeout=5)
     if rc != 0:
-        return "", "", ""
+        raise RuntimeError(out.strip() or f"df failed for {path}")
     lines = out.strip().splitlines()
     if len(lines) < 2:
-        return "", "", ""
+        raise RuntimeError(f"unexpected df output for {path}")
     parts = lines[1].split()
     # Filesystem  Size  Used Avail Use% Mounted
     if len(parts) < 5:
-        return "", "", ""
+        raise RuntimeError(f"unexpected df output for {path}")
     return parts[2], parts[3], parts[4]

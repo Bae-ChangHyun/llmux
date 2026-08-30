@@ -47,7 +47,7 @@
     <div class="docs-header">
       <h1><code>.env.common</code> Reference</h1>
       <p class="lede">
-        <code>.env.common</code> holds the <strong>host-wide</strong> settings shared by every profile across both backends — Hugging Face credentials, cache and model paths, dev-build sources, and the timezone. It lives at the repo root and is <strong>gitignored</strong>; create it once by copying the template:
+        <code>.env.common</code> holds the <strong>host-wide</strong> settings shared by every profile across both backends — Hugging Face credentials, cache paths, downloader settings, dev-build sources, and the timezone. It lives at the repo root and is <strong>gitignored</strong>. Running <code>llmux</code> creates it through the first-run wizard; manual installs can copy the template:
       </p>
       <pre data-lang="bash"><code>cp .env.common.example .env.common
 # then edit the values</code></pre>
@@ -56,12 +56,12 @@
 
     <div class="admonition tip">
       <p class="admonition-title">Validate it</p>
-      <p>Run <a href="cli.html#system-env-check"><code>llmux env-check</code></a> to confirm the file exists, that <code>HF_TOKEN</code> / <code>HF_CACHE_PATH</code> / <code>VLLM_VERSION</code> are set, and that <code>HF_CACHE_PATH</code> is an absolute path.</p>
+      <p>Run <a href="cli.html#system-env-check"><code>llmux env-check</code></a> to confirm the file exists and that required paths such as <code>HF_CACHE_PATH</code> are set and absolute. <code>HF_TOKEN</code> is optional, and the selected vLLM version is injected at start time.</p>
     </div>
 
     <div class="admonition note">
       <p class="admonition-title">Shell expansion</p>
-      <p><code>$USER</code> in the template is expanded by your shell when Docker Compose reads the file, so paths like <code>/home/$USER/.cache/huggingface</code> resolve to your home directory. Keep paths <strong>absolute</strong>.</p>
+      <p><code>$HOME</code> in the template is expanded by llmux before host-path validation and Docker Compose startup, so <code>$HOME/.cache/huggingface</code> resolves to your home directory. A path that remains relative after expansion is rejected.</p>
     </div>
 
     <h2 id="all-variables-at-a-glance">All variables at a glance</h2>
@@ -91,6 +91,20 @@
           <td>Host path mounted as the in-container HF cache.</td>
         </tr>
         <tr>
+          <td><code>PREPARE_DOWNLOADER_IMAGE</code></td>
+          <td>For llama.cpp <code>prepare</code></td>
+          <td><code>vllm/vllm-openai:v0.27.1</code></td>
+          <td>llama.cpp</td>
+          <td>Python-capable image used by the download-only GGUF preparation path.</td>
+        </tr>
+        <tr>
+          <td><code>PREPARE_MAX_WORKERS</code></td>
+          <td>Optional</td>
+          <td><em>(empty)</em></td>
+          <td>both</td>
+          <td>Hugging Face download worker limit; overridden by <code>prepare --max-workers</code>.</td>
+        </tr>
+        <tr>
           <td><code>LORA_BASE_PATH</code></td>
           <td>Optional&sup2;</td>
           <td><em>(empty)</em></td>
@@ -99,10 +113,17 @@
         </tr>
         <tr>
           <td><code>VLLM_VERSION</code></td>
-          <td>Conditional&sup3;</td>
+          <td>Optional&sup3;</td>
           <td><em>(not in template)</em></td>
           <td>vLLM</td>
           <td>Tag for the official <code>vllm/vllm-openai</code> image.</td>
+        </tr>
+        <tr>
+          <td><code>VLLM_IMAGE</code></td>
+          <td>Optional</td>
+          <td><em>(empty)</em></td>
+          <td>vLLM</td>
+          <td>Image used to extract vLLM flags for config autocomplete.</td>
         </tr>
         <tr>
           <td><code>VLLM_USE_V2_MODEL_RUNNER</code></td>
@@ -130,7 +151,7 @@
           <td>Optional&#8308;</td>
           <td><code>/home/$USER/Project/docker/llmux/models</code></td>
           <td>llama.cpp</td>
-          <td>Host GGUF directory (mounted at <code>/models</code>).</td>
+          <td>Legacy GGUF detection and disk-view directory; not mounted by current profiles.</td>
         </tr>
         <tr>
           <td><code>LLAMACPP_IMAGE</code></td>
@@ -165,7 +186,7 @@
 
     <p>&sup1; Required only for gated/private Hugging Face repos — public models download without it.<br/>
     &sup2; Required only when a vLLM profile has <code>enable_lora: true</code>.<br/>
-    &sup3; <code>vllm container up</code> resolves a tag automatically from local images when <code>--tag</code> is empty; <code>env-check</code> still flags <code>VLLM_VERSION</code> as unset because it is the variable the official <code>docker-compose.yaml</code> substitutes.<br/>
+    &sup3; <code>vllm container up</code> injects the highest local versioned tag, or Docker Hub's explicit current stable version when none is local.<br/>
     &#8308; Reserved for the host GGUF directory; current llama.cpp profiles download GGUF files directly into the HF cache via <code>llama-server -hf</code> (see below).</p>
 
     <h2 id="hugging-face">Hugging Face</h2>
@@ -173,7 +194,7 @@
     <h3 id="hf-token"><code>HF_TOKEN</code></h3>
     <p>Hugging Face access token. Used to download <strong>gated or private</strong> models on both backends — vLLM passes it as <code>HUGGING_FACE_HUB_TOKEN</code>, llama.cpp as <code>HF_TOKEN</code>. If you only ever serve public repositories you can leave it empty.</p>
     <pre data-lang="ini"><code>HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</code></pre>
-    <p>The token is also read by <a href="cli.html#system-mem-estimate"><code>llmux system mem-estimate</code></a> to size gated models, and is masked in <code>env-check</code> output.</p>
+    <p>The token is also read by <a href="cli.html#system-mem-estimate"><code>llmux system mem-estimate</code></a> to size gated models. <code>env-check</code> masks it in text output and emits only its presence and length in JSON.</p>
 
     <h3 id="hf-cache-path"><code>HF_CACHE_PATH</code></h3>
     <p><strong>Required.</strong> Absolute host path mounted into every container as the Hugging Face cache (<code>/root/.cache/huggingface</code>). Both backends download model weights here, so the cache is shared and persistent across container restarts and across the two backends.</p>
@@ -183,6 +204,11 @@
       <p><code>env-check</code> rejects a relative <code>HF_CACHE_PATH</code>. Point it at a disk with enough room for the largest models you plan to serve.</p>
     </div>
 
+    <h3 id="prepare-downloader"><code>PREPARE_DOWNLOADER_IMAGE</code> / <code>PREPARE_MAX_WORKERS</code></h3>
+    <p><code>prepare</code> downloads weights without starting the serving container. llama.cpp's server image has no Python/Hugging Face client, so its GGUF preparation path uses <code>PREPARE_DOWNLOADER_IMAGE</code>. <code>PREPARE_MAX_WORKERS</code> limits parallel Hugging Face transfers; leave it empty for the library default or override one run with <code>llmux prepare &lt;profile&gt; --max-workers N</code>.</p>
+    <pre data-lang="ini"><code>PREPARE_DOWNLOADER_IMAGE=vllm/vllm-openai:v0.27.1
+PREPARE_MAX_WORKERS=</code></pre>
+
     <h2 id="vllm">vLLM</h2>
 
     <h3 id="lora-base-path"><code>LORA_BASE_PATH</code></h3>
@@ -190,8 +216,12 @@
     <pre data-lang="ini"><code>LORA_BASE_PATH=/home/$USER/lora-adapters</code></pre>
 
     <h3 id="vllm-version"><code>VLLM_VERSION</code></h3>
-    <p>Tag of the official <code>vllm/vllm-openai</code> image used by <code>compose/vllm/docker-compose.yaml</code> (<code>image: vllm/vllm-openai:${VLLM_VERSION}</code>). In practice <code>llmux container up</code> selects the highest local versioned tag (or the tag you pass with <code>--tag</code>) and injects it for you — but setting <code>VLLM_VERSION</code> gives <code>env-check</code> and a bare <code>docker compose</code> invocation a known-good default.</p>
+    <p>Tag of the official <code>vllm/vllm-openai</code> image used by Compose. <code>llmux up</code> injects the highest local versioned tag, or resolves Docker Hub's current stable version when none is local. Set this only for a bare Compose invocation; <code>env-check</code> does not require it.</p>
     <pre data-lang="ini"><code>VLLM_VERSION=v0.20.1</code></pre>
+
+    <h3 id="vllm-image"><code>VLLM_IMAGE</code></h3>
+    <p>Optional image reference used when llmux extracts the installed <code>vllm serve</code> flag set for config autocomplete. It does not choose the serving image; set a profile's <code>image_tag</code> for that.</p>
+    <pre data-lang="ini"><code>VLLM_IMAGE=registry.example.com/team/vllm:v0.20.1</code></pre>
 
     <h3 id="vllm-use-v2-model-runner"><code>VLLM_USE_V2_MODEL_RUNNER</code></h3>
     <p>vLLM ships two model runners and defaults to V2. The V2 runner does <strong>not</strong> support the per-request <code>thinking_token_budget</code> parameter &mdash; a request that uses it fails with:</p>
@@ -220,8 +250,8 @@ VLLM_BRANCH=main</code></pre>
     <h2 id="llama-cpp">llama.cpp</h2>
 
     <h3 id="model-dir"><code>MODEL_DIR</code></h3>
-    <p>Host directory intended for GGUF files (mounted at <code>/models</code> in the container).</p>
-    <pre data-lang="ini"><code>MODEL_DIR=/home/$USER/Project/docker/llmux/models</code></pre>
+    <p>Legacy host directory used by old-file detection and the disk inventory view. Current profiles do not mount it into the container.</p>
+    <pre data-lang="ini"><code>MODEL_DIR=/home/$USER/.llmux/models</code></pre>
     <div class="admonition note">
       <p class="admonition-title">How llama.cpp gets its models</p>
       <p>Current llama.cpp profiles do <strong>not</strong> rely on a pre-populated <code>MODEL_DIR</code>. <code>render-override.py</code> builds a <code>llama-server -hf &lt;repo&gt; -hff &lt;file&gt;</code> command from the profile's <code>hf_repo</code> / <code>hf_file</code>, so <code>llama-server</code> downloads the GGUF straight into the shared <code>HF_CACHE_PATH</code> — exactly like the vLLM flow, with no host-side <code>hf</code> CLI dependency.</p>
@@ -249,37 +279,7 @@ LLAMACPP_BRANCH=master</code></pre>
     <pre data-lang="ini"><code>TZ=Asia/Seoul</code></pre>
 
     <h2 id="template">Template</h2>
-    <p>The shipped <code>.env.common.example</code> you copy from:</p>
-    <pre data-lang="ini"><code># llmux 공통 설정 템플릿
-# cp .env.common.example .env.common 후 값 수정
-
-# ─── HuggingFace ───────────────────────────────────────────────
-# 게이트 모델 다운로드에 사용 (공개 repo 만 쓰면 비워도 됨)
-HF_TOKEN=
-HF_CACHE_PATH=/home/$USER/.cache/huggingface
-
-# ─── vLLM 전용 ─────────────────────────────────────────────────
-# LoRA adapter 경로 (container 안 /app/lora 로 mount)
-LORA_BASE_PATH=
-
-# ─── llama.cpp 전용 ────────────────────────────────────────────
-# GGUF 저장 경로 (container 안 /models 로 mount)
-MODEL_DIR=/home/$USER/Project/docker/llmux/models
-
-# llama.cpp 이미지 태그
-LLAMACPP_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda
-
-# llama.cpp dev-build (per-fork / PR branch). 비워두면 ggml-org/master 사용.
-LLAMACPP_REPO_URL=https://github.com/ggml-org/llama.cpp.git
-LLAMACPP_BRANCH=master
-
-# 타임존
-TZ=Asia/Seoul</code></pre>
-
-    <div class="admonition info">
-      <p class="admonition-title">Not in the template, still honored</p>
-      <p><code>VLLM_VERSION</code>, <code>VLLM_REPO_URL</code>, and <code>VLLM_BRANCH</code> are not in the shipped template but are read from <code>.env.common</code> when present (consumed by <code>compose/vllm/docker-compose.yaml</code> and the vLLM dev-build defaults). Add them if you want a fixed vLLM image tag or a custom dev-build source.</p>
-    </div>
+    <p>The first-run wizard renders the shipped <a href="https://github.com/Changroro/llmux/blob/main/.env.common.example" target="_blank"><code>.env.common.example</code></a>, preserving advanced image, downloader, dev-build, and timezone variables while replacing the three prompted paths/token values.</p>
 
     <p>For where these values flow at launch time, see <a href="architecture.html">Architecture</a>. For the per-command flags that override these defaults, see the <a href="cli.html">CLI Reference</a>.</p>
 

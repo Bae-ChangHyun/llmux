@@ -64,10 +64,10 @@
 │   │   ├── _runtime.py        # backend detection, async glue, table/JSON output
 │   │   ├── _launch_tui.py     # isolated TUI launcher (keeps textual out of CLI imports)
 │   │   ├── container.py       # up / down / logs / ps / render-env
-│   │   ├── profile.py         # profile list/show/new/edit/delete/quick-setup
-│   │   ├── config.py          # config list/show/new/edit/delete
-│   │   ├── image.py           # image list/pull/build-dev
-│   │   └── system.py          # system gpu/mem-estimate/env-check
+│   │   ├── profile.py         # profile CRUD/clone/rename/quick-setup
+│   │   ├── config.py          # config CRUD/clone/rename/flags/from-recipe
+│   │   ├── image.py           # image list/pull/remove/build-dev
+│   │   └── system.py          # system gpu/mem-estimate/disk/env-check
 │   ├── common/                # backend-agnostic unified layer
 │   │   ├── profile_store.py   # profiles.yaml ⇄ StoredProfile, .runtime/*.env renderer
 │   │   ├── dev_build.py       # DevBuildSpec + shared clone/build/label pipeline
@@ -247,7 +247,7 @@
 
     <div class="admonition note">
       <p class="admonition-title">Why two GPU-passthrough styles</p>
-      <p>vLLM uses <code>runtime: nvidia</code> + <code>NVIDIA_VISIBLE_DEVICES=${GPU_ID}</code> because that cleanly supports comma-separated multi-GPU ids for tensor parallelism. llama.cpp uses Compose's <code>deploy.resources.reservations.devices</code> form. They are intentionally not forced into one shape.</p>
+      <p>Both backends use <code>runtime: nvidia</code> + <code>NVIDIA_VISIBLE_DEVICES=${GPU_ID}</code>, including comma-separated multi-GPU ids. vLLM also maps the selected GPU count to tensor parallel size; llama.cpp controls its own device split.</p>
     </div>
 
     <h2 id="cross-backend-conflict-detection">Cross-backend conflict detection</h2>
@@ -309,7 +309,7 @@
 
     <h2 id="from-shell-scripts-to-a-python-runtime">From shell scripts to a Python runtime</h2>
     <p>llama.cpp orchestration used to be a set of Bash scripts (<code>switch.sh</code>, <code>stop.sh</code>, <code>logs.sh</code>, <code>pull-model.sh</code>, <code>_common.sh</code>). They have been replaced by <code>tui/backends/llamacpp/backend_runtime.py</code> — a Python-native pipeline that mirrors the vLLM backend's async-generator contract. The one Python script that remains active is <code>scripts/llamacpp/render-override.py</code>, which generates the per-profile Compose override described in <a href="#step-3-render-the-engine-command">Step 3</a>.</p>
-    <p>The benefits of the move: a single conflict-check / status / streaming code path shared with vLLM, no <code>current-profile</code> global state (multiple llama.cpp profiles run side by side), and the same logic reachable from both the TUI and the headless CLI.</p>
+    <p>The benefits of the move: a single conflict-check / status / streaming code path shared with vLLM, no single-active-profile constraint (multiple llama.cpp profiles run side by side), and the same logic reachable from both the TUI and the headless CLI. <code>.current-profile.llamacpp</code> remains only as a last-active display marker.</p>
 
     <h2 id="entrypoint-dispatch">Entrypoint dispatch</h2>
     <p><code>pyproject.toml</code> declares one console script: <code>llmux = "tui.cli:main"</code>. The package also exposes <code>python -m tui</code> (via <code>tui/__main__.py</code> → <code>tui.app:main</code>), and <code>tui.app:main</code> itself just calls into <code>tui.cli:main</code>. The Typer root in <code>tui/cli/__init__.py</code> has an <code>invoke_without_command</code> callback: <strong>no subcommand → launch the Textual TUI</strong>; any subcommand → run headless. The TUI launcher is deliberately isolated in <code>tui/cli/_launch_tui.py</code> so that importing a CLI subcommand never pulls in <code>textual</code>.</p>

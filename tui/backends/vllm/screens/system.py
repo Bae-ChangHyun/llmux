@@ -28,11 +28,13 @@ from tui.backends.vllm.backend import (
     run_command,
     list_profile_names,
     load_profile,
+    get_dev_build_defaults,
 )
-from tui.common import profile_store
+from tui.common import profile_store, system_operations
 from tui.common.docker import get_disk_usage
 from tui.common.env import host_expand, parse_env_file
 from tui.common.i18n import t
+from tui.common.widgets import ConfirmModal, DevBuildPromptModal, TextPromptModal
 
 
 class SystemScreen(Screen):
@@ -67,6 +69,13 @@ class SystemScreen(Screen):
            visible by default; the outer VerticalScroll handles overflow. */
         max-height: 12;
     }
+    #image-action-log {
+        height: 8;
+    }
+    #environment-actions {
+        height: auto;
+        padding: 1 2;
+    }
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -90,12 +99,23 @@ class SystemScreen(Screen):
                     yield DataTable(id="dev-images")
                 yield Horizontal(
                     Button(t("Refresh Images", "이미지 새로고침"), id="btn-refresh-images", variant="primary"),
+                    Button(t("Pull", "받기"), id="btn-pull-image"),
+                    Button(t("Remove", "삭제"), id="btn-remove-image"),
+                    Button(t("Build Dev", "개발 이미지 빌드"), id="btn-build-image"),
                     id="refresh-bar",
                 )
+                yield RichLog(id="image-action-log", highlight=True)
             with TabPane(t("Containers", "컨테이너"), id="containers-tab"):
                 yield RichLog(id="container-info", highlight=True)
             with TabPane(t("Disk / HF Cache", "디스크 / HF 캐시"), id="disk-tab"):
                 yield RichLog(id="disk-info", highlight=True)
+            with TabPane(t("Environment", "환경"), id="environment-tab"):
+                yield Horizontal(
+                    Button(t("Validate", "검증"), id="btn-validate-env", variant="primary"),
+                    Button(t("Render Runtime Envs", "런타임 환경 렌더링"), id="btn-render-envs"),
+                    id="environment-actions",
+                )
+                yield RichLog(id="environment-log", highlight=True)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -253,12 +273,13 @@ class SystemScreen(Screen):
         hf_cache = host_expand(hf_cache)
         log.write(t(f"[b]HF cache path:[/b] {hf_cache}", f"[b]HF 캐시 경로:[/b] {hf_cache}"))
         log.write("")
-        used, avail, pct = await get_disk_usage(hf_cache)
-        if used:
-            log.write(t("[b]Filesystem usage[/b]", "[b]파일시스템 사용량[/b]"))
-            log.write(t(f"  Used: {used}  Available: {avail}  ({pct})", f"  사용: {used}  남음: {avail}  ({pct})"))
-        else:
-            log.write(t(f"[yellow]Could not stat {hf_cache} (does it exist?)[/]", f"[yellow]{hf_cache} 를 확인할 수 없습니다 (존재하나요?)[/]"))
+        try:
+            used, avail, pct = await get_disk_usage(hf_cache)
+        except RuntimeError as exc:
+            log.write(f"[red]{exc}[/]")
+            return
+        log.write(t("[b]Filesystem usage[/b]", "[b]파일시스템 사용량[/b]"))
+        log.write(t(f"  Used: {used}  Available: {avail}  ({pct})", f"  사용: {used}  남음: {avail}  ({pct})"))
 
 
     def action_go_back(self) -> None:
@@ -274,8 +295,160 @@ class SystemScreen(Screen):
         self._refresh_disk()
         self.notify(t("Refreshing all system info...", "모든 시스템 정보 새로고침 중..."))
 
+    def _prompt_pull_image(self) -> None:
+        configured = parse_env_file(COMMON_ENV).get("VLLM_IMAGE", "").strip()
+
+        def after(image_ref: str | None) -> None:
+            if image_ref:
+                self._pull_image(image_ref)
+
+        self.app.push_screen(
+            TextPromptModal(
+                t("Image reference to pull", "받을 이미지 참조"),
+                default=configured,
+                placeholder="vllm/vllm-openai:v0.20.1",
+            ),
+            after,
+        )
+
+    def _prompt_remove_image(self) -> None:
+        def after_ref(image_ref: str | None) -> None:
+            if not image_ref:
+                return
+
+            def after_confirm(confirmed: bool) -> None:
+                if confirmed:
+                    self._remove_image(image_ref)
+
+            self.app.push_screen(
+                ConfirmModal(
+                    t(
+                        f"Remove local image [b]{image_ref}[/b]?",
+                        f"로컬 이미지 [b]{image_ref}[/b] 을 삭제할까요?",
+                    ),
+                    confirm_label=t("Remove", "삭제"),
+                ),
+                after_confirm,
+            )
+
+        self.app.push_screen(
+            TextPromptModal(
+                t("Image reference or ID to remove", "삭제할 이미지 참조 또는 ID"),
+                placeholder="vllm/vllm-openai:v0.20.1",
+            ),
+            after_ref,
+        )
+
+    def _prompt_build_image(self) -> None:
+        repo_url, branch = get_dev_build_defaults()
+
+        def after(options: dict[str, object] | None) -> None:
+            if options:
+                self._build_image(options)
+
+        self.app.push_screen(
+            DevBuildPromptModal("vllm", repo_url, branch),
+            after,
+        )
+
+    @work(exclusive=True, group="image-action")
+    async def _pull_image(self, image_ref: str) -> None:
+        log = self.query_one("#image-action-log", RichLog)
+        log.clear()
+        log.write(t(f"Pulling {image_ref}", f"{image_ref} 받는 중"))
+        try:
+            rc, lines = await system_operations.pull_image(image_ref)
+        except (OSError, RuntimeError, ValueError) as exc:
+            log.write(f"[red]{exc}[/]")
+            self.notify(str(exc), severity="error", timeout=8)
+            return
+        for line in lines:
+            log.write(line)
+        if rc != 0:
+            self.notify(t("Image pull failed", "이미지 받기 실패"), severity="error", timeout=8)
+            return
+        self._refresh_images()
+        self.notify(t("Image pulled", "이미지를 받았습니다"))
+
+    @work(exclusive=True, group="image-action")
+    async def _remove_image(self, image_ref: str) -> None:
+        log = self.query_one("#image-action-log", RichLog)
+        log.clear()
+        rc, output = await system_operations.remove_image(image_ref)
+        if output.strip():
+            log.write(output)
+        if rc != 0:
+            self.notify(t("Image removal failed", "이미지 삭제 실패"), severity="error", timeout=8)
+            return
+        self._refresh_images()
+        self.notify(t("Image removed", "이미지를 삭제했습니다"))
+
+    @work(exclusive=True, group="image-action")
+    async def _build_image(self, options: dict[str, object]) -> None:
+        log = self.query_one("#image-action-log", RichLog)
+        log.clear()
+        try:
+            rc, lines = await system_operations.build_dev_image(
+                "vllm",
+                repo_url=str(options["repo_url"]),
+                branch=str(options["branch"]),
+                custom_tag=str(options["custom_tag"]),
+                official=bool(options["official"]),
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            log.write(f"[red]{exc}[/]")
+            self.notify(str(exc), severity="error", timeout=8)
+            return
+        for line in lines:
+            log.write(line)
+        if rc != 0:
+            self.notify(t("Development image build failed", "개발 이미지 빌드 실패"), severity="error", timeout=8)
+            return
+        self._refresh_images()
+        self.notify(t("Development image built", "개발 이미지를 빌드했습니다"))
+
+    def _validate_environment(self) -> None:
+        log = self.query_one("#environment-log", RichLog)
+        log.clear()
+        ok, messages = system_operations.environment_status(COMMON_ENV)
+        for message in messages:
+            log.write(message)
+        if ok:
+            log.write(t("[green]Status: OK[/]", "[green]상태: 정상[/]"))
+            self.notify(t("Environment is valid", "환경 설정이 유효합니다"))
+        else:
+            self.notify(t("Environment validation failed", "환경 설정 검증 실패"), severity="error", timeout=8)
+
+    def _render_environment(self) -> None:
+        log = self.query_one("#environment-log", RichLog)
+        log.clear()
+        try:
+            rendered, failures = system_operations.render_backend_envs("vllm")
+        except (OSError, RuntimeError, ValueError) as exc:
+            log.write(f"[red]{exc}[/]")
+            self.notify(str(exc), severity="error", timeout=8)
+            return
+        for path in rendered:
+            log.write(t(f"Rendered {path}", f"렌더링 완료: {path}"))
+        for failure in failures:
+            log.write(f"[red]{failure}[/]")
+        if failures:
+            self.notify(t("Some runtime envs failed", "일부 런타임 환경 렌더링 실패"), severity="error", timeout=8)
+        else:
+            self.notify(t("Runtime envs rendered", "런타임 환경을 렌더링했습니다"))
+
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-refresh-images":
             self._refresh_images()
             self.notify(t("Refreshing Docker images...", "Docker 이미지 새로고침 중..."))
+        elif event.button.id == "btn-pull-image":
+            self._prompt_pull_image()
+        elif event.button.id == "btn-remove-image":
+            self._prompt_remove_image()
+        elif event.button.id == "btn-build-image":
+            self._prompt_build_image()
+        elif event.button.id == "btn-validate-env":
+            self._validate_environment()
+        elif event.button.id == "btn-render-envs":
+            self._render_environment()

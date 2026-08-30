@@ -62,12 +62,6 @@ _FALLBACK_VLLM_PARAMS: set[str] = {
     "enable-expert-parallel", "mm-processor-cache-type",
 }
 
-# Mutable set: starts with fallback, updated dynamically from image
-KNOWN_VLLM_PARAMS: set[str] = set(_FALLBACK_VLLM_PARAMS)
-
-_PARAM_SUGGESTER = SuggestFromList(sorted(KNOWN_VLLM_PARAMS), case_sensitive=False)
-
-
 class ConfigFormScreen(ModalScreen[str | None]):
     """Modal form for creating or editing a config."""
 
@@ -184,6 +178,10 @@ class ConfigFormScreen(ModalScreen[str | None]):
         self._param_counter = 0
         self._initial_config: Config | None = None
         self._saved_name: str | None = None
+        self._known_params = set(_FALLBACK_VLLM_PARAMS)
+        self._param_suggester = SuggestFromList(
+            sorted(self._known_params), case_sensitive=False
+        )
 
     def compose(self) -> ComposeResult:
         if self._edit_mode:
@@ -262,15 +260,41 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 self._add_param_row(key, format_config_param_value(value), enabled=False)
         self._load_vllm_params()
 
+    def _profile_image(self) -> str:
+        if not self._config_name:
+            return ""
+        images = {
+            load_profile(name).image_tag or ""
+            for name in list_profile_names()
+            if load_profile(name).config_name == self._config_name
+        }
+        if len(images) > 1:
+            raise RuntimeError(
+                f"config '{self._config_name}' is used with multiple images; "
+                "flag discovery requires one image"
+            )
+        return next(iter(images), "")
+
     @work(exclusive=False)
     async def _load_vllm_params(self) -> None:
-        global KNOWN_VLLM_PARAMS, _PARAM_SUGGESTER
-        extracted = await extract_vllm_params()
+        try:
+            extracted = await extract_vllm_params(self._profile_image())
+        except RuntimeError as exc:
+            self.notify(
+                t(
+                    f"Could not inspect vLLM flags: {exc}",
+                    f"vLLM 플래그를 확인할 수 없습니다: {exc}",
+                ),
+                severity="error",
+            )
+            return
         if extracted:
-            KNOWN_VLLM_PARAMS.update(extracted)
-            _PARAM_SUGGESTER = SuggestFromList(sorted(KNOWN_VLLM_PARAMS), case_sensitive=False)
+            self._known_params = set(extracted)
+            self._param_suggester = SuggestFromList(
+                sorted(self._known_params), case_sensitive=False
+            )
             for inp in self.query(".param-key"):
-                inp.suggester = _PARAM_SUGGESTER
+                inp.suggester = self._param_suggester
 
     def _add_param_row(self, key: str = "", value: str = "", enabled: bool = True) -> None:
         container = self.query_one("#params-container")
@@ -283,7 +307,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
             Input(
                 value=key,
                 placeholder=t("param-name (Tab: autocomplete)", "param-name (Tab: 자동완성)"),
-                suggester=_PARAM_SUGGESTER,
+                suggester=self._param_suggester,
                 classes="param-key",
             ),
             Input(
@@ -495,7 +519,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
                     return
                 (extra_params if switch.value else disabled_params)[k] = parsed
 
-        unknown = [k for k in extra_params if k not in KNOWN_VLLM_PARAMS]
+        unknown = [k for k in extra_params if k not in self._known_params]
         if unknown:
             self.notify(
                 t(
@@ -521,7 +545,11 @@ class ConfigFormScreen(ModalScreen[str | None]):
         ):
             return
 
-        save_config(cfg)
+        try:
+            save_config(cfg)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.notify(str(exc), severity="error", timeout=8)
+            return
         self.notify(t(f"Saved: {name}", f"저장됨: {name}"), severity="information")
         self._saved_name = name
 
@@ -730,7 +758,7 @@ class ConfigListScreen(Screen):
         for name in list_config_names():
             cfg = load_config(name)
             model_short = cfg.model.split("/")[-1] if cfg.model else ""
-            param_count = str(len(cfg.extra_params)) if cfg.extra_params else ""
+            param_count = str(len(cfg.extra_params) + 2)
             table.add_row(cfg.name, model_short, cfg.gpu_memory_utilization, param_count, key=cfg.name)
 
     def _get_selected_config(self) -> str | None:

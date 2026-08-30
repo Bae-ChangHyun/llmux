@@ -15,7 +15,7 @@ from typing import Optional
 import typer
 import yaml
 
-from tui.cli._runtime import BACKENDS, emit_json, emit_table
+from tui.cli._runtime import BACKENDS, emit_json, emit_table, run_async
 from tui.cli.profile import _validate_gpu_mem
 from tui.common import profile_store
 
@@ -45,10 +45,14 @@ def _load_yaml(backend: str, name: str) -> dict:
     path = _config_dir(backend) / f"{name}.yaml"
     if not path.exists():
         raise typer.BadParameter(f"config not found: {path}", param_hint="NAME")
-    raw = yaml.safe_load(path.read_text()) or {}
-    if not isinstance(raw, dict):
+    parsed = yaml.safe_load(path.read_text())
+    if parsed is None:
+        raw: dict = {}
+    elif isinstance(parsed, dict):
+        raw = parsed
+    else:
         raise typer.BadParameter(
-            f"{path} is not a mapping ({type(raw).__name__}) — it would read as "
+            f"{path} is not a mapping ({type(parsed).__name__}) — it would read as "
             "an empty config.",
             param_hint="NAME",
         )
@@ -516,6 +520,59 @@ def rename_config(
     print(f"Renamed {_config_path(bk, old)} → {_config_path(bk, new)}")
     for name in updated:
         print(f"Repointed profile: {name}")
+
+
+@app.command("flags")
+def list_flags(
+    backend: Optional[str] = typer.Option(None, "--backend", "-b"),
+    image: str = typer.Option("", "--image", help="Docker image used for discovery."),
+    profile: str = typer.Option("", "--profile", help="Use this profile's backend and image."),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """List flags supported by the selected backend image."""
+    if backend is not None and backend not in BACKENDS:
+        raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
+    if image and profile:
+        raise typer.BadParameter(
+            "--image and --profile are mutually exclusive",
+            param_hint="--image",
+        )
+    if profile:
+        owner = profile_store.find_name_owner(profile)
+        if owner is None:
+            raise typer.BadParameter(f"profile not found: {profile}", param_hint="--profile")
+        if backend is not None and backend != owner:
+            raise typer.BadParameter(
+                f"profile {profile!r} belongs to backend {owner!r}",
+                param_hint="--backend",
+            )
+        backend = owner
+        stored = profile_store.load_profile(profile, backend)
+        if stored is None:
+            raise typer.BadParameter(f"profile not found: {profile}", param_hint="--profile")
+        image = stored.image_tag
+
+    backend = backend or "vllm"
+    try:
+        if backend == "vllm":
+            from tui.backends.vllm.backend_inspect import extract_vllm_params
+
+            flags = sorted(run_async(extract_vllm_params(image)))
+        else:
+            from tui.backends.llamacpp.backend import extract_llama_server_flags
+
+            flags = sorted(run_async(extract_llama_server_flags(image)))
+    except RuntimeError as exc:
+        typer.echo(f"flag discovery failed — {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if json_out:
+        emit_json({"backend": backend, "image": image, "flags": flags})
+        return
+    emit_table(
+        [{"backend": backend, "flag": flag} for flag in flags],
+        columns=["backend", "flag"],
+    )
 
 
 @app.command("from-recipe")

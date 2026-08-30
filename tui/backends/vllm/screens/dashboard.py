@@ -71,6 +71,8 @@ class ProfileActionScreen(ModalScreen[str]):
             options.append(Option(t("📊 Monitor", "📊 모니터"), id="monitor"))
             options.append(Option(t("⚡ Benchmark", "⚡ 벤치마크"), id="benchmark"))
         options.append(Option(t("✎ Edit Profile", "✎ 프로필 편집"), id="edit_profile"))
+        options.append(Option(t("⧉ Clone Profile", "⧉ 프로필 복제"), id="clone"))
+        options.append(Option(t("↻ Render Runtime Env", "↻ 런타임 환경 렌더링"), id="render_env"))
         options.append(Option(t("⚙ Edit Config", "⚙ Config 편집"), id="edit_config"))
         if not self._profile_running:
             options.append(Option(t("✗ Delete Profile", "✗ 프로필 삭제"), id="delete"))

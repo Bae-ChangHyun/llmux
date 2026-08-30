@@ -7,17 +7,17 @@ each profile is rendered into `.runtime/<backend>/<name>.env` for
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-import logging
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
+import fcntl
 import os
 import re
 import shlex
+import tempfile
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-
-log = logging.getLogger(__name__)
 
 def _resolve_project_root() -> Path:
     env_root = os.environ.get("LLMUX_ROOT", "").strip()
@@ -57,6 +57,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
 }
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+_GPU_ID_RE = re.compile(r"^[0-9]+(,[0-9]+)*$")
 
 # Reserved env keys are emitted from StoredProfile fields (port, gpu_id, etc.).
 # If env_vars overrides one of these, the rendered .env would contain duplicate
@@ -114,6 +116,34 @@ def reserved_env_keys(backend: str) -> frozenset[str]:
     return _RESERVED_ENV_KEYS_BY_BACKEND.get(backend, frozenset())
 
 
+def parse_env_vars_text(text: str, backend: str) -> dict[str, str]:
+    if backend not in DEFAULTS:
+        raise ValueError(f"invalid backend {backend!r}")
+    result: dict[str, str] = {}
+    for line_number, raw in enumerate(text.splitlines(), start=1):
+        if not raw.strip():
+            continue
+        if "=" not in raw:
+            raise ValueError(f"environment line {line_number} must be KEY=VALUE")
+        key, _, value = raw.partition("=")
+        key = key.strip()
+        if not _ENV_KEY_RE.fullmatch(key):
+            raise ValueError(f"invalid environment variable name on line {line_number}: {key!r}")
+        if key in reserved_env_keys(backend):
+            raise ValueError(
+                f"environment variable {key!r} is managed by the profile fields"
+            )
+        reason = env_value_rejection(value)
+        if reason:
+            raise ValueError(f"environment value for {key!r} contains a {reason}")
+        result[key] = value
+    return result
+
+
+def format_env_vars_text(env_vars: dict[str, str]) -> str:
+    return "\n".join(f"{key}={value}" for key, value in sorted(env_vars.items()))
+
+
 @dataclass
 class StoredProfile:
     """Superset profile record; fields not applicable to a backend stay default."""
@@ -143,15 +173,30 @@ class StoredProfile:
 def _load_yaml() -> dict:
     if not PROFILES_YAML.exists():
         return {"version": 1, "defaults": DEFAULTS, "profiles": []}
-    raw = yaml.safe_load(PROFILES_YAML.read_text()) or {}
-    if not isinstance(raw, dict):
+    parsed = yaml.safe_load(PROFILES_YAML.read_text())
+    if parsed is None:
+        raw: dict = {}
+    elif isinstance(parsed, dict):
+        raw = parsed
+    else:
         raise ValueError(
-            f"{PROFILES_YAML} must be a mapping, got {type(raw).__name__} — "
+            f"{PROFILES_YAML} must be a mapping, got {type(parsed).__name__} — "
             "a list or scalar here would silently read as zero profiles."
         )
     raw.setdefault("version", 1)
     raw.setdefault("defaults", DEFAULTS)
     raw.setdefault("profiles", [])
+    defaults = raw["defaults"]
+    if not isinstance(defaults, dict):
+        raise ValueError(f"{PROFILES_YAML}: defaults must be a mapping")
+    unknown = set(defaults) - set(DEFAULTS)
+    if unknown:
+        raise ValueError(
+            f"{PROFILES_YAML}: unknown defaults backend(s): {', '.join(sorted(unknown))}"
+        )
+    for backend, values in defaults.items():
+        if not isinstance(values, dict):
+            raise ValueError(f"{PROFILES_YAML}: defaults.{backend} must be a mapping")
     return raw
 
 
@@ -160,9 +205,7 @@ def _backend_defaults(data: dict, backend: str) -> dict[str, Any]:
         raise ValueError(f"Invalid backend: {backend!r}")
     defaults = dict(DEFAULTS[backend])
     user_defaults = data.get("defaults", {})
-    if isinstance(user_defaults, dict) and isinstance(
-        user_defaults.get(backend), dict
-    ):
+    if backend in user_defaults:
         defaults.update(user_defaults[backend])
     return defaults
 
@@ -182,18 +225,97 @@ def _write_yaml(data: dict) -> None:
 
 
 def _atomic_write(path: Path, content: str) -> None:
-    """Write `content` to `path` via a sibling `.tmp` + os.replace.
+    tmp = _stage_bytes(path, content.encode())
+    try:
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
-    Same-filesystem rename is atomic on POSIX, so a process crash between
-    create and replace can leave a stray `.tmp` but never a half-written
-    target. Callers that need cross-file atomicity (e.g. save_profile updating
-    both profiles.yaml and a .env) should stage every file as `.tmp` first and
-    only os.replace once all stages succeed.
-    """
+
+def _stage_bytes(path: Path, content: bytes) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content)
-    os.replace(tmp, path)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    tmp = Path(tmp_name)
+    try:
+        mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return tmp
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _replace_files(writes: dict[Path, str], deletes: tuple[Path, ...] = ()) -> None:
+    targets = [*writes, *deletes]
+    originals = {
+        path: (path.read_bytes(), path.stat().st_mode & 0o777)
+        if path.exists()
+        else None
+        for path in targets
+    }
+    staged: dict[Path, Path] = {}
+    try:
+        for path, text in writes.items():
+            staged[path] = _stage_bytes(path, text.encode())
+    except BaseException:
+        for tmp in staged.values():
+            tmp.unlink(missing_ok=True)
+        raise
+    mutated: list[Path] = []
+    try:
+        for path, tmp in staged.items():
+            os.replace(tmp, path)
+            mutated.append(path)
+        for path in deletes:
+            if path.exists():
+                path.unlink()
+                mutated.append(path)
+    except OSError as exc:
+        rollback_errors: list[str] = []
+        for path in reversed(mutated):
+            try:
+                original = originals[path]
+                if original is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    data, mode = original
+                    restored = _stage_bytes(path, data)
+                    os.chmod(restored, mode)
+                    os.replace(restored, path)
+            except OSError as rollback_exc:
+                rollback_errors.append(f"{path}: {rollback_exc}")
+        if rollback_errors:
+            raise RuntimeError(
+                f"storage update failed ({exc}); rollback failed: "
+                + "; ".join(rollback_errors)
+            ) from exc
+        raise
+    finally:
+        for tmp in staged.values():
+            tmp.unlink(missing_ok=True)
+
+
+@contextmanager
+def _storage_lock():
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = RUNTIME_DIR / ".profiles.lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    with os.fdopen(fd, "rb+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _parse_bool(value: Any) -> bool:
@@ -211,7 +333,9 @@ def _to_profile(entry: dict, defaults: dict[str, Any] | None = None) -> StoredPr
     defaults = defaults or DEFAULTS[backend]
     merged: dict[str, Any] = dict(defaults)
     merged.update(entry)
-    name = merged["name"]
+    name = merged.get("name")
+    if not isinstance(name, str) or not name:
+        raise ValueError("profile entry is missing a non-empty name")
 
     def _as_int(field_name: str, raw: Any) -> int:
         # Re-raise with the profile + field so list_profiles can skip just
@@ -223,7 +347,11 @@ def _to_profile(entry: dict, defaults: dict[str, Any] | None = None) -> StoredPr
                 f"profile {name!r}: invalid {field_name} {raw!r} (must be an integer)"
             ) from None
 
-    return StoredProfile(
+    raw_env_vars = merged.get("env_vars") or {}
+    if not isinstance(raw_env_vars, dict):
+        raise ValueError(f"profile {name!r}: env_vars must be a mapping")
+
+    profile = StoredProfile(
         name=name,
         backend=backend,
         container_name=merged.get("container_name", name),
@@ -239,12 +367,95 @@ def _to_profile(entry: dict, defaults: dict[str, Any] | None = None) -> StoredPr
         max_lora_rank=merged.get("max_lora_rank"),
         lora_modules=merged.get("lora_modules", ""),
         extra_pip_packages=merged.get("extra_pip_packages", ""),
-        env_vars=dict(merged.get("env_vars") or {}),
+        env_vars=dict(raw_env_vars),
         model_file=merged.get("model_file", ""),
         hf_repo=merged.get("hf_repo", ""),
         hf_file=merged.get("hf_file", ""),
         image_tag=str(merged.get("image_tag", "") or ""),
     )
+    _validate_profile(profile)
+    return profile
+
+
+def _validate_profile(profile: StoredProfile) -> None:
+    if profile.backend not in DEFAULTS:
+        raise ValueError(f"invalid backend {profile.backend!r}")
+    if not isinstance(profile.name, str) or not _NAME_RE.fullmatch(profile.name):
+        raise ValueError(
+            f"invalid profile name {profile.name!r}: must match {_NAME_RE.pattern}"
+        )
+    container_name = profile.container_name or profile.name
+    if not isinstance(container_name, str) or not _NAME_RE.fullmatch(container_name):
+        raise ValueError(
+            f"invalid container name {container_name!r}: must match {_NAME_RE.pattern}"
+        )
+    config_name = profile.config_name or profile.name
+    if not isinstance(config_name, str) or not _NAME_RE.fullmatch(config_name):
+        raise ValueError(
+            f"invalid config name {config_name!r}: must match {_NAME_RE.pattern}"
+        )
+    effective_port = int(profile.port or DEFAULTS[profile.backend]["port"])
+    if not 1024 <= effective_port <= 65535:
+        raise ValueError(f"profile {profile.name!r}: port must be in 1024–65535")
+    if not _GPU_ID_RE.fullmatch(profile.gpu_id):
+        raise ValueError(
+            f"profile {profile.name!r}: invalid GPU id {profile.gpu_id!r}"
+        )
+    if profile.backend == "vllm" and int(profile.tensor_parallel_size) < 1:
+        raise ValueError(
+            f"profile {profile.name!r}: tensor_parallel_size must be at least 1"
+        )
+    for field_name in ("max_loras", "max_lora_rank"):
+        value = getattr(profile, field_name)
+        if value is not None and (not isinstance(value, int) or value < 1):
+            raise ValueError(
+                f"profile {profile.name!r}: {field_name} must be a positive integer"
+            )
+    if not isinstance(profile.env_vars, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in profile.env_vars.items()
+    ):
+        raise ValueError(f"profile {profile.name!r}: env_vars must map strings to strings")
+    if profile.image_tag:
+        from tui.common.dev_build import image_tag_error
+
+        error = image_tag_error(profile.image_tag)
+        if error:
+            raise ValueError(f"profile {profile.name!r}: {error}")
+
+
+def _validated_profiles(data: dict) -> list[StoredProfile]:
+    entries = data.get("profiles", [])
+    if not isinstance(entries, list):
+        raise ValueError(f"{PROFILES_YAML}: profiles must be a list")
+    profiles: list[StoredProfile] = []
+    names: dict[str, str] = {}
+    containers: dict[str, str] = {}
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"{PROFILES_YAML}: profile entry {index} must be a mapping"
+            )
+        backend = entry.get("backend")
+        if backend not in DEFAULTS:
+            raise ValueError(
+                f"{PROFILES_YAML}: profile entry {index} has invalid backend {backend!r}"
+            )
+        profile = _to_profile(entry, _backend_defaults(data, backend))
+        if profile.name in names:
+            raise ValueError(
+                f"duplicate profile name {profile.name!r}: already used by {names[profile.name]}"
+            )
+        container_name = profile.container_name or profile.name
+        if container_name in containers:
+            raise ValueError(
+                f"duplicate container name {container_name!r}: already used by "
+                f"{containers[container_name]}"
+            )
+        names[profile.name] = f"{profile.backend}/{profile.name}"
+        containers[container_name] = f"{profile.backend}/{profile.name}"
+        profiles.append(profile)
+    return profiles
 
 
 def _profile_to_entry(
@@ -291,45 +502,10 @@ def _profile_to_entry(
 
 
 def list_profiles(backend: str) -> list[StoredProfile]:
+    if backend not in DEFAULTS:
+        raise ValueError(f"Invalid backend: {backend!r}")
     data = _load_yaml()
-    defaults = _backend_defaults(data, backend)
-    out: list[StoredProfile] = []
-    seen: set[str] = set()
-    for p in data.get("profiles", []):
-        # A non-dict list item (e.g. a stray string from a hand edit) has no
-        # .get — guard before touching it so it can't crash the whole scan.
-        if not isinstance(p, dict):
-            log.warning(
-                "skipping non-mapping entry in profiles.yaml: %r — each profile "
-                "must be a key/value mapping.", p,
-            )
-            continue
-        if p.get("backend") != backend:
-            continue
-        try:
-            profile = _to_profile(p, defaults)
-        except (ValueError, KeyError, AttributeError, TypeError) as exc:
-            # One malformed entry (missing name, non-integer port, wrong types
-            # from a hand edit) must not blank out the whole list — skip it, but
-            # say so loudly so the user can fix profiles.yaml.
-            log.warning(
-                "skipping malformed profile in profiles.yaml: %s — fix the value "
-                "or remove the entry.", exc,
-            )
-            continue
-        # A second entry with the same name+backend (merge artifact or hand
-        # edit) would make the dashboard add two rows under one Textual row key
-        # (DuplicateKey → the reload worker crashes). Keep the first and warn.
-        if profile.name in seen:
-            log.warning(
-                "skipping duplicate profile %r in backend %r — keep a single "
-                "entry per name; remove the extra in profiles.yaml.",
-                profile.name, backend,
-            )
-            continue
-        seen.add(profile.name)
-        out.append(profile)
-    return out
+    return [p for p in _validated_profiles(data) if p.backend == backend]
 
 
 def find_name_owner(
@@ -345,12 +521,11 @@ def find_name_owner(
     profile currently being edited, so the check doesn't match it against
     itself.
     """
-    for backend in DEFAULTS:
-        for p in list_profiles(backend):
-            if exclude is not None and exclude == (backend, p.name):
-                continue
-            if p.name == name:
-                return backend
+    for p in _validated_profiles(_load_yaml()):
+        if exclude is not None and exclude == (p.backend, p.name):
+            continue
+        if p.name == name:
+            return p.backend
     return None
 
 
@@ -366,6 +541,30 @@ def load_profile(name: str, backend: str) -> StoredProfile | None:
 
 
 def save_profile(profile: StoredProfile) -> None:
+    with _storage_lock():
+        _save_profile_unlocked(profile)
+
+
+def clone_profile(src: str, dst: str, backend: str) -> StoredProfile:
+    with _storage_lock():
+        source = next(
+            (profile for profile in list_profiles(backend) if profile.name == src),
+            None,
+        )
+        if source is None:
+            raise ValueError(f"profile {src!r} not found in backend {backend!r}")
+        clone = replace(
+            source,
+            name=dst,
+            container_name=dst,
+            config_name=source.config_name or src,
+            env_vars=dict(source.env_vars),
+        )
+        _save_profile_unlocked(clone)
+        return clone
+
+
+def _save_profile_unlocked(profile: StoredProfile) -> None:
     """Persist a profile atomically across both profiles.yaml and the runtime .env.
 
     Stages both files as siblings with a `.tmp` suffix, then os.replace each
@@ -375,7 +574,23 @@ def save_profile(profile: StoredProfile) -> None:
     (the silent-corruption pattern that fed the next `compose up` an out-of-
     sync configuration).
     """
+    _validate_profile(profile)
     data = _load_yaml()
+    existing_profiles = _validated_profiles(data)
+    effective_container = profile.container_name or profile.name
+    for existing in existing_profiles:
+        if (existing.backend, existing.name) == (profile.backend, profile.name):
+            continue
+        if existing.name == profile.name:
+            raise ValueError(
+                f"profile name {profile.name!r} is already used by "
+                f"{existing.backend}/{existing.name}"
+            )
+        if (existing.container_name or existing.name) == effective_container:
+            raise ValueError(
+                f"container name {effective_container!r} is already used by "
+                f"{existing.backend}/{existing.name}"
+            )
     profiles = data.get("profiles", [])
     entry = _profile_to_entry(profile, _backend_defaults(data, profile.backend))
     for idx, existing in enumerate(profiles):
@@ -400,23 +615,15 @@ def save_profile(profile: StoredProfile) -> None:
     env_text = "\n".join(env_lines)
     yaml_text = _dump_yaml(data)
 
-    env_tmp = env_path.with_suffix(env_path.suffix + ".tmp")
-    yaml_tmp = PROFILES_YAML.with_suffix(PROFILES_YAML.suffix + ".tmp")
-    try:
-        env_tmp.write_text(env_text)
-        yaml_tmp.write_text(yaml_text)
-    except OSError:
-        for stale in (env_tmp, yaml_tmp):
-            try:
-                stale.unlink()
-            except OSError:
-                pass
-        raise
-    os.replace(env_tmp, env_path)
-    os.replace(yaml_tmp, PROFILES_YAML)
+    _replace_files({env_path: env_text, PROFILES_YAML: yaml_text})
 
 
 def rename_profile(old: str, new: str, backend: str) -> StoredProfile:
+    with _storage_lock():
+        return _rename_profile_unlocked(old, new, backend)
+
+
+def _rename_profile_unlocked(old: str, new: str, backend: str) -> StoredProfile:
     """Rename a profile in place, returning the renamed record.
 
     Callers must refuse this while the profile's container is running: the
@@ -466,29 +673,23 @@ def rename_profile(old: str, new: str, backend: str) -> StoredProfile:
     env_text = "\n".join(_render_env_lines(profile))
     yaml_text = _dump_yaml(data)
 
-    env_tmp = new_env.with_suffix(new_env.suffix + ".tmp")
-    yaml_tmp = PROFILES_YAML.with_suffix(PROFILES_YAML.suffix + ".tmp")
-    try:
-        env_tmp.write_text(env_text)
-        yaml_tmp.write_text(yaml_text)
-    except OSError:
-        for stale in (env_tmp, yaml_tmp):
-            try:
-                stale.unlink()
-            except OSError:
-                pass
-        raise
-    os.replace(env_tmp, new_env)
-    os.replace(yaml_tmp, PROFILES_YAML)
-
     old_env = runtime_env_path(old, backend)
-    if old_env.exists():
-        old_env.unlink()
+    deletes = (old_env,) if old_env != new_env else ()
+    _replace_files(
+        {new_env: env_text, PROFILES_YAML: yaml_text},
+        deletes=deletes,
+    )
     return profile
 
 
 def delete_profile(name: str, backend: str) -> bool:
+    with _storage_lock():
+        return _delete_profile_unlocked(name, backend)
+
+
+def _delete_profile_unlocked(name: str, backend: str) -> bool:
     data = _load_yaml()
+    _validated_profiles(data)
     profiles = data.get("profiles", [])
     remaining = [
         p for p in profiles
@@ -503,14 +704,19 @@ def delete_profile(name: str, backend: str) -> bool:
     if len(remaining) == len(profiles):
         return False
     data["profiles"] = remaining
-    _write_yaml(data)
     rt = runtime_env_path(name, backend)
-    if rt.exists():
-        rt.unlink()
+    _replace_files(
+        {PROFILES_YAML: _dump_yaml(data)},
+        deletes=(rt,),
+    )
     return True
 
 
 def runtime_env_path(name: str, backend: str) -> Path:
+    if backend not in DEFAULTS:
+        raise ValueError(f"invalid backend {backend!r}")
+    if not _NAME_RE.fullmatch(name):
+        raise ValueError(f"invalid profile name {name!r}: must match {_NAME_RE.pattern}")
     return RUNTIME_DIR / backend / f"{name}.env"
 
 
@@ -557,7 +763,7 @@ def _render_env_lines(profile: StoredProfile) -> list[str]:
     if profile.backend == "vllm":
         lines += [
             _env_line("CONTAINER_NAME", profile.container_name or profile.name),
-            _env_line("VLLM_PORT", profile.port),
+            _env_line("VLLM_PORT", profile.port or DEFAULTS["vllm"]["port"]),
             _env_line("GPU_ID", profile.gpu_id),
             _env_line("TENSOR_PARALLEL_SIZE", profile.tensor_parallel_size),
             _env_line("CONFIG_NAME", profile.config_name or profile.name),
@@ -591,7 +797,7 @@ def _render_env_lines(profile: StoredProfile) -> list[str]:
     else:
         lines += [
             _env_line("CONTAINER_NAME", profile.container_name or profile.name),
-            _env_line("LLAMA_PORT", profile.port),
+            _env_line("LLAMA_PORT", profile.port or DEFAULTS["llamacpp"]["port"]),
             _env_line("GPU_ID", profile.gpu_id),
             _env_line("CONFIG_NAME", profile.config_name or profile.name),
         ]
@@ -633,6 +839,7 @@ def _render_env_lines(profile: StoredProfile) -> list[str]:
 
 
 def render_env(profile: StoredProfile) -> Path:
+    _validate_profile(profile)
     out_path = runtime_env_path(profile.name, profile.backend)
     lines = _render_env_lines(profile)
     _atomic_write(out_path, "\n".join(lines))

@@ -9,7 +9,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Select, Static
+from textual.widgets import Button, Input, Label, Select, Static, TextArea
 
 from tui.backends.llamacpp.backend import (
     Profile,
@@ -78,6 +78,10 @@ class ProfileFormScreen(ModalScreen[str | None]):
     }
     ProfileFormScreen #section-hint {
         color: $text-muted;
+        margin-bottom: 1;
+    }
+    ProfileFormScreen #env-vars-input {
+        height: 6;
         margin-bottom: 1;
     }
     ProfileFormScreen .form-buttons {
@@ -209,6 +213,15 @@ class ProfileFormScreen(ModalScreen[str | None]):
                         id="image-tag-input",
                     )
 
+                yield Label(
+                    t("Environment Variables (one KEY=VALUE per line)", "환경 변수 (한 줄에 KEY=VALUE 하나)"),
+                    id="section-title",
+                )
+                yield TextArea(
+                    profile_store.format_env_vars_text(p.env_vars if p else {}),
+                    id="env-vars-input",
+                )
+
             with Horizontal(classes="form-buttons"):
                 yield Button(t("Save", "저장"), id="save-btn", variant="primary")
                 yield Button(t("Close", "닫기"), id="cancel-btn", variant="default")
@@ -220,6 +233,14 @@ class ProfileFormScreen(ModalScreen[str | None]):
         port = self.query_one("#port-input", Input).value.strip()
         gpu_id = self.query_one("#gpu-input", Input).value.strip()
         image_tag = self.query_one("#image-tag-input", Input).value.strip()
+        try:
+            env_vars = profile_store.parse_env_vars_text(
+                self.query_one("#env-vars-input", TextArea).text,
+                "llamacpp",
+            )
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return
         hf_repo = self.query_one("#hf-repo-input", Input).value.strip()
         hf_file = self.query_one("#hf-file-input", Input).value.strip()
         model_file = self.query_one("#model-file-input", Input).value.strip()
@@ -305,6 +326,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             p.hf_repo = hf_repo
             p.hf_file = hf_file
             p.model_file = effective_model_file
+            p.env_vars = env_vars
         else:
             p = Profile(
                 name=name,
@@ -316,9 +338,14 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 hf_repo=hf_repo,
                 hf_file=hf_file,
                 model_file=effective_model_file,
+                env_vars=env_vars,
             )
 
-        save_profile(p)
+        try:
+            save_profile(p)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.notify(str(exc), severity="error", timeout=8)
+            return
         self.notify(t(f"Saved: {name}", f"저장: {name}"), severity="information")
         if not hf_repo:
             self.notify(
@@ -445,41 +472,15 @@ class ProfileDeleteScreen(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         cfg = self._profile.config_name
-        other_refs = [
-            n for n in list_profile_names()
-            if n != self._profile_name and load_profile(n).config_name == cfg
-        ] if cfg else []
 
         with Vertical():
-            if cfg == "example":
-                # delete_profile() 이 tracked 템플릿은 건너뛴다 — 삭제된다고
-                # 말하면 거짓 안내가 된다.
+            if cfg:
                 yield Static(
                     t(
                         f"Delete [b]{self._profile_name}[/b]?\n"
-                        f"[dim](config 'example' is the tracked template — kept)[/dim]",
+                        f"[dim](profile only; linked config '{cfg}' is kept)[/dim]",
                         f"[b]{self._profile_name}[/b] 삭제?\n"
-                        f"[dim](config 'example' 은 tracked 템플릿이라 유지됨)[/dim]",
-                    ),
-                    id="delete-message",
-                )
-            elif cfg and not other_refs:
-                yield Static(
-                    t(
-                        f"Delete [b]{self._profile_name}[/b]?\n"
-                        f"[dim](linked config '{cfg}' is deleted too — no other profile references it)[/dim]",
-                        f"[b]{self._profile_name}[/b] 삭제?\n"
-                        f"[dim](연결된 config '{cfg}' 도 함께 삭제됨 — 다른 프로필 참조 없음)[/dim]",
-                    ),
-                    id="delete-message",
-                )
-            elif cfg:
-                yield Static(
-                    t(
-                        f"Delete [b]{self._profile_name}[/b]?\n"
-                        f"[dim](config '{cfg}' is also used by {', '.join(other_refs)} → kept)[/dim]",
-                        f"[b]{self._profile_name}[/b] 삭제?\n"
-                        f"[dim](config '{cfg}' 는 {', '.join(other_refs)} 도 사용 중 → 유지)[/dim]",
+                        f"[dim](프로필만 삭제; 연결된 config '{cfg}' 유지)[/dim]",
                     ),
                     id="delete-message",
                 )
@@ -493,26 +494,36 @@ class ProfileDeleteScreen(ModalScreen[bool]):
                 yield Button(t("Cancel", "취소"), id="cancel-btn", variant="default")
 
     @on(Button.Pressed, "#delete-btn")
-    def _on_delete(self, event: Button.Pressed) -> None:
-        cfg = self._profile.config_name
-        other_refs = [
-            n for n in list_profile_names()
-            if n != self._profile_name and load_profile(n).config_name == cfg
-        ] if cfg else []
-        delete_config_too = bool(cfg) and not other_refs
-        delete_profile(self._profile_name, delete_config_too=delete_config_too)
-        # backend 가 example.yaml 삭제를 스킵하므로 notify 도 맞춰야 한다.
-        if delete_config_too and cfg != "example":
-            self.app.notify(t(f"Deleted: {self._profile_name} + config '{cfg}'", f"삭제: {self._profile_name} + config '{cfg}'"))
-        elif cfg == "example":
+    async def _on_delete(self, event: Button.Pressed) -> None:
+        from tui.common import docker as common_docker
+
+        container = self._profile.container_name or self._profile_name
+        try:
+            running = await common_docker.running_container_names()
+        except Exception as exc:
             self.app.notify(
                 t(
-                    f"Deleted: {self._profile_name} (tracked template config 'example' kept)",
-                    f"삭제: {self._profile_name} (tracked 템플릿 config 'example' 유지)",
-                )
+                    f"Could not verify container state ({exc}); deletion aborted.",
+                    f"컨테이너 상태를 확인할 수 없습니다 ({exc}). 삭제를 중단합니다.",
+                ),
+                severity="error",
             )
-        else:
-            self.app.notify(t(f"Deleted: {self._profile_name}", f"삭제: {self._profile_name}"))
+            return
+        if container in running:
+            self.app.notify(
+                t(
+                    f"Container '{container}' is running; stop it before deleting.",
+                    f"컨테이너 '{container}' 가 실행 중입니다. 중지 후 삭제하세요.",
+                ),
+                severity="error",
+            )
+            return
+        cfg = self._profile.config_name
+        delete_profile(self._profile_name, delete_config_too=False)
+        suffix = t(f"; config '{cfg}' kept", f"; config '{cfg}' 유지") if cfg else ""
+        self.app.notify(
+            t(f"Deleted: {self._profile_name}", f"삭제: {self._profile_name}") + suffix
+        )
         self.dismiss(True)
 
     @on(Button.Pressed, "#cancel-btn")

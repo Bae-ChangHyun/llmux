@@ -15,6 +15,7 @@ from tui.cli._runtime import (
     emit_json,
     emit_table,
     gather_conflict_warnings,
+    partition_conflict_warnings,
     run_async,
     stream_async,
 )
@@ -60,7 +61,7 @@ def up(
         ),
     ),
     pull: bool = typer.Option(
-        False, "--pull", help="vLLM only: force --pull always when bringing the container up."
+        False, "--pull", help="Force --pull always for non-dev images."
     ),
     repo_url: str = typer.Option(
         "", "--repo-url",
@@ -72,9 +73,8 @@ def up(
     ),
     force: bool = typer.Option(
         False, "--force",
-        help="Skip the cross-backend port/GPU conflict pre-flight (matches the "
-             "TUI dashboard's pre-start gate). Required to start a container "
-             "when llmux detects a conflict.",
+        help="Allow a detected GPU overlap. Port conflicts and failed port probes "
+             "always abort.",
     ),
 ) -> None:
     """Start a profile's container. Streams compose output to stdout."""
@@ -101,23 +101,41 @@ def up(
 
     bk = detect_backend(profile, override=backend)
 
-    # Conflict pre-flight: mirror the TUI dashboard. The headless CLI defaults
-    # to ABORT-on-conflict so scripts/agents don't silently start a container
-    # that competes with another for the same port or GPU. `--force` opts out.
-    if not force:
-        warnings = run_async(gather_conflict_warnings(profile, bk))
-        if warnings:
+    if tag and not dev:
+        from tui.common.dev_build import image_tag_error
+
+        image_ref = tag
+        if bk == "vllm":
+            from tui.backends.vllm.backend_inspect import resolve_vllm_image_ref
+
+            image_ref = resolve_vllm_image_ref(tag)
+        error = image_tag_error(image_ref)
+        if error:
+            typer.echo(f"Error: invalid image reference: {error}", err=True)
+            raise typer.Exit(code=2)
+
+    warnings = run_async(gather_conflict_warnings(profile, bk))
+    hard_conflicts, gpu_conflicts = partition_conflict_warnings(warnings)
+    blocking = hard_conflicts or (gpu_conflicts if not force else [])
+    if blocking:
+        typer.echo(
+            f"Conflict pre-flight: cannot start '{profile}' ({bk}) — "
+            f"{len(blocking)} issue(s) detected:",
+            err=True,
+        )
+        for warning in blocking:
+            typer.echo(f"  • {warning}", err=True)
+        if gpu_conflicts and not hard_conflicts:
             typer.echo(
-                f"Conflict pre-flight: cannot start '{profile}' ({bk}) — "
-                f"{len(warnings)} issue(s) detected:",
-                err=True,
+                "Aborting. Re-run with --force to allow the GPU overlap.", err=True
             )
-            for w in warnings:
-                typer.echo(f"  • {w}", err=True)
-            typer.echo(
-                "Aborting. Re-run with --force to start anyway.", err=True
-            )
-            raise typer.Exit(code=1)
+        else:
+            typer.echo("Aborting. Resolve the port check before retrying.", err=True)
+        raise typer.Exit(code=1)
+    if force and gpu_conflicts:
+        typer.echo("Warning: continuing despite GPU overlap:", err=True)
+        for warning in gpu_conflicts:
+            typer.echo(f"  • {warning}", err=True)
 
     if bk == "vllm":
         from tui.backends.vllm.backend_runtime import stream_container_up
@@ -136,17 +154,13 @@ def up(
     else:
         from tui.backends.llamacpp.backend_runtime import stream_container_up as lc_up
 
-        if pull:
-            typer.echo(
-                "Warning: --pull is vLLM-only and ignored for llama.cpp",
-                err=True,
-            )
         rc = stream_async(
             lc_up(
                 profile,
                 use_dev=dev,
                 use_default_image=default_image,
                 tag=tag,
+                pull=pull,
                 repo_url=repo_url,
                 branch=branch,
             )
@@ -264,6 +278,12 @@ def benchmark(
     ),
 ) -> None:
     """Benchmark a running container (tok/s). Mirrors the TUI dashboard bench."""
+    if max_tokens < 1:
+        raise typer.BadParameter("must be at least 1", param_hint="--max-tokens")
+    if runs < 1:
+        raise typer.BadParameter("must be at least 1", param_hint="--runs")
+    if warmup < 0:
+        raise typer.BadParameter("must be at least 0", param_hint="--warmup")
     bk = detect_backend(profile, override=backend)
     sp = profile_store.load_profile(profile, bk)
     if not sp.port:

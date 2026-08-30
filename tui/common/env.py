@@ -119,17 +119,32 @@ def validate_common_env(
     hf_cache_path = common.get("HF_CACHE_PATH", "")
     if not hf_cache_path:
         return False, ["Error: HF_CACHE_PATH is not set in .env.common"]
-    if not os.path.isabs(hf_cache_path):
+    if not os.path.isabs(host_expand(hf_cache_path)):
         return False, [
             f"Error: HF_CACHE_PATH must be an absolute path. Current value: {hf_cache_path}"
         ]
+    workers = common.get("PREPARE_MAX_WORKERS", "").strip()
+    if workers and (not workers.isdigit() or int(workers) < 1):
+        return False, [
+            "Error: PREPARE_MAX_WORKERS must be empty or a positive integer. "
+            f"Current value: {workers}"
+        ]
+    from tui.common.dev_build import image_tag_error
+
+    for key in ("VLLM_IMAGE", "LLAMACPP_IMAGE"):
+        image_ref = common.get(key, "").strip()
+        if not image_ref:
+            continue
+        error = image_tag_error(image_ref)
+        if error:
+            return False, [f"Error: invalid {key}: {error}"]
     if require_lora_base_path:
         lora_base_path = common.get("LORA_BASE_PATH", "")
         if not lora_base_path:
             return False, [
                 "Error: ENABLE_LORA=true but LORA_BASE_PATH is not set in .env.common"
             ]
-        if not os.path.isabs(lora_base_path):
+        if not os.path.isabs(host_expand(lora_base_path)):
             return False, [
                 f"Error: LORA_BASE_PATH must be an absolute path. Current value: {lora_base_path}"
             ]

@@ -571,8 +571,7 @@ def clone_profile(
     """Clone SRC to a new profile DST (same backend, same linked config)."""
     bk = detect_backend(src, override=backend)
     _validate_profile_name(dst, bk, param_hint="DST")
-    sp = profile_store.load_profile(src, bk)
-    if sp is None:
+    if profile_store.load_profile(src, bk) is None:
         raise typer.BadParameter(f"profile '{src}' not found in backend '{bk}'", param_hint="SRC")
     owner = profile_store.find_name_owner(dst)
     if owner is not None:
@@ -581,13 +580,10 @@ def clone_profile(
             "must be unique across both backends.",
             param_hint="DST",
         )
-    # The clone keeps SRC's config link, but its container must not collide with
-    # SRC's — an unset container_name follows the new profile name on its own.
-    if sp.container_name == src:
-        sp.container_name = dst
-    sp.config_name = sp.config_name or src
-    sp.name = dst
-    profile_store.save_profile(sp)
+    try:
+        sp = profile_store.clone_profile(src, dst, bk)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="DST") from exc
     print(f"Cloned profile '{src}' → '{dst}' (backend={bk})")
     print(f"  container: {sp.container_name or sp.name}")
     print(f"  config:    {sp.config_name or sp.name}")
@@ -606,6 +602,12 @@ def delete_profile(
 ) -> None:
     """Delete a profile (and optionally its linked config)."""
     bk = detect_backend(name, override=backend)
+    sp = profile_store.load_profile(name, bk)
+    if sp is None:
+        raise typer.BadParameter(
+            f"profile '{name}' not found in backend '{bk}'", param_hint="NAME"
+        )
+    _require_stopped(sp, action="delete the profile")
     if not yes:
         suffix = " AND its config YAML" if with_config else ""
         confirm = typer.confirm(f"Delete profile '{name}' (backend={bk}){suffix}?")
@@ -668,6 +670,18 @@ def quick_setup(
         "0.9", "--gpu-mem", help="vLLM only: gpu-memory-utilization (0.0–1.0)."
     ),
     enable_lora: bool = typer.Option(False, "--lora/--no-lora", help="vLLM only."),
+    recipe: bool = typer.Option(
+        False, "--recipe", help="vLLM only: apply the official recipe for MODEL."
+    ),
+    recipe_from: str = typer.Option(
+        "", "--recipe-from", help="vLLM only: borrow the recipe of another model."
+    ),
+    recipe_variant: str = typer.Option(
+        "", "--variant", help="vLLM only: recipe precision variant."
+    ),
+    recipe_feature: list[str] = typer.Option(
+        [], "--feature", help="vLLM only: repeatable recipe feature."
+    ),
     # llama.cpp-only
     hf_repo: str = typer.Option(
         "", "--hf-repo",
@@ -684,6 +698,10 @@ def quick_setup(
     n_gpu_layers: str = typer.Option(
         "99", "--n-gpu-layers",
         help="llama.cpp only: --n-gpu-layers (99 = all). Empty = backend default.",
+    ),
+    batch_size: str = typer.Option(
+        "", "--batch-size",
+        help="llama.cpp only: --batch-size. Empty = backend default.",
     ),
     cache_type_k: str = typer.Option(
         "bf16", "--cache-type-k",
@@ -721,12 +739,17 @@ def quick_setup(
         vllm_only={
             "--gpu-mem": gpu_memory_utilization != "0.9",
             "--lora": enable_lora,
+            "--recipe": recipe,
+            "--recipe-from": bool(recipe_from),
+            "--variant": bool(recipe_variant),
+            "--feature": bool(recipe_feature),
         },
         llamacpp_only={
             "--hf-repo": bool(hf_repo),
             "--hf-file": bool(hf_file),
             "--ctx-size": ctx_size != "32768",
             "--n-gpu-layers": n_gpu_layers != "99",
+            "--batch-size": bool(batch_size),
             "--cache-type-k": cache_type_k != "bf16",
             "--cache-type-v": cache_type_v != "bf16",
             "--no-flash-attn": not flash_attn,
@@ -748,6 +771,10 @@ def quick_setup(
             gpu_memory_utilization=gpu_memory_utilization,
             enable_lora=enable_lora,
             copy_config_from=copy_config_from,
+            use_recipe=recipe or bool(recipe_from or recipe_variant or recipe_feature),
+            recipe_from=recipe_from,
+            recipe_variant=recipe_variant,
+            recipe_features=recipe_feature,
         )
         return
 
@@ -778,6 +805,7 @@ def quick_setup(
         gpu_id=gpu_id,
         ctx_size=ctx_size,
         n_gpu_layers=n_gpu_layers,
+        batch_size=batch_size,
         cache_type_k=cache_type_k,
         cache_type_v=cache_type_v,
         flash_attn=flash_attn,
@@ -796,6 +824,10 @@ def _quick_setup_vllm(
     gpu_memory_utilization: str,
     enable_lora: bool,
     copy_config_from: str,
+    use_recipe: bool,
+    recipe_from: str,
+    recipe_variant: str,
+    recipe_features: list[str],
 ) -> None:
     if not model:
         raise typer.BadParameter(
@@ -840,9 +872,39 @@ def _quick_setup_vllm(
         suffix += 1
         final_name = f"{name}-{suffix}"
 
+    if use_recipe and copy_config_from:
+        raise typer.BadParameter(
+            "--copy-from cannot be combined with recipe options",
+            param_hint="--copy-from",
+        )
+
     extra_params: dict = {}
     disabled_params: dict = {}
-    if copy_config_from:
+    if use_recipe:
+        from tui.cli.config import _pick_recipe_variant
+        from tui.common.recipes import RecipeUnavailable, build_config, fetch_recipe
+
+        source_model = recipe_from.strip() or model
+        try:
+            fetched = run_async(fetch_recipe(source_model))
+        except RecipeUnavailable as exc:
+            typer.echo(f"could not reach the recipe index — {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        if fetched is None:
+            raise typer.BadParameter(
+                f"no vLLM recipe found for {source_model}",
+                param_hint="--recipe-from" if recipe_from else "MODEL",
+            )
+        chosen = _pick_recipe_variant(fetched, recipe_variant)
+        recipe_model, extra_params = build_config(
+            fetched,
+            chosen,
+            list(recipe_features),
+        )
+        if recipe_from:
+            recipe_model = model
+        model = recipe_model
+    elif copy_config_from:
         # load_config() returns an empty Config for a missing file, so without
         # this check a typo'd --copy-from silently produced an empty config.
         _require_config_exists("vllm", copy_config_from)
@@ -850,29 +912,36 @@ def _quick_setup_vllm(
         extra_params = dict(src.extra_params)
         disabled_params = dict(src.disabled_params)
 
-    save_config(
-        Config(
-            name=final_name,
-            model=model,
-            gpu_memory_utilization=gpu_memory_utilization,
-            extra_params=extra_params,
-            disabled_params=disabled_params,
-        )
+    config = Config(
+        name=final_name,
+        model=model,
+        gpu_memory_utilization=gpu_memory_utilization,
+        extra_params=extra_params,
+        disabled_params=disabled_params,
     )
-
-    profile_store.save_profile(
-        profile_store.StoredProfile(
-            name=final_name,
-            backend="vllm",
-            container_name=final_name,
-            port=port,
-            gpu_id=gpu_id,
-            tensor_parallel_size=len(gpu_id.split(",")) if gpu_id else 1,
-            config_name=final_name,
-            model_id=model,
-            enable_lora=enable_lora,
+    save_config(config)
+    try:
+        profile_store.save_profile(
+            profile_store.StoredProfile(
+                name=final_name,
+                backend="vllm",
+                container_name=final_name,
+                port=port,
+                gpu_id=gpu_id,
+                tensor_parallel_size=len(gpu_id.split(",")) if gpu_id else 1,
+                config_name=final_name,
+                model_id=model,
+                enable_lora=enable_lora,
+            )
         )
-    )
+    except (OSError, RuntimeError, ValueError) as exc:
+        try:
+            config.path.unlink(missing_ok=True)
+        except OSError as rollback_exc:
+            raise RuntimeError(
+                f"profile creation failed ({exc}); config rollback failed: {rollback_exc}"
+            ) from exc
+        raise
     print(f"Created profile + config: {final_name}")
 
 
@@ -885,6 +954,7 @@ def _quick_setup_llamacpp(
     gpu_id: str,
     ctx_size: str,
     n_gpu_layers: str,
+    batch_size: str,
     cache_type_k: str,
     cache_type_v: str,
     flash_attn: bool,
@@ -921,6 +991,7 @@ def _quick_setup_llamacpp(
     # A failed lookup does not hard-fail (a headless caller may already know
     # what's in the repo) but it must say the check was skipped — otherwise a
     # typo'd --hf-file sails through and only surfaces at download time.
+    listing_available = True
     try:
         files = run_async(list_hf_repo_files(repo))
     except HfListingUnavailable as exc:
@@ -929,6 +1000,7 @@ def _quick_setup_llamacpp(
             err=True,
         )
         files = []
+        listing_available = False
     gguf_files = [
         str(f.get("path", ""))
         for f in files
@@ -936,6 +1008,10 @@ def _quick_setup_llamacpp(
         and f.get("type") == "file"
         and str(f.get("path", "")).lower().endswith(".gguf")
     ]
+    if listing_available and not gguf_files:
+        raise typer.BadParameter(
+            f"{repo} contains no GGUF files.", param_hint="--hf-file"
+        )
     if gguf_files and hf_file not in gguf_files:
         available = "\n  ".join(gguf_files[:20])
         more = f"\n  ... ({len(gguf_files) - 20} more)" if len(gguf_files) > 20 else ""
@@ -1004,6 +1080,7 @@ def _quick_setup_llamacpp(
 
     _set_int("ctx-size", ctx_size, param_hint="--ctx-size")
     _set_int("n-gpu-layers", n_gpu_layers, param_hint="--n-gpu-layers")
+    _set_int("batch-size", batch_size, param_hint="--batch-size")
     if cache_type_k:
         params["cache-type-k"] = cache_type_k
     else:
@@ -1026,19 +1103,32 @@ def _quick_setup_llamacpp(
     else:
         params.pop("override-tensors", None)
 
-    l_save_config(LcppConfig(name=final_name, params=params, disabled_params=disabled_params))
-
-    profile_store.save_profile(
-        profile_store.StoredProfile(
-            name=final_name,
-            backend="llamacpp",
-            container_name=final_name,
-            port=int(port),
-            gpu_id=gpu_id,
-            config_name=final_name,
-            model_file=hf_file,
-            hf_repo=repo,
-            hf_file=hf_file,
-        )
+    config = LcppConfig(
+        name=final_name,
+        params=params,
+        disabled_params=disabled_params,
     )
+    l_save_config(config)
+    try:
+        profile_store.save_profile(
+            profile_store.StoredProfile(
+                name=final_name,
+                backend="llamacpp",
+                container_name=final_name,
+                port=int(port),
+                gpu_id=gpu_id,
+                config_name=final_name,
+                model_file=hf_file,
+                hf_repo=repo,
+                hf_file=hf_file,
+            )
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        try:
+            config.path.unlink(missing_ok=True)
+        except OSError as rollback_exc:
+            raise RuntimeError(
+                f"profile creation failed ({exc}); config rollback failed: {rollback_exc}"
+            ) from exc
+        raise
     print(f"Created profile + config: {final_name}")

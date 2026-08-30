@@ -9,6 +9,7 @@ modules load first).
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -71,6 +73,25 @@ def _run_cli(tmp: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _run_cli_with_env(
+    tmp: Path, args: list[str], extra_env: dict[str, str]
+) -> subprocess.CompletedProcess:
+    env = {
+        **os.environ,
+        **extra_env,
+        "LLMUX_ROOT": str(tmp),
+        "NO_COLOR": "1",
+    }
+    return subprocess.run(
+        [sys.executable, "-m", "tui", *args],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
 def _run_cli_stubbed_hf(
     tmp: Path, gguf_files: list[str], *args: str
 ) -> subprocess.CompletedProcess:
@@ -103,7 +124,45 @@ def _run_cli_stubbed_hf(
     )
 
 
+def _run_cli_stubbed_recipe(tmp: Path, *args: str) -> subprocess.CompletedProcess:
+    env = {**os.environ, "LLMUX_ROOT": str(tmp), "NO_COLOR": "1"}
+    stub_src = (
+        "import sys\n"
+        "import tui.common.recipes as _r\n"
+        "async def _stub(*_a, **_k):\n"
+        "    return _r.Recipe(\n"
+        "        model_id='Qwen/Base',\n"
+        "        base_args=['--max-model-len', '8192'],\n"
+        "        variants=[_r.RecipeVariant(name='fp8', extra_args=['--quantization', 'fp8'])],\n"
+        "        features=[_r.RecipeFeature(name='reasoning', args=['--reasoning-parser', 'qwen3'])],\n"
+        "    )\n"
+        "_r.fetch_recipe = _stub\n"
+        "from tui.cli import main\n"
+        f"sys.argv = ['llmux', *{list(args)!r}]\n"
+        "main()\n"
+    )
+    return subprocess.run(
+        [sys.executable, "-c", stub_src],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
 class CliSmokeTests(unittest.TestCase):
+    def test_config_list_rejects_empty_non_mapping_yaml(self):
+        tmp = _make_temp_project()
+        try:
+            (tmp / "config" / "vllm" / "bad.yaml").write_text("[]\n")
+            result = _run_cli(tmp, "config", "list", "--json")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertIn("not a mapping", result.stderr)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     """Side-effect-free dispatch + read-only command coverage."""
 
     @classmethod
@@ -127,6 +186,124 @@ class CliSmokeTests(unittest.TestCase):
         for sub in ["container", "profile", "config", "image", "system"]:
             r = _run_cli(self.tmp, sub, "--help")
             self.assertEqual(r.returncode, 0, f"{sub}: {r.stderr or r.stdout}")
+
+    def test_config_flags_discovers_both_backends_from_image_cache(self):
+        cases = (
+            ("vllm", "custom/vllm:test", ".vllm-params-", ["max-model-len", "quantization"]),
+            ("llamacpp", "custom/llama:test", ".llamacpp-params-", ["ctx-size", "flash-attn"]),
+        )
+        for backend, image, prefix, flags in cases:
+            with self.subTest(backend=backend):
+                identity = f"sha256:{backend}"
+                digest = hashlib.sha256(f"{image}@{identity}".encode()).hexdigest()[:16]
+                cache = self.tmp / "config" / backend / f"{prefix}{digest}.json"
+                cache.write_text(json.dumps(flags))
+                try:
+                    with tempfile.TemporaryDirectory() as bindir:
+                        docker = Path(bindir) / "docker"
+                        docker.write_text(
+                            "#!/usr/bin/env python3\n"
+                            f"print({identity!r})\n"
+                        )
+                        docker.chmod(0o755)
+                        result = _run_cli_with_env(
+                            self.tmp,
+                            [
+                                "config",
+                                "flags",
+                                "--backend",
+                                backend,
+                                "--image",
+                                image,
+                                "--json",
+                            ],
+                            {"PATH": f"{bindir}:{os.environ['PATH']}"},
+                        )
+                    self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+                    data = json.loads(result.stdout)
+                    self.assertEqual(data["backend"], backend)
+                    self.assertEqual(data["image"], image)
+                    self.assertEqual(data["flags"], sorted(flags))
+                finally:
+                    cache.unlink(missing_ok=True)
+
+    def test_system_disk_supports_vllm_hf_cache(self):
+        cache = self.tmp / "hf-cache"
+        cache.mkdir()
+        env_common = self.tmp / ".env.common"
+        env_common.write_text(f"HF_CACHE_PATH={cache}\n")
+        try:
+            result = _run_cli(
+                self.tmp,
+                "system",
+                "disk",
+                "--backend",
+                "vllm",
+                "--json",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["backend"], "vllm")
+            self.assertEqual(data["hf_cache_path"], str(cache))
+            self.assertTrue(data["hf_cache_exists"])
+        finally:
+            env_common.unlink(missing_ok=True)
+
+    def test_system_disk_failure_json_identifies_backend(self):
+        cache = self.tmp / "hf-cache-failure"
+        cache.mkdir()
+        env_common = self.tmp / ".env.common"
+        env_common.write_text(f"HF_CACHE_PATH={cache}\n")
+        try:
+            with tempfile.TemporaryDirectory() as bindir:
+                df = Path(bindir) / "df"
+                df.write_text("#!/bin/sh\necho 'df failed' >&2\nexit 1\n")
+                df.chmod(0o755)
+                for backend in ("vllm", "llamacpp"):
+                    with self.subTest(backend=backend):
+                        result = _run_cli_with_env(
+                            self.tmp,
+                            ["system", "disk", "--backend", backend, "--json"],
+                            {"PATH": f"{bindir}:{os.environ['PATH']}"},
+                        )
+                        self.assertEqual(result.returncode, 1)
+                        self.assertEqual(json.loads(result.stdout)["backend"], backend)
+        finally:
+            env_common.unlink(missing_ok=True)
+
+    def test_image_list_backend_selects_llamacpp_repo(self):
+        with tempfile.TemporaryDirectory() as bindir:
+            docker = Path(bindir) / "docker"
+            docker.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "repo = sys.argv[2]\n"
+                "print(f'{repo}\\tserver-cuda\\t1GB\\t1 day ago')\n"
+            )
+            docker.chmod(0o755)
+            result = _run_cli_with_env(
+                self.tmp,
+                ["image", "list", "--backend", "llamacpp", "--json"],
+                {"PATH": f"{bindir}:{os.environ['PATH']}"},
+            )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        rows = json.loads(result.stdout)
+        self.assertEqual(rows[0]["repository"], "ghcr.io/ggml-org/llama.cpp")
+        self.assertEqual(rows[0]["tag"], "server-cuda")
+
+    def test_llamacpp_up_rejects_ambiguous_custom_image_reference(self):
+        for image in ("ghcr.io/example/llama:latest", "ghcr.io/example/llama"):
+            with self.subTest(image=image):
+                result = _run_cli(self.tmp, "up", "lcpp", "--tag", image)
+                self.assertEqual(result.returncode, 2, result.stderr or result.stdout)
+                self.assertIn("image", (result.stderr + result.stdout).lower())
+
+    def test_vllm_up_rejects_ambiguous_custom_image_reference(self):
+        for image in ("custom/vllm:latest", "custom/vllm", "bad tag"):
+            with self.subTest(image=image):
+                result = _run_cli(self.tmp, "up", "alpha", "--tag", image)
+                self.assertEqual(result.returncode, 2, result.stderr or result.stdout)
+                self.assertIn("image", (result.stderr + result.stdout).lower())
 
 
     def test_profile_list_table(self):
@@ -192,7 +369,7 @@ class CliSmokeTests(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-    def test_non_integer_port_does_not_break_the_whole_list(self):
+    def test_non_integer_port_fails_the_whole_list_cleanly(self):
         tmp = _make_temp_project()
         try:
             data = yaml.safe_load((tmp / "profiles.yaml").read_text())
@@ -201,21 +378,14 @@ class CliSmokeTests(unittest.TestCase):
                     p["port"] = "not-a-number"
             (tmp / "profiles.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
 
-            # The bad entry is skipped, not fatal — alpha/bravo(other) still show.
             r = _run_cli(tmp, "profile", "list", "--json")
-            self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
-            names = {row["name"] for row in json.loads(r.stdout)}
-            self.assertIn("alpha", names)
-            self.assertNotIn("bravo", names)  # malformed → skipped
-
-            ps = _run_cli(tmp, "ps", "--json")
-            self.assertEqual(ps.returncode, 0, ps.stderr or ps.stdout)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertNotIn("Traceback", r.stderr)
+            self.assertIn("invalid port", r.stderr)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-    def test_malformed_entries_are_skipped_not_fatal(self):
-        # A missing-name mapping and a bare string entry must not crash the scan
-        # of the whole file (they used to slip past the ValueError-only guard).
+    def test_malformed_entries_fail_cleanly(self):
         tmp = _make_temp_project()
         try:
             data = yaml.safe_load((tmp / "profiles.yaml").read_text())
@@ -224,13 +394,9 @@ class CliSmokeTests(unittest.TestCase):
             (tmp / "profiles.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
 
             r = _run_cli(tmp, "profile", "list", "--json")
-            self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
-            names = {row["name"] for row in json.loads(r.stdout)}
-            self.assertIn("alpha", names)
-            self.assertIn("bravo", names)
-
-            ps = _run_cli(tmp, "ps", "--json")
-            self.assertEqual(ps.returncode, 0, ps.stderr or ps.stdout)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertNotIn("Traceback", r.stderr)
+            self.assertIn("name", r.stderr)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -429,6 +595,58 @@ class CliSmokeTests(unittest.TestCase):
             r = _run_cli(self.tmp, "env-check")
             self.assertNotEqual(r.returncode, 0)
             self.assertIn("absolute", r.stdout + r.stderr)
+        finally:
+            env_common.unlink(missing_ok=True)
+
+    def test_env_check_accepts_home_expansion_from_shipped_template(self):
+        env_common = self.tmp / ".env.common"
+        env_common.write_text("HF_TOKEN=\nHF_CACHE_PATH=$HOME/.cache/huggingface\n")
+        try:
+            result = _run_cli(self.tmp, "env-check")
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        finally:
+            env_common.unlink(missing_ok=True)
+
+    def test_env_check_rejects_invalid_prepare_worker_count(self):
+        env_common = self.tmp / ".env.common"
+        env_common.write_text(
+            f"HF_CACHE_PATH={self.tmp}/hfcache\nPREPARE_MAX_WORKERS=many\n"
+        )
+        try:
+            result = _run_cli(self.tmp, "env-check")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("PREPARE_MAX_WORKERS", result.stdout + result.stderr)
+        finally:
+            env_common.unlink(missing_ok=True)
+
+    def test_env_check_rejects_ambiguous_default_image_references(self):
+        for key in ("VLLM_IMAGE", "LLAMACPP_IMAGE"):
+            with self.subTest(key=key):
+                env_common = self.tmp / ".env.common"
+                env_common.write_text(
+                    f"HF_CACHE_PATH={self.tmp}/hfcache\n{key}=registry.example/image:latest\n"
+                )
+                try:
+                    result = _run_cli(self.tmp, "env-check")
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn(key, result.stdout + result.stderr)
+                finally:
+                    env_common.unlink(missing_ok=True)
+
+    def test_env_check_json_redacts_hf_token(self):
+        env_common = self.tmp / ".env.common"
+        secret = "hf_secret_value"
+        env_common.write_text(
+            f"HF_TOKEN={secret}\nHF_CACHE_PATH={self.tmp}/hfcache\n"
+        )
+        try:
+            r = _run_cli(self.tmp, "env-check", "--json")
+            self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+            self.assertNotIn(secret, r.stdout + r.stderr)
+            data = json.loads(r.stdout)
+            self.assertEqual(
+                data["HF_TOKEN"], {"set": True, "length": len(secret)}
+            )
         finally:
             env_common.unlink(missing_ok=True)
 
@@ -800,6 +1018,57 @@ class CliSmokeTests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("--container", r.stderr + r.stdout)
 
+    def test_profile_delete_refuses_running_container(self):
+        bin_dir = self.tmp / "test-bin"
+        bin_dir.mkdir(exist_ok=True)
+        docker = bin_dir / "docker"
+        docker.write_text("#!/bin/sh\nprintf 'alpha\\n'\n")
+        docker.chmod(0o755)
+        with patch.dict(
+            os.environ, {"PATH": f"{bin_dir}:{os.environ['PATH']}"}
+        ):
+            r = _run_cli(self.tmp, "profile", "delete", "alpha", "--yes")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("running", r.stderr + r.stdout)
+        show = _run_cli(self.tmp, "profile", "show", "alpha", "--json")
+        self.assertEqual(show.returncode, 0, show.stderr or show.stdout)
+
+    def test_profile_clone_replaces_custom_container_name(self):
+        created = _run_cli(
+            self.tmp,
+            "profile",
+            "new",
+            "clone-source",
+            "--backend",
+            "vllm",
+            "--container",
+            "custom-container",
+        )
+        self.assertEqual(created.returncode, 0, created.stderr or created.stdout)
+        cloned = _run_cli(
+            self.tmp, "profile", "clone", "clone-source", "clone-target"
+        )
+        self.assertEqual(cloned.returncode, 0, cloned.stderr or cloned.stdout)
+        shown = _run_cli(
+            self.tmp, "profile", "show", "clone-target", "--json"
+        )
+        self.assertEqual(shown.returncode, 0, shown.stderr or shown.stdout)
+        self.assertEqual(json.loads(shown.stdout)["container_name"], "clone-target")
+        _run_cli(self.tmp, "profile", "delete", "clone-target", "--yes")
+        _run_cli(self.tmp, "profile", "delete", "clone-source", "--yes")
+
+    def test_force_does_not_classify_port_conflicts_as_bypassable(self):
+        from tui.cli._runtime import partition_conflict_warnings
+
+        hard, soft = partition_conflict_warnings(
+            [
+                "port conflict (llmux): occupied",
+                "GPU conflict: GPU 0 overlap",
+            ]
+        )
+        self.assertEqual(hard, ["port conflict (llmux): occupied"])
+        self.assertEqual(soft, ["GPU conflict: GPU 0 overlap"])
+
     def test_config_new_rejects_uppercase_name(self):
         # Creation follows the TUI's lowercase rule...
         r = _run_cli(self.tmp, "config", "new", "BadName", "--backend", "vllm")
@@ -1102,6 +1371,46 @@ class CliSmokeTests(unittest.TestCase):
         # Cleanup.
         _run_cli(self.tmp, "profile", "delete", "lc-smoke", "-y")
 
+    def test_quick_setup_vllm_accepts_recipe_inputs(self):
+        result = _run_cli_stubbed_recipe(
+            self.tmp,
+            "profile",
+            "quick-setup",
+            "custom/Quantized",
+            "--backend",
+            "vllm",
+            "--name",
+            "recipe-profile",
+            "--recipe-from",
+            "Qwen/Base",
+            "--variant",
+            "fp8",
+            "--feature",
+            "reasoning",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        config = json.loads(
+            _run_cli(
+                self.tmp,
+                "config",
+                "show",
+                "recipe-profile",
+                "--json",
+            ).stdout
+        )["params"]
+        self.assertEqual(config["model"], "custom/Quantized")
+        self.assertEqual(config["max-model-len"], 8192)
+        self.assertEqual(config["quantization"], "fp8")
+        self.assertEqual(config["reasoning-parser"], "qwen3")
+        _run_cli(
+            self.tmp,
+            "profile",
+            "delete",
+            "recipe-profile",
+            "--yes",
+            "--with-config",
+        )
+
     def test_quick_setup_llamacpp_rejects_non_integer_ctx_size(self):
         # --ctx-size / --n-gpu-layers must validate as ints up front
         # (like --port / --gpu-id), not silently store a string that only breaks
@@ -1203,6 +1512,62 @@ class CliSmokeTests(unittest.TestCase):
         combined = (r.stdout or "") + (r.stderr or "")
         self.assertIn("not found", combined.lower())
         self.assertIn("only-Q4_K_M.gguf", combined)
+
+    def test_quick_setup_llamacpp_rejects_repo_with_no_gguf_files(self):
+        r = _run_cli_stubbed_hf(
+            self.tmp,
+            [],
+            "profile",
+            "quick-setup",
+            "--backend",
+            "llamacpp",
+            "--hf-repo",
+            "fake/Empty",
+            "--hf-file",
+            "invented.gguf",
+            "--name",
+            "empty-repo",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no GGUF", r.stderr + r.stdout)
+
+    def test_quick_setup_llamacpp_saves_batch_size(self):
+        r = _run_cli_stubbed_hf(
+            self.tmp,
+            ["model.gguf"],
+            "profile",
+            "quick-setup",
+            "--backend",
+            "llamacpp",
+            "--hf-repo",
+            "fake/Model-GGUF",
+            "--hf-file",
+            "model.gguf",
+            "--name",
+            "batch-profile",
+            "--batch-size",
+            "512",
+        )
+        self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+        shown = _run_cli(
+            self.tmp,
+            "config",
+            "show",
+            "batch-profile",
+            "--backend",
+            "llamacpp",
+            "--json",
+        )
+        self.assertEqual(shown.returncode, 0, shown.stderr or shown.stdout)
+        self.assertEqual(json.loads(shown.stdout)["params"]["batch-size"], 512)
+        _run_cli(
+            self.tmp,
+            "profile",
+            "delete",
+            "batch-profile",
+            "--yes",
+            "--with-config",
+        )
 
 
 if __name__ == "__main__":

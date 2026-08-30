@@ -96,10 +96,6 @@ LLAMA_SERVER_FLAGS: dict[str, tuple[str, str]] = {
 }
 
 
-_KNOWN_FLAGS: set[str] = set(LLAMA_SERVER_FLAGS.keys())
-_FLAG_SUGGESTER = SuggestFromList(sorted(_KNOWN_FLAGS), case_sensitive=False)
-
-
 class ConfigFormScreen(ModalScreen[str | None]):
     """config 생성/편집 modal."""
 
@@ -223,6 +219,10 @@ class ConfigFormScreen(ModalScreen[str | None]):
         self._param_counter = 0
         self._initial_config: Config | None = None
         self._saved_name: str | None = None
+        self._known_flags = set(LLAMA_SERVER_FLAGS)
+        self._flag_suggester = SuggestFromList(
+            sorted(self._known_flags), case_sensitive=False
+        )
 
     def compose(self) -> ComposeResult:
         if self._edit_mode:
@@ -270,17 +270,41 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 self._add_param_row(key, ex)
         self._load_server_flags()
 
+    def _profile_image(self) -> str:
+        if not self._config_name:
+            return ""
+        images = {
+            load_profile(name).image_tag or ""
+            for name in list_profile_names()
+            if load_profile(name).config_name == self._config_name
+        }
+        if len(images) > 1:
+            raise RuntimeError(
+                f"config '{self._config_name}' is used with multiple images; "
+                "flag discovery requires one image"
+            )
+        return next(iter(images), "")
+
     @work(exclusive=False)
     async def _load_server_flags(self) -> None:
-        global _KNOWN_FLAGS, _FLAG_SUGGESTER
-        extracted = await extract_llama_server_flags()
+        try:
+            extracted = await extract_llama_server_flags(self._profile_image())
+        except RuntimeError as exc:
+            self.notify(
+                t(
+                    f"Could not inspect llama.cpp flags: {exc}",
+                    f"llama.cpp 플래그를 확인할 수 없습니다: {exc}",
+                ),
+                severity="error",
+            )
+            return
         if extracted:
-            _KNOWN_FLAGS.update(extracted)
-            _FLAG_SUGGESTER = SuggestFromList(
-                sorted(_KNOWN_FLAGS), case_sensitive=False
+            self._known_flags = set(extracted)
+            self._flag_suggester = SuggestFromList(
+                sorted(self._known_flags), case_sensitive=False
             )
             for inp in self.query(".param-key"):
-                inp.suggester = _FLAG_SUGGESTER
+                inp.suggester = self._flag_suggester
 
     def _add_param_row(
         self, key: str = "", value: str = "", *, focus: bool = False, enabled: bool = True
@@ -291,7 +315,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
         key_input = Input(
             value=key,
             placeholder=t("flag-name (Tab: autocomplete)", "flag-name (Tab: 자동완성)"),
-            suggester=_FLAG_SUGGESTER,
+            suggester=self._flag_suggester,
             classes="param-key",
         )
         # Switch off → saved as a disabled comment marker (kept, not served).
@@ -324,7 +348,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
             desc, example = info
             ex_suffix = f"  [dim](예: {example})[/dim]" if example else ""
             help_widget.update(f"[b]{key}[/b]: {desc}{ex_suffix}")
-        elif key in _KNOWN_FLAGS:
+        elif key in self._known_flags:
             help_widget.update(f"[b]{key}[/b]: [dim](llama-server --help 에 존재)[/dim]")
         else:
             help_widget.update("")
@@ -394,7 +418,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 return
             (params if switch.value else disabled_params)[key] = parsed
 
-        unknown = [k for k in params if k not in _KNOWN_FLAGS]
+        unknown = [k for k in params if k not in self._known_flags]
         if unknown:
             self.notify(
                 t(
@@ -413,7 +437,11 @@ class ConfigFormScreen(ModalScreen[str | None]):
         ):
             return
 
-        save_config(cfg)
+        try:
+            save_config(cfg)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.notify(str(exc), severity="error", timeout=8)
+            return
         self.notify(t(f"Saved: {name}", f"저장: {name}"), severity="information")
         self._saved_name = name
 

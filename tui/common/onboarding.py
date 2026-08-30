@@ -15,6 +15,7 @@ blocking on a prompt.
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 from tui.common.env import validate_common_env
@@ -45,6 +46,29 @@ def _render_env(overrides: dict[str, str]) -> str:
                 continue
         lines.append(line)
     return "\n".join(lines) + "\n"
+
+
+def _write_common_env(content: str) -> None:
+    COMMON_ENV.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{COMMON_ENV.name}.", dir=COMMON_ENV.parent
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, COMMON_ENV)
+        COMMON_ENV.chmod(0o600)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def run_onboarding() -> bool:
@@ -89,6 +113,7 @@ def run_onboarding() -> bool:
             "HuggingFace token (optional — needed for gated models)",
             default="",
             console=console,
+            password=True,
         )
     except (KeyboardInterrupt, EOFError):
         console.print("\n[yellow]Onboarding cancelled.[/yellow]")
@@ -109,7 +134,7 @@ def run_onboarding() -> bool:
         return False
 
     try:
-        COMMON_ENV.write_text(
+        _write_common_env(
             _render_env(
                 {
                     "HF_CACHE_PATH": hf_cache_path,

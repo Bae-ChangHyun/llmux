@@ -7,7 +7,7 @@ import re
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import ModalScreen
-from textual.widgets import Button, Static, Label, Input, Select, Switch
+from textual.widgets import Button, Static, Label, Input, Select, Switch, TextArea
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual import on
 
@@ -94,6 +94,10 @@ class ProfileFormScreen(ModalScreen[str | None]):
         color: $text-muted;
         height: auto;
         margin-left: 2;
+    }
+    ProfileFormScreen #env-vars-input {
+        height: 6;
+        margin-bottom: 1;
     }
     ProfileFormScreen .form-buttons {
         height: auto;
@@ -227,6 +231,15 @@ class ProfileFormScreen(ModalScreen[str | None]):
                         id="image-tag-input",
                     )
 
+                yield Label(
+                    t("Environment Variables (one KEY=VALUE per line)", "환경 변수 (한 줄에 KEY=VALUE 하나)"),
+                    id="env-vars-title",
+                )
+                yield TextArea(
+                    profile_store.format_env_vars_text(p.env_vars if p else {}),
+                    id="env-vars-input",
+                )
+
             with Horizontal(classes="form-buttons"):
                 yield Button(t("Save", "저장"), id="save-btn", variant="primary")
                 yield Button(t("Close", "닫기"), id="cancel-btn", variant="default")
@@ -239,6 +252,11 @@ class ProfileFormScreen(ModalScreen[str | None]):
         gpu_id = self.query_one("#gpu-input", Input).value.strip()
         tp = self.query_one("#tp-input", Input).value.strip()
         lora = self.query_one("#lora-switch", Switch).value
+
+        original_gpu = self._profile.gpu_id if self._profile is not None else "0"
+        original_tp = self._profile.tensor_parallel if self._profile is not None else "1"
+        if (gpu_id or "0") != original_gpu and (tp or "1") == original_tp:
+            tp = str(len((gpu_id or "0").split(",")))
 
         config_select = self.query_one("#config-select", Select)
         config_name = str(config_select.value) if config_select.value != Select.BLANK else ""
@@ -322,6 +340,14 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
         extra_pip = self.query_one("#extra-pip-input", Input).value.strip()
         image_tag = self.query_one("#image-tag-input", Input).value.strip()
+        try:
+            env_vars = profile_store.parse_env_vars_text(
+                self.query_one("#env-vars-input", TextArea).text,
+                "vllm",
+            )
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return
         from tui.common.dev_build import image_tag_error
 
         tag_err = image_tag_error(image_tag)
@@ -343,6 +369,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             profile.enable_lora = "true" if lora else "false"
             profile.extra_pip_packages = extra_pip
             profile.image_tag = image_tag
+            profile.env_vars = env_vars
         else:
             profile = Profile(
                 name=name,
@@ -355,9 +382,14 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 enable_lora="true" if lora else "false",
                 extra_pip_packages=extra_pip,
                 image_tag=image_tag,
+                env_vars=env_vars,
             )
 
-        save_profile(profile)
+        try:
+            save_profile(profile)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.notify(str(exc), severity="error", timeout=8)
+            return
         self.notify(t(f"Saved: {name}", f"저장됨: {name}"), severity="information")
         self._saved_name = name
 
@@ -466,40 +498,14 @@ class ProfileDeleteScreen(ModalScreen[bool]):
         super().__init__()
         self._profile_name = profile_name
         self._profile = load_profile(profile_name)
-        self._config_shared = self._has_other_config_refs()
-        # delete_profile() skips the tracked template — say so instead of
-        # promising a deletion that will not happen.
-        self._config_is_template = self._profile.config_name == "example"
-
-    def _has_other_config_refs(self) -> bool:
-        config_name = self._profile.config_name
-        if not config_name:
-            return False
-        for name in list_profile_names():
-            if name == self._profile_name:
-                continue
-            if load_profile(name).config_name == config_name:
-                return True
-        return False
 
     def compose(self) -> ComposeResult:
         with Vertical():
             if self._profile.config_name:
-                if self._config_shared:
-                    detail = t(
-                        f"(profile only; config is shared: {self._profile.config_name})",
-                        f"(프로필만 삭제; config 는 공유됨: {self._profile.config_name})",
-                    )
-                elif self._config_is_template:
-                    detail = t(
-                        "(profile only; config 'example' is the tracked template — kept)",
-                        "(프로필만 삭제; config 'example' 은 추적 템플릿이라 유지됨)",
-                    )
-                else:
-                    detail = t(
-                        f"(profile + config: {self._profile.config_name})",
-                        f"(프로필 + config: {self._profile.config_name})",
-                    )
+                detail = t(
+                    f"(profile only; linked config kept: {self._profile.config_name})",
+                    f"(프로필만 삭제; 연결된 config 유지: {self._profile.config_name})",
+                )
                 yield Static(
                     t(
                         f"Delete [b]{self._profile_name}[/b]?\n{detail}",
@@ -520,32 +526,43 @@ class ProfileDeleteScreen(ModalScreen[bool]):
                 yield Button(t("Cancel", "취소"), id="cancel-btn", variant="default")
 
     @on(Button.Pressed, "#delete-btn")
-    def _on_delete(self, event: Button.Pressed) -> None:
-        has_config = bool(self._profile.config_name)
-        delete_profile(self._profile_name, delete_config=has_config)
-        if has_config and self._config_shared:
+    async def _on_delete(self, event: Button.Pressed) -> None:
+        from tui.common import docker as common_docker
+
+        container = self._profile.container_name or self._profile_name
+        try:
+            running = await common_docker.running_container_names()
+        except Exception as exc:
             self.app.notify(
                 t(
-                    f"Deleted profile: {self._profile_name}; shared config kept: {self._profile.config_name}",
-                    f"프로필 삭제됨: {self._profile_name}; 공유 config 유지: {self._profile.config_name}",
-                )
+                    f"Could not verify container state ({exc}); deletion aborted.",
+                    f"컨테이너 상태를 확인할 수 없습니다 ({exc}). 삭제를 중단합니다.",
+                ),
+                severity="error",
             )
-        elif has_config and self._config_is_template:
+            return
+        if container in running:
             self.app.notify(
                 t(
-                    f"Deleted profile: {self._profile_name}; tracked template config kept: example",
-                    f"프로필 삭제됨: {self._profile_name}; 추적 템플릿 config 유지: example",
-                )
+                    f"Container '{container}' is running; stop it before deleting.",
+                    f"컨테이너 '{container}' 가 실행 중입니다. 중지 후 삭제하세요.",
+                ),
+                severity="error",
             )
-        elif has_config:
-            self.app.notify(
-                t(
-                    f"Deleted: {self._profile_name} + config: {self._profile.config_name}",
-                    f"삭제됨: {self._profile_name} + config: {self._profile.config_name}",
-                )
+            return
+        delete_profile(self._profile_name, delete_config=False)
+        suffix = (
+            t(
+                f"; linked config kept: {self._profile.config_name}",
+                f"; 연결된 config 유지: {self._profile.config_name}",
             )
-        else:
-            self.app.notify(t(f"Deleted profile: {self._profile_name}", f"프로필 삭제됨: {self._profile_name}"))
+            if self._profile.config_name
+            else ""
+        )
+        self.app.notify(
+            t(f"Deleted profile: {self._profile_name}", f"프로필 삭제됨: {self._profile_name}")
+            + suffix
+        )
         self.dismiss(True)
 
     @on(Button.Pressed, "#cancel-btn")

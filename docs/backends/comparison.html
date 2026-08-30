@@ -60,8 +60,8 @@
         <tr><td>Model format</td><td>HF Transformers (safetensors)</td><td>GGUF</td></tr>
         <tr><td>Container image</td><td><code>vllm/vllm-openai</code></td><td><code>ghcr.io/ggml-org/llama.cpp:server-cuda</code></td></tr>
         <tr><td>In-container port</td><td>8000</td><td>8080</td></tr>
-        <tr><td>Multi-GPU tensor parallelism</td><td>Yes (<code>gpu_id: "0,1"</code> + <code>tensor_parallel_size</code>)</td><td>No (single-GPU device list)</td></tr>
-        <tr><td>GPU passthrough mechanism</td><td><code>runtime: nvidia</code> + <code>NVIDIA_VISIBLE_DEVICES</code></td><td><code>deploy.resources</code> device-id list</td></tr>
+        <tr><td>Multi-GPU</td><td>Yes (<code>gpu_id: "0,1"</code> + <code>tensor_parallel_size</code>)</td><td>Yes (comma-separated <code>gpu_id</code>; llama.cpp controls the split)</td></tr>
+        <tr><td>GPU passthrough mechanism</td><td><code>runtime: nvidia</code> + <code>NVIDIA_VISIBLE_DEVICES</code></td><td><code>runtime: nvidia</code> + <code>NVIDIA_VISIBLE_DEVICES</code></td></tr>
         <tr><td>LoRA adapters</td><td>Yes (<code>enable_lora</code> + <code>docker-compose.lora.yaml</code> mount)</td><td>No</td></tr>
         <tr><td>KV cache precision control</td><td>No</td><td>Yes (<code>cache-type-k</code> / <code>cache-type-v</code>)</td></tr>
         <tr><td>CPU/GPU layer offload</td><td>No</td><td>Yes (<code>n-gpu-layers</code>)</td></tr>
@@ -74,9 +74,9 @@
         <tr><td>In-container version verification</td><td>Yes (<code>vllm.__version__</code> checked after start)</td><td>No</td></tr>
         <tr><td>Dev build from source</td><td>Yes (<code>vllm-dev:&lt;tag&gt;</code>, <code>docker/Dockerfile</code>)</td><td>Yes (<code>llamacpp-dev:&lt;tag&gt;</code>, <code>.devops/cuda.Dockerfile</code>)</td></tr>
         <tr><td>Extra pip packages at start</td><td>Yes (<code>extra_pip_packages</code>)</td><td>No</td></tr>
-        <tr><td>Per-profile env var overrides</td><td>Yes (<code>env_vars</code>)</td><td>No</td></tr>
+        <tr><td>Per-profile env var overrides</td><td>Yes (<code>env_vars</code>)</td><td>Yes (<code>env_vars</code>)</td></tr>
         <tr><td>Command injection method</td><td>Compose <code>command:</code> with <code>--config</code> flag</td><td>Per-profile override file from <code>render-override.py</code></td></tr>
-        <tr><td>Post-start health probe</td><td><code>/v1/models</code> returns a served model id</td><td><code>/health</code> responds</td></tr>
+        <tr><td>Post-start readiness probe</td><td><code>/v1/models</code> returns a served model id</td><td><code>/v1/models</code> returns a served model id</td></tr>
         <tr><td>Cross-backend conflict gate</td><td>Yes (port + GPU overlap, both backends)</td><td>Yes (port + GPU overlap, both backends)</td></tr>
         <tr><td>Built-in OpenAI-compatible benchmark</td><td>Yes</td><td>Yes</td></tr>
       </tbody>
@@ -90,8 +90,8 @@
     </ul>
     <p>In other words, both backends expose exactly the choices their upstream registry actually offers.</p>
 
-    <h2 id="why-only-vllm-does-multi-gpu">Why only vLLM does multi-GPU</h2>
-    <p>vLLM's container uses <code>runtime: nvidia</code> with <code>NVIDIA_VISIBLE_DEVICES=${GPU_ID}</code>, so a <code>gpu_id</code> of <code>"0,1"</code> exposes both GPUs and <code>tensor_parallel_size: 2</code> shards the model across them. llama.cpp's container uses Compose's <code>deploy.resources.reservations.devices</code> device-id list, which cannot reliably expand a comma-separated value into a multi-GPU list. Tensor parallelism is a core vLLM feature, so llmux keeps the two engines on the GPU-passthrough mechanism each one needs rather than forcing a single format.</p>
+    <h2 id="multi-gpu-behavior">Multi-GPU behavior</h2>
+    <p>Both containers use <code>runtime: nvidia</code> with <code>NVIDIA_VISIBLE_DEVICES=${GPU_ID}</code>, so a <code>gpu_id</code> of <code>"0,1"</code> exposes both GPUs. vLLM additionally needs <code>tensor_parallel_size: 2</code> to shard the model; llama.cpp applies its own split policy across the visible devices.</p>
 
     <h2 id="when-to-use-which">When to use which</h2>
 

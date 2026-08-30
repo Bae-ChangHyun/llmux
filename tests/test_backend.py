@@ -6,10 +6,11 @@ import tempfile
 import importlib.util
 import unittest
 
+import pytest
 import yaml
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from tui.backends.llamacpp import backend as lbackend
 from tui.backends.llamacpp import backend_runtime as lbackend_rt
@@ -33,6 +34,26 @@ from tui.backends.vllm.backend_runtime import (
 from tui.common import profile_store
 
 
+@pytest.fixture
+def isolated_vllm_storage(tmp_path, monkeypatch):
+    from tui.backends.vllm import backend_common, backend_storage
+
+    profiles_yaml = tmp_path / "profiles.yaml"
+    profiles_yaml.write_text("version: 1\ndefaults: {}\nprofiles: []\n")
+    runtime_root = tmp_path / ".runtime"
+    runtime_dir = runtime_root / "vllm"
+    config_dir = tmp_path / "config" / "vllm"
+    config_dir.mkdir(parents=True)
+    monkeypatch.setattr(profile_store, "PROFILES_YAML", profiles_yaml)
+    monkeypatch.setattr(profile_store, "RUNTIME_DIR", runtime_root)
+    monkeypatch.setattr(backend_common, "RUNTIME_DIR", runtime_dir)
+    monkeypatch.setattr(backend_common, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(backend_storage, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(backend, "RUNTIME_DIR", runtime_dir)
+    monkeypatch.setattr(backend, "CONFIG_DIR", config_dir)
+
+
+@pytest.mark.usefixtures("isolated_vllm_storage")
 class LoadConfigTests(unittest.TestCase):
     def setUp(self) -> None:
         self._created: list[Path] = []
@@ -60,15 +81,11 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(config.gpu_memory_utilization, "0.8")
         self.assertEqual(config.extra_params, {"max-model-len": 4096})
 
-    def test_load_config_ignores_non_mapping_yaml(self) -> None:
+    def test_load_config_rejects_non_mapping_yaml(self) -> None:
         self._write_config("__test_invalid_config__", "- not\n- a\n- mapping\n")
 
-        config = backend.load_config("__test_invalid_config__")
-
-        self.assertEqual(config.name, "__test_invalid_config__")
-        self.assertEqual(config.model, "")
-        self.assertEqual(config.gpu_memory_utilization, "0.9")
-        self.assertEqual(config.extra_params, {})
+        with self.assertRaisesRegex(ValueError, "mapping"):
+            backend.load_config("__test_invalid_config__")
 
     def test_load_config_missing_file_returns_defaults(self) -> None:
         config = backend.load_config("__test_missing_config_xyz__")
@@ -79,6 +96,30 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(config.extra_params, {})
 
 
+class VllmComposeSecurityTests(unittest.TestCase):
+    def test_trust_remote_code_is_not_forced(self) -> None:
+        compose_path = Path(__file__).resolve().parents[1] / "compose" / "vllm" / "docker-compose.yaml"
+        service = yaml.safe_load(compose_path.read_text())["services"]["vllm"]
+        self.assertNotIn("--trust-remote-code", service["command"])
+
+    def test_config_mount_is_read_only(self) -> None:
+        compose_path = Path(__file__).resolve().parents[1] / "compose" / "vllm" / "docker-compose.yaml"
+        service = yaml.safe_load(compose_path.read_text())["services"]["vllm"]
+        self.assertTrue(any(volume.endswith(":/config/:ro") for volume in service["volumes"]))
+
+    def test_backend_ports_bind_only_to_loopback(self) -> None:
+        root = Path(__file__).resolve().parents[1] / "compose"
+        cases = (
+            (root / "vllm" / "docker-compose.yaml", "vllm"),
+            (root / "llamacpp" / "docker-compose.yaml", "llama-server"),
+        )
+        for compose_path, service_name in cases:
+            with self.subTest(service=service_name):
+                service = yaml.safe_load(compose_path.read_text())["services"][service_name]
+                self.assertTrue(all(port.startswith("127.0.0.1:") for port in service["ports"]))
+
+
+@pytest.mark.usefixtures("isolated_vllm_storage")
 class SaveLoadConfigRoundTripTests(unittest.TestCase):
     def setUp(self) -> None:
         self._name = "__test_roundtrip_config__"
@@ -242,9 +283,10 @@ class ParseEnvFileTests(unittest.TestCase):
         )
 
 
+@pytest.mark.usefixtures("isolated_vllm_storage")
 class SaveLoadProfileRoundTripTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._name = "__test_roundtrip_profile__"
+        self._name = "test-roundtrip-profile"
         self._path = backend.RUNTIME_DIR / f"{self._name}.env"
 
     def tearDown(self) -> None:
@@ -298,6 +340,32 @@ class SaveLoadProfileRoundTripTests(unittest.TestCase):
 
 
 class ProfileStoreYamlTests(unittest.TestCase):
+    def test_empty_non_mapping_root_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profiles_yaml = Path(tmp) / "profiles.yaml"
+            profiles_yaml.write_text("[]\n")
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml):
+                with self.assertRaisesRegex(ValueError, "must be a mapping"):
+                    profile_store.list_profiles("vllm")
+
+    def test_non_mapping_defaults_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profiles_yaml = Path(tmp) / "profiles.yaml"
+            profiles_yaml.write_text("version: 1\ndefaults: []\nprofiles: []\n")
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml):
+                with self.assertRaisesRegex(ValueError, "defaults must be a mapping"):
+                    profile_store.list_profiles("vllm")
+
+    def test_non_mapping_backend_defaults_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profiles_yaml = Path(tmp) / "profiles.yaml"
+            profiles_yaml.write_text(
+                "version: 1\ndefaults:\n  vllm: invalid\nprofiles: []\n"
+            )
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml):
+                with self.assertRaisesRegex(ValueError, "defaults.vllm must be a mapping"):
+                    profile_store.list_profiles("vllm")
+
     def test_user_defaults_are_applied_when_profile_omits_field(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -468,6 +536,37 @@ class ProfileStoreYamlTests(unittest.TestCase):
                 profiles_yaml.read_text(), "version: 1\ndefaults: {}\nprofiles: []\n"
             )
 
+    def test_save_profile_rolls_back_env_when_yaml_replace_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = root / "profiles.yaml"
+            original_yaml = "version: 1\ndefaults: {}\nprofiles: []\n"
+            profiles_yaml.write_text(original_yaml)
+            runtime_dir = root / ".runtime"
+            env_path = runtime_dir / "vllm" / "p.env"
+            env_path.parent.mkdir(parents=True)
+            env_path.write_text("OLD=1\n")
+            real_replace = os.replace
+            failed = False
+
+            def fail_yaml_once(src, dst):
+                nonlocal failed
+                if Path(dst) == profiles_yaml and not failed:
+                    failed = True
+                    raise OSError("yaml replace failed")
+                return real_replace(src, dst)
+
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", runtime_dir
+            ), patch("tui.common.profile_store.os.replace", side_effect=fail_yaml_once):
+                with self.assertRaisesRegex(OSError, "yaml replace failed"):
+                    profile_store.save_profile(
+                        profile_store.StoredProfile(name="p", backend="vllm")
+                    )
+
+            self.assertEqual(profiles_yaml.read_text(), original_yaml)
+            self.assertEqual(env_path.read_text(), "OLD=1\n")
+
     def test_render_env_rejects_single_quote_values(self) -> None:
         # This used to assert the value round-tripped through _parse_env_file —
         # it does, because that parser is shlex-based. docker compose's dotenv
@@ -507,9 +606,7 @@ class AuditFindingsProfileStoreTests(unittest.TestCase):
         p.write_text(body)
         return p
 
-    def test_save_profile_survives_non_mapping_entry(self) -> None:
-        # A hand-edited scalar entry (`- foo`) has no .get — save_profile used
-        # to crash with AttributeError in the match loop.
+    def test_save_profile_rejects_non_mapping_entry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             profiles_yaml = self._write_yaml(
@@ -519,15 +616,13 @@ class AuditFindingsProfileStoreTests(unittest.TestCase):
             with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
                 "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
             ):
-                profile_store.save_profile(
-                    profile_store.StoredProfile(name="added", backend="vllm")
-                )
-                names = profile_store.list_profile_names("vllm")
-            self.assertIn("added", names)
-            self.assertIn("keep", names)
-            self.assertIn("- foo", profiles_yaml.read_text())  # scalar preserved
+                with self.assertRaisesRegex(ValueError, "mapping"):
+                    profile_store.save_profile(
+                        profile_store.StoredProfile(name="added", backend="vllm")
+                    )
+            self.assertIn("- foo", profiles_yaml.read_text())
 
-    def test_delete_profile_keeps_non_mapping_entry(self) -> None:
+    def test_delete_profile_rejects_non_mapping_entry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             profiles_yaml = self._write_yaml(
@@ -537,15 +632,11 @@ class AuditFindingsProfileStoreTests(unittest.TestCase):
             with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
                 "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
             ):
-                removed = profile_store.delete_profile("gone", "vllm")
-                names = profile_store.list_profile_names("vllm")
-            self.assertTrue(removed)
-            self.assertNotIn("gone", names)
-            self.assertIn("- foo", profiles_yaml.read_text())  # scalar untouched
+                with self.assertRaisesRegex(ValueError, "mapping"):
+                    profile_store.delete_profile("gone", "vllm")
+            self.assertIn("name: gone", profiles_yaml.read_text())
 
-    def test_list_profiles_deduplicates_same_name(self) -> None:
-        # Two entries with the same name+backend used to crash the TUI dashboard
-        # (Textual DuplicateKey). list_profiles now keeps the first and warns.
+    def test_list_profiles_rejects_duplicate_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             profiles_yaml = self._write_yaml(
@@ -555,9 +646,8 @@ class AuditFindingsProfileStoreTests(unittest.TestCase):
                 "  - name: dup\n    backend: vllm\n    port: 8002\n",
             )
             with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml):
-                profiles = profile_store.list_profiles("vllm")
-            self.assertEqual([p.name for p in profiles], ["dup"])
-            self.assertEqual(profiles[0].port, 8001)  # first entry wins
+                with self.assertRaisesRegex(ValueError, "duplicate profile name"):
+                    profile_store.list_profiles("vllm")
 
     def test_find_name_owner_spans_both_backends(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -576,6 +666,72 @@ class AuditFindingsProfileStoreTests(unittest.TestCase):
                     )
                 )
 
+    def test_raw_profile_name_path_traversal_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = self._write_yaml(
+                root,
+                "version: 1\nprofiles:\n  - name: ../outside\n    backend: vllm\n",
+            )
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml):
+                with self.assertRaisesRegex(ValueError, "profile name"):
+                    profile_store.list_profiles("vllm")
+
+    def test_raw_config_name_path_traversal_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = self._write_yaml(
+                root,
+                "version: 1\nprofiles:\n"
+                "  - name: safe\n    backend: vllm\n    config_name: ../../outside\n",
+            )
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml):
+                with self.assertRaisesRegex(ValueError, "config name"):
+                    profile_store.list_profiles("vllm")
+
+    def test_duplicate_effective_container_name_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = self._write_yaml(
+                root,
+                "version: 1\nprofiles:\n"
+                "  - name: first\n    backend: vllm\n    container_name: shared\n"
+                "  - name: second\n    backend: llamacpp\n    container_name: shared\n",
+            )
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml):
+                with self.assertRaisesRegex(ValueError, "container name"):
+                    profile_store.list_profiles("vllm")
+
+    def test_non_mapping_profile_entry_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = self._write_yaml(root, "version: 1\nprofiles:\n  - bad\n")
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml):
+                with self.assertRaisesRegex(ValueError, "mapping"):
+                    profile_store.list_profiles("vllm")
+
+    def test_save_profile_rejects_duplicate_container_name_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml = self._write_yaml(
+                root,
+                "version: 1\nprofiles:\n"
+                "  - name: first\n    backend: vllm\n    container_name: shared\n",
+            )
+            original = profiles_yaml.read_text()
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
+            ):
+                with self.assertRaisesRegex(ValueError, "container name"):
+                    profile_store.save_profile(
+                        profile_store.StoredProfile(
+                            name="second",
+                            backend="llamacpp",
+                            container_name="shared",
+                        )
+                    )
+            self.assertEqual(profiles_yaml.read_text(), original)
+
 
 class DeriveConfigNameTests(unittest.TestCase):
     def test_dotted_model_id_drops_dots_to_match_new_name_rule(self) -> None:
@@ -586,6 +742,28 @@ class DeriveConfigNameTests(unittest.TestCase):
         name = _derive_config_name("Qwen/Qwen2.5-7B-Instruct")
         self.assertEqual(name, "qwen2-5-7b-instruct")
         self.assertTrue(_NEW_NAME_RE.match(name))
+
+
+class InvalidConfigYamlTests(unittest.TestCase):
+    def test_vllm_load_rejects_non_mapping_yaml(self) -> None:
+        from tui.backends.vllm import backend_storage
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            (config_dir / "bad.yaml").write_text("- model\n- value\n")
+            with patch.object(backend_storage, "CONFIG_DIR", config_dir):
+                with self.assertRaisesRegex(ValueError, "mapping"):
+                    backend_storage.load_config("bad")
+
+    def test_llamacpp_load_rejects_non_mapping_yaml(self) -> None:
+        from tui.backends.llamacpp import backend
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            (config_dir / "bad.yaml").write_text("plain scalar\n")
+            with patch.object(backend, "CONFIG_DIR", config_dir):
+                with self.assertRaisesRegex(ValueError, "mapping"):
+                    backend.load_config("bad")
 
 
 class RenameProfileTests(unittest.TestCase):
@@ -788,18 +966,43 @@ class RenameConfigTests(unittest.TestCase):
                     config_store.rename_config("vllm", "cfg", "UPPER")
                 self.assertTrue((config_dir / "cfg.yaml").exists())
 
+    def test_rename_rolls_back_file_when_profile_update_fails(self) -> None:
+        from tui.common import config_store
 
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profiles_yaml, config_dir = self._setup(
+                root, "- name: p\n  backend: vllm\n  config_name: cfg\n"
+            )
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), patch(
+                "tui.common.profile_store.RUNTIME_DIR", root / ".runtime"
+            ), patch("tui.common.config_store.config_dir", lambda b: config_dir), patch(
+                "tui.common.config_store.profile_store.save_profile",
+                side_effect=OSError("profile write failed"),
+            ):
+                with self.assertRaisesRegex(OSError, "profile write failed"):
+                    config_store.rename_config("vllm", "cfg", "cfg2")
+
+            self.assertTrue((config_dir / "cfg.yaml").exists())
+            self.assertFalse((config_dir / "cfg2.yaml").exists())
+            with patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml):
+                self.assertEqual(
+                    profile_store.load_profile("p", "vllm").config_name, "cfg"
+                )
+
+
+@pytest.mark.usefixtures("isolated_vllm_storage")
 class DeleteProfileTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._profile_name = "__test_del_profile__"
-        self._config_name = "__test_del_shared_config__"
+        self._profile_name = "test-del-profile"
+        self._config_name = "test-del-shared-config"
         self._profile_path = backend.RUNTIME_DIR / f"{self._profile_name}.env"
         self._config_path = backend.CONFIG_DIR / f"{self._config_name}.yaml"
-        self._other_profile_path = backend.RUNTIME_DIR / "__test_del_other__.env"
+        self._other_profile_path = backend.RUNTIME_DIR / "test-del-other.env"
 
     def tearDown(self) -> None:
         backend.delete_profile(self._profile_name)
-        backend.delete_profile("__test_del_other__")
+        backend.delete_profile("test-del-other")
         self._config_path.unlink(missing_ok=True)
 
     def test_delete_removes_profile_file(self) -> None:
@@ -838,7 +1041,7 @@ class DeleteProfileTests(unittest.TestCase):
         )
         backend.save_profile(
             backend.Profile(
-                name="__test_del_other__",
+                name="test-del-other",
                 container_name="y",
                 port="9001",
                 config_name=self._config_name,
@@ -1420,6 +1623,54 @@ class _ExistingStore:
         return None
 
 
+class SystemCommandFailureTests(unittest.TestCase):
+    def test_mem_estimate_failure_without_gpus_exits_nonzero(self) -> None:
+        import typer
+
+        from tui.cli import system
+        from tui.common import docker, mem
+
+        with patch.object(mem, "estimate_model_memory", AsyncMock(return_value="failed")), \
+             patch.object(docker, "get_gpu_info", AsyncMock(return_value=[])):
+            with self.assertRaises(typer.Exit) as ctx:
+                system.mem_estimate("org/model", json_out=False)
+
+        self.assertEqual(ctx.exception.exit_code, 1)
+
+
+class UpdateCommandRegressionTests(unittest.TestCase):
+    def test_root_skips_startup_check_for_explicit_update(self) -> None:
+        from tui.cli import _root
+
+        ctx = SimpleNamespace(invoked_subcommand="update")
+        with patch("tui.cli._configure_logging"), \
+             patch("tui.cli._maybe_run_onboarding") as onboarding, \
+             patch("tui.cli._maybe_check_for_update") as startup_check:
+            _root(ctx, version=False, log_level="WARNING")
+
+        onboarding.assert_not_called()
+        startup_check.assert_not_called()
+
+    def test_json_update_emits_one_valid_document(self) -> None:
+        import contextlib
+        import io
+
+        from tui.cli import update_cmd
+        from tui.common import version_check as vc
+
+        status = vc.UpdateStatus(vc.BEHIND, tag="v9.9.9", local_version="1.0.0")
+        output = io.StringIO()
+        with patch.object(vc, "resolve_status", return_value=status), \
+             patch.object(vc, "update_blocked_reason", return_value=""), \
+             patch.object(vc, "apply_update", return_value=(True, "updated")), \
+             contextlib.redirect_stdout(output):
+            update_cmd(check=False, yes=True, json_out=True)
+
+        payload = json.loads(output.getvalue())
+        self.assertTrue(payload["update_ok"])
+        self.assertEqual(payload["message"], "updated")
+
+
 class ProbeFailureAndGuardTests(unittest.IsolatedAsyncioTestCase):
     """Failed probes and empty inputs must not read as definite answers."""
 
@@ -1440,12 +1691,84 @@ class ProbeFailureAndGuardTests(unittest.IsolatedAsyncioTestCase):
         async def failing_ps(*_a, **_k):
             return 1, ""
 
-        with patch.object(rt, "load_profile", lambda _n: profile), \
+        with patch.object(rt.profile_store, "load_profile", return_value=SimpleNamespace()), \
+             patch.object(rt, "load_profile", lambda _n: profile), \
              patch.object(rt, "run_command", failing_ps):
             rc, msg = await rt.container_down("p")
 
         self.assertNotEqual(rc, 0)
         self.assertIn("could not determine", msg)
+
+    async def test_vllm_container_down_rejects_unknown_profile(self) -> None:
+        from tui.backends.vllm import backend_runtime as rt
+
+        with patch.object(rt.profile_store, "load_profile", return_value=None):
+            rc, msg = await rt.container_down("missing")
+
+        self.assertNotEqual(rc, 0)
+        self.assertIn("not found", msg)
+
+    async def test_cli_logs_missing_docker_returns_command_not_found(self) -> None:
+        from tui.cli import _runtime
+
+        with patch.object(
+            _runtime.asyncio,
+            "create_subprocess_exec",
+            side_effect=FileNotFoundError("docker"),
+        ):
+            rc = await _runtime.docker_logs_once("p", tail=10)
+
+        self.assertEqual(rc, 127)
+
+    async def test_cli_follow_logs_missing_docker_returns_command_not_found(self) -> None:
+        from tui.cli import _runtime
+
+        with patch.object(
+            _runtime.asyncio,
+            "create_subprocess_exec",
+            side_effect=FileNotFoundError("docker"),
+        ):
+            rc = await _runtime.docker_logs_follow("p", tail=10)
+
+        self.assertEqual(rc, 127)
+
+    async def test_vllm_network_cleanup_failure_is_reported(self) -> None:
+        from tui.backends.vllm import backend_runtime as rt
+
+        async def failed_remove(*_args, **_kwargs):
+            return 1, "network has active endpoints"
+
+        with patch.object(rt, "run_command", failed_remove):
+            rc, msg = await rt._remove_compose_network("p")
+
+        self.assertNotEqual(rc, 0)
+        self.assertIn("active endpoints", msg)
+
+    async def test_llamacpp_network_cleanup_failure_is_reported(self) -> None:
+        from tui.backends.llamacpp import backend_runtime as rt
+
+        async def failed_remove(*_args, **_kwargs):
+            return 1, "network has active endpoints"
+
+        with patch.object(rt, "_docker_run", failed_remove):
+            rc, msg = await rt._remove_compose_network("p")
+
+        self.assertNotEqual(rc, 0)
+        self.assertIn("active endpoints", msg)
+
+    async def test_disk_usage_command_failure_raises(self) -> None:
+        from tui.common import docker
+
+        with patch.object(docker, "run_command", AsyncMock(return_value=(1, "df failed"))):
+            with self.assertRaisesRegex(RuntimeError, "df failed"):
+                await docker.get_disk_usage("/missing")
+
+    async def test_disk_usage_malformed_output_raises(self) -> None:
+        from tui.common import docker
+
+        with patch.object(docker, "run_command", AsyncMock(return_value=(0, "bad"))):
+            with self.assertRaisesRegex(RuntimeError, "unexpected df output"):
+                await docker.get_disk_usage("/tmp")
 
     async def test_llamacpp_container_exists_returns_none_when_probe_fails(self) -> None:
         from tui.backends.llamacpp import backend_runtime as rt
@@ -1513,6 +1836,43 @@ class ProbeFailureAndGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("rc", 1), events)
         self.assertTrue(any("프로필 없음" in d for k, d in events if k == "log"), events)
 
+    async def test_llamacpp_stream_up_rejects_unknown_profile_before_env(self) -> None:
+        from tui.backends.llamacpp import backend_runtime as rt
+
+        with patch.object(rt.profile_store, "load_profile", return_value=None), \
+            patch.object(rt, "validate_common_env", side_effect=AssertionError("env called")):
+            events = [event async for event in rt.stream_container_up("ghost")]
+
+        self.assertEqual(events[-1], ("rc", 1))
+        self.assertTrue(any("프로필 없음" in data for kind, data in events if kind == "log"))
+
+    async def test_llamacpp_prepare_rejects_unknown_profile_before_env(self) -> None:
+        from tui.backends.llamacpp import backend_runtime as rt
+
+        with patch.object(rt.profile_store, "load_profile", return_value=None), \
+            patch.object(rt, "validate_common_env", side_effect=AssertionError("env called")):
+            events = [event async for event in rt.stream_container_prepare("ghost")]
+
+        self.assertEqual(events[-1], ("rc", 1))
+        self.assertTrue(any("프로필 없음" in data for kind, data in events if kind == "log"))
+
+    async def test_llamacpp_invalid_image_rejects_before_preflight(self) -> None:
+        from tui.backends.llamacpp import backend_runtime as rt
+
+        stored = SimpleNamespace(name="p")
+        with patch.object(rt.profile_store, "load_profile", return_value=stored), \
+            patch.object(rt, "validate_common_env", side_effect=AssertionError("env called")), \
+            patch.object(rt, "load_profile", side_effect=AssertionError("profile loaded")):
+            events = [
+                event
+                async for event in rt.stream_container_up(
+                    "p", tag="ghcr.io/example/llama:latest"
+                )
+            ]
+
+        self.assertEqual(events[-1], ("rc", 1))
+        self.assertIn("reference", events[0][1])
+
 
 class LlamacppDownloadedProbeTests(unittest.TestCase):
     def test_model_file_only_without_hf_repo_is_not_downloaded(self) -> None:
@@ -1536,6 +1896,26 @@ class LlamacppDownloadedProbeTests(unittest.TestCase):
 
 
 class StreamContainerUpPortConflictTests(unittest.IsolatedAsyncioTestCase):
+    async def test_vllm_invalid_one_off_image_stops_before_preflight(self) -> None:
+        profile = backend.Profile(name="p", container_name="p", port="8000")
+
+        with patch.dict(
+            backend.stream_container_up.__globals__,
+            {
+                "load_profile": lambda _: profile,
+                "profile_store": _ExistingStore,
+            },
+        ):
+            events = [
+                event
+                async for event in backend.stream_container_up(
+                    "p", tag="custom/vllm"
+                )
+            ]
+
+        self.assertEqual(events[-1], ("rc", 1))
+        self.assertIn("image", events[0][1].lower())
+
     async def test_port_conflict_stops_before_preflight(self) -> None:
         profile = backend.Profile(name="p", container_name="p", port="8000")
 
@@ -1575,6 +1955,44 @@ class StreamContainerUpPortConflictTests(unittest.IsolatedAsyncioTestCase):
             events = [event async for event in backend.stream_container_up("p")]
 
         self.assertEqual(events, [("log", "common env missing"), ("rc", 1)])
+
+    async def test_missing_local_image_resolves_and_pulls_stable_release(self) -> None:
+        profile = backend.Profile(name="p", container_name="p", port="8000")
+        commands: list[list[str]] = []
+
+        async def no_conflict(_profile):
+            return None
+
+        async def no_gpu_conflicts(_profile):
+            return []
+
+        async def fake_stream_command(cmd, **_kwargs):
+            commands.append(cmd)
+            yield ("rc", 1)
+
+        globals_dict = backend.stream_container_up.__globals__
+        with patch.dict(
+            globals_dict,
+            {
+                "load_profile": lambda _: profile,
+                "check_port_conflict": no_conflict,
+                "_ensure_common_env": lambda _profile: (True, []),
+                "_ensure_profile_config": lambda _profile: (True, []),
+                "_gpu_conflict_messages": no_gpu_conflicts,
+                "_compose_env": lambda *_args, **_kwargs: {},
+                "get_local_latest_tag": AsyncMock(return_value="none"),
+                "get_dockerhub_release_version": AsyncMock(return_value="v0.21.0"),
+                "profile_store": _ExistingStore,
+                "stream_command": fake_stream_command,
+            },
+        ):
+            events = [event async for event in backend.stream_container_up("p")]
+
+        logs = [data for kind, data in events if kind == "log"]
+        self.assertIn("Using image: vllm/vllm-openai:v0.21.0", logs)
+        self.assertEqual(len(commands), 1)
+        self.assertIn("--pull", commands[0])
+        self.assertEqual(commands[0][commands[0].index("--pull") + 1], "missing")
 
     async def test_dev_tag_is_sanitized_to_match_the_built_image(self) -> None:
         # The builder tags `vllm-dev:<safe_branch>`; the runtime used the raw
@@ -1637,9 +2055,6 @@ class StreamContainerUpPortConflictTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_unrenderable_env_value_fails_this_profile_loudly(self) -> None:
-        # load_profile() now swallows the render error so one bad profile can't
-        # break `ps`/the dashboard — so the start path must re-render and fail
-        # loudly for the profile actually being started, naming the cause.
         profile = backend.Profile(name="p", container_name="p", port="8000")
         bad = profile_store.StoredProfile(
             name="p", backend="vllm", env_vars={"BAD": "it's"}
@@ -1679,10 +2094,6 @@ class StreamContainerUpPortConflictTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("rc", 1), events)
 
     async def test_use_default_image_drops_pinned_image_tag(self) -> None:
-        # A pinned image_tag used to win regardless of --default-image: the CLI
-        # cleared VLLM_IMAGE from the .env, but load_profile() re-renders that
-        # file from profiles.yaml on every start, restoring the pin — and the
-        # image branch reads profile.image_tag, not the .env.
         profile = backend.Profile(
             name="p", container_name="p", port="8000", image_tag="vllm-dev:pinned"
         )
@@ -1804,6 +2215,340 @@ class StreamContainerUpPortConflictTests(unittest.IsolatedAsyncioTestCase):
         logs = [data for kind, data in events if kind == "log"]
         self.assertFalse(any("Default Image" in line for line in logs), logs)
         self.assertEqual(profile.image_tag, "vllm-dev:pinned")
+
+    async def test_full_vllm_image_reference_is_used_verbatim(self) -> None:
+        profile = backend.Profile(name="p", container_name="p", port="8000")
+        compose_env_calls: list[dict] = []
+
+        async def no_conflict(_profile):
+            return None
+
+        async def no_gpu_conflicts(_profile):
+            return []
+
+        async def stop_at_compose(_cmd, **_kwargs):
+            yield ("rc", 1)
+
+        def capture_env(*_args, **kwargs):
+            compose_env_calls.append(kwargs)
+            return {}
+
+        with patch.dict(
+            backend.stream_container_up.__globals__,
+            {
+                "load_profile": lambda _: profile,
+                "check_port_conflict": no_conflict,
+                "_ensure_common_env": lambda _profile: (True, []),
+                "_ensure_profile_config": lambda _profile: (True, []),
+                "_gpu_conflict_messages": no_gpu_conflicts,
+                "_compose_env": capture_env,
+                "profile_store": _ExistingStore,
+                "stream_command": stop_at_compose,
+            },
+        ):
+            events = [
+                event
+                async for event in backend.stream_container_up(
+                    "p", tag="vllm/vllm-openai:v0.20.1"
+                )
+            ]
+
+        logs = [data for kind, data in events if kind == "log"]
+        self.assertIn("Using image: vllm/vllm-openai:v0.20.1", logs)
+        self.assertEqual(
+            compose_env_calls[-1].get("vllm_image"),
+            "vllm/vllm-openai:v0.20.1",
+        )
+
+    async def test_registryless_tagged_vllm_reference_is_used_verbatim(self) -> None:
+        profile = backend.Profile(name="p", container_name="p", port="8000")
+        compose_env_calls: list[dict] = []
+
+        async def no_conflict(_profile):
+            return None
+
+        async def no_gpu_conflicts(_profile):
+            return []
+
+        async def stop_at_compose(_cmd, **_kwargs):
+            yield "rc", 1
+
+        with patch.dict(
+            backend.stream_container_up.__globals__,
+            {
+                "load_profile": lambda _: profile,
+                "check_port_conflict": no_conflict,
+                "_ensure_common_env": lambda _profile: (True, []),
+                "_ensure_profile_config": lambda _profile: (True, []),
+                "_gpu_conflict_messages": no_gpu_conflicts,
+                "_compose_env": lambda *_args, **kwargs: compose_env_calls.append(kwargs) or {},
+                "profile_store": _ExistingStore,
+                "stream_command": stop_at_compose,
+            },
+        ):
+            events = [
+                event
+                async for event in backend.stream_container_up(
+                    "p", tag="my-vllm:v1"
+                )
+            ]
+
+        self.assertIn("Using image: my-vllm:v1", [data for kind, data in events if kind == "log"])
+        self.assertEqual(compose_env_calls[-1].get("vllm_image"), "my-vllm:v1")
+
+    async def test_pinned_vllm_version_is_verified_after_start(self) -> None:
+        profile = backend.Profile(
+            name="p",
+            container_name="p",
+            port="8000",
+            image_tag="vllm/vllm-openai:v0.20.1",
+        )
+        verified: list[tuple[str, str]] = []
+        commands: list[list[str]] = []
+
+        async def no_conflict(_profile):
+            return None
+
+        async def no_gpu_conflicts(_profile):
+            return []
+
+        async def compose_ok(cmd, **_kwargs):
+            commands.append(cmd)
+            yield ("rc", 0)
+
+        async def validation_ok(*_args, **_kwargs):
+            yield ("result", True, [])
+
+        async def capture_verify(container_name, expected_tag):
+            verified.append((container_name, expected_tag))
+            if False:
+                yield ("log", "")
+
+        with patch.dict(
+            backend.stream_container_up.__globals__,
+            {
+                "load_profile": lambda _: profile,
+                "check_port_conflict": no_conflict,
+                "_ensure_common_env": lambda _profile: (True, []),
+                "_ensure_profile_config": lambda _profile: (True, []),
+                "_gpu_conflict_messages": no_gpu_conflicts,
+                "_compose_env": lambda *_args, **_kwargs: {},
+                "_post_start_validation": validation_ok,
+                "_verify_vllm_version": capture_verify,
+                "profile_store": _ExistingStore,
+                "stream_command": compose_ok,
+            },
+        ):
+            events = [
+                event async for event in backend.stream_container_up("p", pull=True)
+            ]
+
+        self.assertEqual(events[-1], ("rc", 0))
+        self.assertEqual(verified, [("p", "v0.20.1")])
+        self.assertEqual(commands[0][-2:], ["--pull", "always"])
+
+
+class LlamacppRuntimeImageTests(unittest.IsolatedAsyncioTestCase):
+    def test_common_image_is_used_when_profile_has_no_pin(self) -> None:
+        from tui.backends.llamacpp import backend_runtime as rt
+
+        profile = lbackend.Profile(name="p", container_name="p", port=8080)
+        with tempfile.TemporaryDirectory() as tmp:
+            common = Path(tmp) / ".env.common"
+            common.write_text("LLAMACPP_IMAGE=registry.example/llama:v1\n")
+            with patch.object(rt, "COMMON_ENV", common):
+                resolved = rt._resolve_runtime_image(profile)
+        self.assertEqual(resolved, "registry.example/llama:v1")
+
+    def test_default_selection_uses_common_image_instead_of_hardcoded_official(self) -> None:
+        from tui.backends.llamacpp import backend_runtime as rt
+
+        profile = lbackend.Profile(
+            name="p",
+            container_name="p",
+            port=8080,
+            image_tag="llamacpp-dev:pinned",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            common = Path(tmp) / ".env.common"
+            common.write_text("LLAMACPP_IMAGE=registry.example/llama:v2\n")
+            with patch.object(rt, "COMMON_ENV", common):
+                resolved = rt._resolve_runtime_image(profile, use_default_image=True)
+        self.assertEqual(resolved, "registry.example/llama:v2")
+
+    async def test_fresh_host_up_allows_pull_for_non_dev_image(self) -> None:
+        from tui.backends.llamacpp import backend_runtime as rt
+
+        stored = profile_store.StoredProfile(
+            name="p", backend="llamacpp", container_name="p", port=8080
+        )
+        profile = lbackend.Profile(name="p", container_name="p", port=8080)
+        commands: list[list[str]] = []
+
+        class Store:
+            @staticmethod
+            def load_profile(_name, _backend):
+                return stored
+
+            @staticmethod
+            def render_env(_profile):
+                return Path("p.env")
+
+        async def no_conflict(_profile):
+            return None
+
+        async def no_gpu_conflicts(_profile):
+            return []
+
+        async def render_ok(_name):
+            return 0, ""
+
+        async def stop_at_compose(cmd, **_kwargs):
+            commands.append(cmd)
+            yield ("rc", 1)
+
+        with patch.dict(
+            rt.stream_container_up.__globals__,
+            {
+                "validate_common_env": lambda _path: (True, []),
+                "profile_store": Store,
+                "load_profile": lambda _name: profile,
+                "check_port_conflict": no_conflict,
+                "_gpu_conflict_messages": no_gpu_conflicts,
+                "_ensure_profile_config": lambda *_args: (True, []),
+                "_resolve_runtime_image": lambda *_args, **_kwargs: rt.LLAMACPP_OFFICIAL_IMAGE,
+                "_render_override": render_ok,
+                "_compose_env": lambda _profile: {},
+                "_compose_base_args": lambda _profile: ["docker", "compose"],
+                "_stream": stop_at_compose,
+            },
+        ):
+            events = [event async for event in rt.stream_container_up("p")]
+            forced_events = [
+                event async for event in rt.stream_container_up("p", pull=True)
+            ]
+
+        self.assertEqual(events[-1], ("rc", 1))
+        self.assertEqual(forced_events[-1], ("rc", 1))
+        self.assertEqual(commands[0][-2:], ["--pull", "missing"])
+        self.assertEqual(commands[1][-2:], ["--pull", "always"])
+
+
+class DynamicFlagImageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_vllm_registryless_tagged_image_is_discovered_verbatim(self) -> None:
+        from tui.backends.vllm import backend_inspect as inspect
+
+        calls: list[tuple[str, ...]] = []
+
+        async def fake_run(*args, **_kwargs):
+            calls.append(args)
+            return 0, '["max-model-len"]'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(inspect, "_VLLM_PARAMS_CACHE_DIR", Path(tmp)), \
+                patch.object(inspect, "run_command", fake_run), \
+                patch("tui.common.docker.image_identity", AsyncMock(return_value="sha256:v1")):
+                params = await inspect.extract_vllm_params("my-vllm:v1")
+
+        self.assertEqual(params, {"max-model-len"})
+        self.assertIn("my-vllm:v1", calls[0])
+
+    async def test_vllm_configured_image_is_used_without_local_official_tag(self) -> None:
+        from tui.backends.vllm import backend_inspect as inspect
+
+        calls: list[tuple[str, ...]] = []
+
+        async def fake_run(*args, **_kwargs):
+            calls.append(args)
+            return 0, '["max-model-len"]\n'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(inspect, "_VLLM_PARAMS_CACHE_DIR", Path(tmp)), \
+                patch.object(inspect, "_configured_vllm_image", return_value="custom/vllm:v1"), \
+                patch.object(inspect, "get_local_latest_tag", AsyncMock(return_value="none")), \
+                patch.object(inspect, "run_command", fake_run), \
+                patch("tui.common.docker.image_identity", AsyncMock(return_value="sha256:v1")):
+                params = await inspect.extract_vllm_params()
+
+        self.assertEqual(params, {"max-model-len"})
+        self.assertIn("custom/vllm:v1", calls[0])
+
+    async def test_vllm_custom_images_use_separate_cache_entries(self) -> None:
+        from tui.backends.vllm import backend_inspect as inspect
+
+        calls: list[str] = []
+
+        async def fake_run(*args, **_kwargs):
+            image = args[5]
+            calls.append(image)
+            value = "flag-a" if image.endswith(":a") else "flag-b"
+            return 0, json.dumps([value])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(inspect, "_VLLM_PARAMS_CACHE_DIR", Path(tmp)), \
+                patch.object(inspect, "run_command", fake_run), \
+                patch(
+                    "tui.common.docker.image_identity",
+                    AsyncMock(side_effect=lambda ref: f"sha256:{ref.rsplit(':', 1)[-1]}"),
+                ):
+                first = await inspect.extract_vllm_params("custom/vllm:a")
+                second = await inspect.extract_vllm_params("custom/vllm:b")
+                cached = await inspect.extract_vllm_params("custom/vllm:a")
+
+        self.assertEqual(first, {"flag-a"})
+        self.assertEqual(second, {"flag-b"})
+        self.assertEqual(cached, {"flag-a"})
+        self.assertEqual(calls, ["custom/vllm:a", "custom/vllm:b"])
+
+    async def test_llamacpp_flag_discovery_uses_explicit_profile_image(self) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        class Process:
+            returncode = 0
+
+            async def communicate(self):
+                return b"--ctx-size N\n--n-gpu-layers N\n", b""
+
+        async def fake_create(*args, **_kwargs):
+            calls.append(args)
+            return Process()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(lbackend, "CONFIG_DIR", Path(tmp)), \
+                patch("asyncio.create_subprocess_exec", fake_create), \
+                patch("tui.common.docker.image_identity", AsyncMock(return_value="sha256:v1")):
+                flags = await lbackend.extract_llama_server_flags(
+                    "custom/llama:v1"
+                )
+
+        self.assertEqual(flags, {"ctx-size", "n-gpu-layers"})
+        self.assertIn("custom/llama:v1", calls[0])
+
+    async def test_vllm_moving_tag_cache_changes_with_image_identity(self) -> None:
+        from tui.backends.vllm import backend_inspect as inspect
+
+        identity = "sha256:a"
+        extracted: list[str] = []
+
+        async def fake_identity(_ref):
+            return identity
+
+        async def fake_run(*_args, **_kwargs):
+            value = "flag-a" if identity.endswith("a") else "flag-b"
+            extracted.append(value)
+            return 0, json.dumps([value])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(inspect, "_VLLM_PARAMS_CACHE_DIR", Path(tmp)), \
+                patch.object(inspect, "run_command", fake_run), \
+                patch("tui.common.docker.image_identity", fake_identity):
+                first = await inspect.extract_vllm_params("custom/vllm:nightly")
+                identity = "sha256:b"
+                second = await inspect.extract_vllm_params("custom/vllm:nightly")
+
+        self.assertEqual(first, {"flag-a"})
+        self.assertEqual(second, {"flag-b"})
+        self.assertEqual(extracted, ["flag-a", "flag-b"])
 
 
 async def _drain_validation(gen):
@@ -2060,6 +2805,29 @@ class VllmRuntimeWarningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[0][0], "log")
         self.assertIn("could not verify vLLM version", events[0][1])
 
+
+class BenchmarkValidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_invalid_run_counts_are_rejected(self) -> None:
+        from tui.common.http import run_bench
+
+        with self.assertRaisesRegex(ValueError, "runs"):
+            await run_bench(8000, "model", runs=0)
+        with self.assertRaisesRegex(ValueError, "warmup"):
+            await run_bench(8000, "model", warmup=-1)
+
+    async def test_missing_completion_usage_is_rejected(self) -> None:
+        from tui.common import http
+
+        with patch.object(
+            http,
+            "chat_completion_bench",
+            AsyncMock(return_value={"elapsed": 1.0, "usage": {}}),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "completion_tokens"):
+                await http.run_bench(8000, "model", runs=1, warmup=0)
+
+
+class VllmGpuConflictTests(unittest.IsolatedAsyncioTestCase):
     async def test_gpu_conflicts_include_llamacpp_profiles(self) -> None:
         # vLLM and llama.cpp now both call the shared
         # tui.common.conflicts.gpu_conflict_messages, so this scenario is
@@ -2571,12 +3339,12 @@ class OnboardingTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             dpath = Path(d)
+            ask = Mock(
+                side_effect=[str(dpath / "cache"), str(dpath / "models"), ""]
+            )
             with (
                 patch.object(onboarding, "COMMON_ENV", dpath / ".env.common"),
-                patch(
-                    "rich.prompt.Prompt.ask",
-                    side_effect=[str(dpath / "cache"), str(dpath / "models"), ""],
-                ),
+                patch("rich.prompt.Prompt.ask", ask),
             ):
                 ok = onboarding.run_onboarding()
 
@@ -2585,9 +3353,11 @@ class OnboardingTests(unittest.TestCase):
             self.assertIn(f"HF_CACHE_PATH={dpath / 'cache'}", written)
             self.assertIn(f"MODEL_DIR={dpath / 'models'}", written)
             self.assertIn("HF_TOKEN=", written)
+            self.assertEqual((dpath / ".env.common").stat().st_mode & 0o777, 0o600)
             # The bind-mount targets are pre-created so docker doesn't own them.
             self.assertTrue((dpath / "cache").is_dir())
             self.assertTrue((dpath / "models").is_dir())
+            self.assertTrue(ask.call_args_list[2].kwargs["password"])
 
 
 class VersionCheckTests(unittest.TestCase):
@@ -3046,6 +3816,43 @@ def _any_local_image() -> str:
     return ""
 
 
+class DevImageProbeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_dev_image_is_false(self) -> None:
+        from tui.common import dev_build
+
+        spec = dev_build.DevBuildSpec(
+            backend="test",
+            image_prefix="image",
+            src_dir=Path("."),
+            default_repo_url="repo",
+        )
+        with patch.object(
+            dev_build,
+            "_run",
+            AsyncMock(return_value=(1, "Error response from daemon: No such image: image:tag")),
+        ):
+            self.assertFalse(await dev_build.image_exists_locally(spec, "tag"))
+
+    async def test_dev_image_probe_failure_raises(self) -> None:
+        from tui.common import dev_build
+
+        spec = dev_build.DevBuildSpec(
+            backend="test",
+            image_prefix="image",
+            src_dir=Path("."),
+            default_repo_url="repo",
+        )
+        with patch.object(
+            dev_build,
+            "_run",
+            AsyncMock(return_value=(1, "Cannot connect to the Docker daemon")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Cannot connect"):
+                await dev_build.image_exists_locally(spec, "tag")
+            with self.assertRaisesRegex(RuntimeError, "Cannot connect"):
+                await dev_build.get_image_label("image:tag", "label")
+
+
 @unittest.skipUnless(_docker_available(), "docker not available")
 class GetImageLabelDockerIntegrationTests(unittest.IsolatedAsyncioTestCase):
     """Unmocked: the previous `--format={{index .Config.Labels 'k'}}` used single
@@ -3206,6 +4013,16 @@ class DevBuildCustomTagTests(unittest.IsolatedAsyncioTestCase):
                 break
 
         self.assertEqual(tag_line, "Tag: vllm-dev:feat-foo")
+
+    def test_repository_credentials_are_removed_from_metadata(self) -> None:
+        from tui.common import dev_build
+
+        self.assertEqual(
+            dev_build.sanitize_repo_url(
+                "https://user:secret@example.com/org/repo.git"
+            ),
+            "https://example.com/org/repo.git",
+        )
 
 
 class ComposeEnvExpansionTests(unittest.TestCase):

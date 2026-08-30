@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from pathlib import Path
 
 import typer
 
@@ -114,6 +115,8 @@ def mem_estimate(
     print(estimate)
     if not gpus:
         print("(no GPUs detected — skipping per-GPU fit view)")
+        if est_gb <= 0:
+            raise typer.Exit(code=1)
         return
     if est_gb <= 0:
         print("(no parseable size in estimate — skipping per-GPU fit view)")
@@ -136,17 +139,60 @@ def mem_estimate(
 
 @app.command("disk")
 def disk(
+    backend: str = typer.Option(
+        "llamacpp", "--backend", "-b", help="Storage backend (vllm or llamacpp)."
+    ),
     json_out: bool = typer.Option(
         False, "--json", help="Emit JSON instead of a human-readable summary."
     ),
 ) -> None:
-    """Show llama.cpp model dir, GGUF inventory + sizes, and df -h usage.
+    """Show backend model/cache storage and filesystem usage."""
+    if backend not in ("vllm", "llamacpp"):
+        raise typer.BadParameter(
+            f"unknown backend: {backend!r} (choose vllm or llamacpp)",
+            param_hint="--backend",
+        )
+    if backend == "vllm":
+        from tui.common.docker import get_disk_usage
+        from tui.common.env import host_expand, parse_env_file
+        from tui.common.profile_store import PROJECT_ROOT
 
-    Mirrors the llama.cpp TUI System screen's "Disk / Model Dir" tab — useful
-    for headless health-checks when GGUF downloads keep refilling a model
-    cache. Reuses `_get_model_dir` and `get_disk_usage` from the llama.cpp
-    backend so behavior stays in lockstep with the TUI panel.
-    """
+        common = PROJECT_ROOT / ".env.common"
+        env = parse_env_file(common) if common.exists() else {}
+        raw_cache = env.get("HF_CACHE_PATH", "").strip()
+        if not raw_cache:
+            message = f"HF_CACHE_PATH is not set in {common}"
+            if json_out:
+                emit_json({"status": "error", "backend": backend, "error": message})
+            else:
+                typer.echo(f"Error: {message}", err=True)
+            raise typer.Exit(code=1)
+        cache = host_expand(raw_cache)
+        try:
+            used, avail, pct = run_async(get_disk_usage(cache))
+        except RuntimeError as exc:
+            if json_out:
+                emit_json({"status": "error", "backend": backend, "error": str(exc)})
+            else:
+                typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        result = {
+            "backend": backend,
+            "project_root": str(PROJECT_ROOT),
+            "hf_cache_path": cache,
+            "hf_cache_exists": Path(cache).exists(),
+            "df_used": used,
+            "df_avail": avail,
+            "df_percent": pct,
+        }
+        if json_out:
+            emit_json(result)
+            return
+        print(f"Project root : {PROJECT_ROOT}")
+        print(f"HF cache     : {cache}")
+        print(f"df {cache}: used {used}, avail {avail}  ({pct})")
+        return
+
     from tui.backends.llamacpp.backend import (
         ROOT,
         _get_hf_cache_dir,
@@ -175,13 +221,28 @@ def disk(
             )
 
     target = str(model_dir if model_dir.exists() else ROOT)
-    used, avail, pct = run_async(get_disk_usage(target))
+    try:
+        used, avail, pct = run_async(get_disk_usage(target))
+    except RuntimeError as exc:
+        if json_out:
+            emit_json(
+                {
+                    "status": "error",
+                    "backend": backend,
+                    "error": str(exc),
+                    "df_target": target,
+                }
+            )
+        else:
+            typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1)
 
     total_gb = round(sum(f["size_bytes"] for f in files) / 1024**3, 1)
 
     if json_out:
         emit_json(
             {
+                "backend": backend,
                 "project_root": str(ROOT),
                 "model_dir": str(model_dir),
                 "model_dir_exists": model_dir.exists(),
@@ -211,8 +272,7 @@ def disk(
     print(f"HF cache GGUF: {len(cached)}  (total {cached_total_gb:.1f} GB)")
     for c in cached:
         print(f"  {c['repo']}/{c['name']}  {c['size_gb']:.1f} GB")
-    if used:
-        print(f"df {target}: used {used}, avail {avail}  ({pct})")
+    print(f"df {target}: used {used}, avail {avail}  ({pct})")
 
 
 @app.command("env-check")
@@ -237,8 +297,9 @@ def env_check(
         "issues": [] if ok else list(messages),
     }
     env = parse_env_file(common) if common.exists() else {}
-    for key in ("HF_TOKEN", "HF_CACHE_PATH"):
-        findings[key] = env.get(key, "")
+    token = env.get("HF_TOKEN", "")
+    findings["HF_TOKEN"] = {"set": bool(token), "length": len(token)}
+    findings["HF_CACHE_PATH"] = env.get("HF_CACHE_PATH", "")
 
     findings["status"] = "ok" if ok else "error"
 
@@ -252,7 +313,6 @@ def env_check(
         print("Status       : MISSING .env.common")
         raise typer.Exit(code=1)
 
-    token = findings["HF_TOKEN"]
     # Mask token but reveal length so users can spot truncation issues.
     print(
         f"  {'HF_TOKEN':<14}: "

@@ -166,7 +166,10 @@ llmux tui      # explicit</code></pre>
     <p>The same monitor is available without the TUI at all: <a href="../reference/cli.html#top"><code>llmux top &lt;profile&gt;</code></a>.</p>
 
     <h2 id="quick-setup">Quick Setup</h2>
-    <p><kbd>n</kbd> opens a backend picker, then a Quick Setup form that creates a matching <strong>profile + config</strong> in one step. For vLLM the form takes a Hugging Face model id, GPU id, port, GPU-memory-utilization, an Enable-LoRA toggle, and an optional "copy params from" existing config. The profile name is derived from the model id automatically.</p>
+    <p><kbd>n</kbd> opens a backend picker, then a Quick Setup form that creates a matching <strong>profile + config</strong> in one step. For vLLM the form takes a Hugging Face model id, an optional profile name, GPU id, port, GPU-memory-utilization, an Enable-LoRA toggle, an optional config to copy, and optional official-recipe review. llama.cpp provides the equivalent GGUF repository/file and runtime settings.</p>
+
+    <h2 id="system-screen">System screen</h2>
+    <p>Press <kbd>s</kbd> to open the selected backend's System screen. Its Docker Images tab can refresh, pull, remove, or build a dev image without starting a container. The Environment tab validates <code>.env.common</code> and renders runtime env files for every profile of that backend; profile action menus can render one selected profile. Token values are never displayed.</p>
 
     <h2 id="memory-estimator">Memory estimator</h2>
     <p>Press <kbd>m</kbd> (or click the search box) and type a Hugging Face model id, then <kbd>Enter</kbd>. llmux estimates the model's memory footprint and renders it against your detected GPUs:</p>
@@ -206,7 +209,7 @@ llmux tui      # explicit</code></pre>
             <tr><th>Mode</th><th>What it does</th></tr>
           </thead>
           <tbody>
-            <tr><td><strong>Default Image</strong></td><td><code>ghcr.io/ggml-org/llama.cpp:server-cuda</code></td></tr>
+            <tr><td><strong>Default Image</strong></td><td><code>LLAMACPP_IMAGE</code> from <code>.env.common</code>, or <code>ghcr.io/ggml-org/llama.cpp:server-cuda</code> when unset</td></tr>
             <tr><td><strong>Dev Build</strong></td><td>Uses / builds <code>llamacpp-dev:&lt;branch&gt;</code> from source — reveals Repo URL + Branch inputs</td></tr>
             <tr><td><strong>Custom Tag</strong></td><td>An arbitrary <code>&lt;repo&gt;:&lt;tag&gt;</code> you type in</td></tr>
           </tbody>
@@ -225,7 +228,7 @@ llmux tui      # explicit</code></pre>
     <h2 id="profile-and-config-forms">Profile and config forms</h2>
     <p><strong>Edit Profile</strong> and <strong>Edit Config</strong> open modal forms:</p>
     <ul>
-      <li>The <strong>profile form</strong> edits the profile name, container name, port, GPU id, the linked config, and <code>image_tag</code>. Changing the <strong>name</strong> renames the profile on save rather than creating a second one &mdash; the container must be stopped and the new name must be free in both backends.</li>
+      <li>The <strong>profile form</strong> edits the profile name, container name, port, GPU id, the linked config, <code>image_tag</code>, and per-profile environment variables. Changing the <strong>name</strong> renames the profile on save rather than creating a second one &mdash; the container must be stopped and the new name must be free in both backends. The profile action menu can also clone the profile.</li>
       <li>The <strong>config form</strong> is a dynamic list of flag rows — add a row, type a flag name (autocompleted from the real flag set of the <code>vllm serve</code> / <code>llama-server</code> image you're running — see <a href="configs.html#flag-autocomplete">Flag autocomplete</a>), and a value. Leaving a boolean flag's value blank stores <code>true</code>. A help line shows a one-line description of the focused flag. Each row also has an <strong>on/off switch</strong>: flip it off to park a flag without deleting its value (the row dims), flip it back on to restore it. See <a href="configs.html#toggling-parameters-on-off">Toggling parameters on / off</a>. Editing the config's <strong>name</strong> renames the file and repoints every profile that referenced it.</li>
     </ul>
     <p>Both forms map straight onto <a href="profiles.html"><code>profiles.yaml</code></a> and the <a href="configs.html">config YAML</a> — there is no separate TUI state.</p>

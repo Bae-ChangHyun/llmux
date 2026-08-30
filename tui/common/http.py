@@ -70,20 +70,40 @@ async def run_bench(
     not reproducible. Discard `warmup` calls, then report the median of `runs`
     (median, not mean — one scheduler hiccup shouldn't move the headline).
     """
-    for _ in range(max(0, warmup)):
+    if runs < 1:
+        raise ValueError(f"runs must be at least 1, got {runs}")
+    if warmup < 0:
+        raise ValueError(f"warmup must be at least 0, got {warmup}")
+    if max_tokens < 1:
+        raise ValueError(f"max_tokens must be at least 1, got {max_tokens}")
+
+    for _ in range(warmup):
         await chat_completion_bench(
             port, model, prompt=prompt, max_tokens=max_tokens
         )
 
     results: list[dict] = []
-    for _ in range(max(1, runs)):
+    for _ in range(runs):
         r = await chat_completion_bench(
             port, model, prompt=prompt, max_tokens=max_tokens
         )
-        usage = r.get("usage", {})
-        tokens = int(usage.get("completion_tokens", 0) or 0)
+        usage = r.get("usage")
+        if not isinstance(usage, dict) or "completion_tokens" not in usage:
+            raise RuntimeError(
+                "benchmark response is missing usage.completion_tokens"
+            )
+        try:
+            tokens = int(usage["completion_tokens"])
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"invalid usage.completion_tokens: {usage['completion_tokens']!r}"
+            ) from exc
+        if tokens < 0:
+            raise RuntimeError(f"invalid negative completion token count: {tokens}")
         elapsed = float(r.get("elapsed", 0.0) or 0.0)
-        tps = tokens / elapsed if elapsed > 0 else 0.0
+        if elapsed <= 0:
+            raise RuntimeError(f"invalid benchmark elapsed time: {elapsed}")
+        tps = tokens / elapsed
         results.append({"tokens": tokens, "elapsed": elapsed, "tps": tps})
 
     all_tps = [r["tps"] for r in results]

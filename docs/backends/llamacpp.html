@@ -63,7 +63,7 @@
       <li><strong>Render the per-profile <code>.env</code></strong> — <code>profiles.yaml</code> is rendered to <code>.runtime/llamacpp/&lt;name&gt;.env</code>.</li>
       <li><strong>Render the command override</strong> — <code>scripts/llamacpp/render-override.py</code> reads <code>config/llamacpp/&lt;name&gt;.yaml</code> and writes <code>.runtime/llamacpp/override-&lt;name&gt;.yaml</code>, which injects the <code>command:</code> block for <code>llama-server</code>.</li>
       <li><strong><code>docker compose up -d</code></strong> — the base Compose file, the optional dev overlay, and the per-profile override are merged and the container starts.</li>
-      <li><strong>Post-start validation</strong> — llmux polls <code>docker inspect</code>; if the container exits or goes unhealthy during startup it surfaces the last log lines as an error. It then waits for <code>/health</code> to respond before reporting success.</li>
+      <li><strong>Post-start validation</strong> — llmux polls <code>docker inspect</code>; if the container exits or goes unhealthy during startup it surfaces the last log lines as an error. It then waits for <code>/v1/models</code> to return a served model id before reporting success.</li>
       <li><strong>Persist last-active profile</strong> — the profile name is written to <code>.current-profile.llamacpp</code>.</li>
     </ol>
 
@@ -74,24 +74,19 @@
     image: ${LLAMACPP_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda}
     container_name: ${CONTAINER_NAME}
     ports:
-      - "${LLAMA_PORT:-8080}:8080"
+      - "127.0.0.1:${LLAMA_PORT:-8080}:8080"
     volumes:
       - ${HF_CACHE_PATH}:/root/.cache/huggingface
+    runtime: nvidia
     environment:
       - HF_TOKEN=${HF_TOKEN}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ['${GPU_ID:-0}']
-              capabilities: [gpu]
+      - NVIDIA_VISIBLE_DEVICES=${GPU_ID}
     # command is injected by the per-profile override file.</code></pre>
     <p>Key points:</p>
     <ul>
       <li><strong><code>command:</code> is not in the base file</strong> — it is injected by <code>.runtime/llamacpp/override-&lt;name&gt;.yaml</code>, generated per profile by <code>render-override.py</code>. This lets multiple llama.cpp profiles run concurrently without clobbering each other's command.</li>
       <li><strong>Only the HF cache is mounted</strong> — <code>${HF_CACHE_PATH}</code> is bound into the container as <code>/root/.cache/huggingface</code>. There is no per-model bind mount; <code>llama-server</code> downloads the GGUF itself (see below).</li>
-      <li><strong>GPU access via <code>deploy.resources</code></strong> — the profile's <code>gpu_id</code> is passed as a Compose device-id list. Because that list format cannot reliably expand a comma-separated value, llama.cpp profiles are effectively single-GPU; vLLM uses <code>NVIDIA_VISIBLE_DEVICES</code> instead for multi-GPU tensor parallelism.</li>
+      <li><strong>GPU access via <code>NVIDIA_VISIBLE_DEVICES</code></strong> — the profile's comma-separated <code>gpu_id</code> controls which GPUs llama.cpp can use.</li>
     </ul>
 
     <h2 id="gguf-auto-download">GGUF auto-download</h2>
@@ -190,7 +185,7 @@ override-tensors:
     <p>The pipeline (shared with vLLM, in <code>tui/common/dev_build.py</code>):</p>
     <ol>
       <li><strong>Clone or update</strong> <code>.llamacpp-src/</code> from <code>LLAMACPP_REPO_URL</code> (default <code>https://github.com/ggml-org/llama.cpp.git</code>) at <code>LLAMACPP_BRANCH</code> (default <code>master</code>). Both are overridable in <code>.env.common</code>. If the existing checkout's <code>origin</code> URL differs from the requested repo, llmux refuses to switch remotes silently.</li>
-      <li><strong>Detect GPU arch</strong> — <code>nvidia-smi</code> is queried for compute capability and passed as <code>--build-arg CUDA_DOCKER_ARCH=&lt;arch&gt;</code> (e.g. <code>89</code> or <code>86;89</code>), so the build only targets your GPU. Without <code>nvidia-smi</code>, it falls back to the Dockerfile's slower multi-arch path.</li>
+      <li><strong>Detect GPU arch</strong> — <code>nvidia-smi</code> is queried for compute capability and passed as <code>--build-arg CUDA_DOCKER_ARCH=&lt;arch&gt;</code> (e.g. <code>89</code> or <code>86;89</code>), so the build only targets your GPU. If the architecture cannot be detected, the build stops with an error instead of producing an ambiguous image.</li>
       <li><strong><code>docker build</code></strong> — <code>.devops/cuda.Dockerfile</code>, target <code>server</code>, tagged both <code>llamacpp-dev:&lt;tag&gt;</code> and <code>llamacpp-dev:&lt;branch&gt;</code>. The image is labeled with the repo URL, branch, and commit hash so llmux can tell whether a cached tag still matches the requested source.</li>
     </ol>
     <p>When you start with a dev tag, llmux rebuilds automatically if the image is missing <strong>or</strong> if its labels show it was built from a different repo/branch. A profile pinned to a dev tag that does not exist locally fails with a hint to build it first.</p>

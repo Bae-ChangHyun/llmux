@@ -5,7 +5,7 @@ from __future__ import annotations
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import (
     Button,
@@ -19,6 +19,7 @@ from textual.widgets import (
 )
 
 from tui.backends.llamacpp.backend import (
+    COMMON_ENV,
     GpuInfo,
     ROOT,
     _get_hf_cache_dir,
@@ -32,11 +33,16 @@ from tui.backends.llamacpp.backend import (
     load_profile,
     run_command,
 )
-from tui.backends.llamacpp.backend_runtime import LLAMACPP_DEV_SPEC
-from tui.common import profile_store
+from tui.backends.llamacpp.backend_runtime import (
+    LLAMACPP_DEV_SPEC,
+    get_dev_build_defaults,
+)
+from tui.common import profile_store, system_operations
 from tui.backends.llamacpp.backend import LLAMACPP_OFFICIAL_REPO
 from tui.common.dev_build import list_local_dev_images
+from tui.common.env import parse_env_file
 from tui.common.i18n import t
+from tui.common.widgets import ConfirmModal, DevBuildPromptModal, TextPromptModal
 
 
 class SystemScreen(Screen):
@@ -67,6 +73,13 @@ class SystemScreen(Screen):
     #images-scroll DataTable {
         max-height: 12;
     }
+    #image-action-log {
+        height: 8;
+    }
+    #environment-actions {
+        height: auto;
+        padding: 1 2;
+    }
     """
 
     def __init__(self) -> None:
@@ -87,11 +100,25 @@ class SystemScreen(Screen):
                     yield DataTable(id="llama-images")
                     yield Static(t("Dev Images (llamacpp-dev)", "개발 이미지 (llamacpp-dev)"), classes="section-title")
                     yield DataTable(id="dev-images")
-                yield Button(t("Refresh Images", "이미지 새로고침"), id="btn-refresh-images", variant="primary")
+                yield Horizontal(
+                    Button(t("Refresh Images", "이미지 새로고침"), id="btn-refresh-images", variant="primary"),
+                    Button(t("Pull", "받기"), id="btn-pull-image"),
+                    Button(t("Remove", "삭제"), id="btn-remove-image"),
+                    Button(t("Build Dev", "개발 이미지 빌드"), id="btn-build-image"),
+                    id="refresh-bar",
+                )
+                yield RichLog(id="image-action-log", highlight=True)
             with TabPane(t("Containers", "컨테이너"), id="containers-tab"):
                 yield RichLog(id="container-info", highlight=True)
             with TabPane(t("Disk / Model Dir", "디스크 / 모델 폴더"), id="disk-tab"):
                 yield RichLog(id="disk-info", highlight=True)
+            with TabPane(t("Environment", "환경"), id="environment-tab"):
+                yield Horizontal(
+                    Button(t("Validate", "검증"), id="btn-validate-env", variant="primary"),
+                    Button(t("Render Runtime Envs", "런타임 환경 렌더링"), id="btn-render-envs"),
+                    id="environment-actions",
+                )
+                yield RichLog(id="environment-log", highlight=True)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -273,13 +300,13 @@ class SystemScreen(Screen):
         log.write("")
 
         probe_path = model_dir if model_dir.exists() else ROOT
-        used, avail, pct = await get_disk_usage(str(probe_path))
+        try:
+            used, avail, pct = await get_disk_usage(str(probe_path))
+        except RuntimeError as exc:
+            log.write(f"[red]{exc}[/]")
+            return
         log.write(t("[b]Disk usage[/b]", "[b]디스크 사용량[/b]"))
-        if used:
-            log.write(t(f"  Used: {used}  Free: {avail}  ({pct})", f"  사용: {used}  남음: {avail}  ({pct})"))
-        else:
-            log.write(t(f"  [yellow]Could not stat {probe_path} (does it exist?)[/]",
-                        f"  [yellow]{probe_path} 조회 실패 (경로가 존재하나요?)[/]"))
+        log.write(t(f"  Used: {used}  Free: {avail}  ({pct})", f"  사용: {used}  남음: {avail}  ({pct})"))
 
 
     def action_go_back(self) -> None:
@@ -292,7 +319,161 @@ class SystemScreen(Screen):
         self._refresh_disk()
         self.notify(t("Refreshing", "새로고침"))
 
+    def _prompt_pull_image(self) -> None:
+        configured = parse_env_file(COMMON_ENV).get("LLAMACPP_IMAGE", "").strip()
+        default = configured or f"{LLAMACPP_OFFICIAL_REPO}:server-cuda"
+
+        def after(image_ref: str | None) -> None:
+            if image_ref:
+                self._pull_image(image_ref)
+
+        self.app.push_screen(
+            TextPromptModal(
+                t("Image reference to pull", "받을 이미지 참조"),
+                default=default,
+                placeholder=f"{LLAMACPP_OFFICIAL_REPO}:server-cuda",
+            ),
+            after,
+        )
+
+    def _prompt_remove_image(self) -> None:
+        def after_ref(image_ref: str | None) -> None:
+            if not image_ref:
+                return
+
+            def after_confirm(confirmed: bool) -> None:
+                if confirmed:
+                    self._remove_image(image_ref)
+
+            self.app.push_screen(
+                ConfirmModal(
+                    t(
+                        f"Remove local image [b]{image_ref}[/b]?",
+                        f"로컬 이미지 [b]{image_ref}[/b] 을 삭제할까요?",
+                    ),
+                    confirm_label=t("Remove", "삭제"),
+                ),
+                after_confirm,
+            )
+
+        self.app.push_screen(
+            TextPromptModal(
+                t("Image reference or ID to remove", "삭제할 이미지 참조 또는 ID"),
+                placeholder=f"{LLAMACPP_OFFICIAL_REPO}:server-cuda",
+            ),
+            after_ref,
+        )
+
+    def _prompt_build_image(self) -> None:
+        repo_url, branch = get_dev_build_defaults()
+
+        def after(options: dict[str, object] | None) -> None:
+            if options:
+                self._build_image(options)
+
+        self.app.push_screen(
+            DevBuildPromptModal("llamacpp", repo_url, branch),
+            after,
+        )
+
+    @work(exclusive=True, group="sys-image-action")
+    async def _pull_image(self, image_ref: str) -> None:
+        log = self.query_one("#image-action-log", RichLog)
+        log.clear()
+        log.write(t(f"Pulling {image_ref}", f"{image_ref} 받는 중"))
+        try:
+            rc, lines = await system_operations.pull_image(image_ref)
+        except (OSError, RuntimeError, ValueError) as exc:
+            log.write(f"[red]{exc}[/]")
+            self.notify(str(exc), severity="error", timeout=8)
+            return
+        for line in lines:
+            log.write(line)
+        if rc != 0:
+            self.notify(t("Image pull failed", "이미지 받기 실패"), severity="error", timeout=8)
+            return
+        self._refresh_images()
+        self.notify(t("Image pulled", "이미지를 받았습니다"))
+
+    @work(exclusive=True, group="sys-image-action")
+    async def _remove_image(self, image_ref: str) -> None:
+        log = self.query_one("#image-action-log", RichLog)
+        log.clear()
+        rc, output = await system_operations.remove_image(image_ref)
+        if output.strip():
+            log.write(output)
+        if rc != 0:
+            self.notify(t("Image removal failed", "이미지 삭제 실패"), severity="error", timeout=8)
+            return
+        self._refresh_images()
+        self.notify(t("Image removed", "이미지를 삭제했습니다"))
+
+    @work(exclusive=True, group="sys-image-action")
+    async def _build_image(self, options: dict[str, object]) -> None:
+        log = self.query_one("#image-action-log", RichLog)
+        log.clear()
+        try:
+            rc, lines = await system_operations.build_dev_image(
+                "llamacpp",
+                repo_url=str(options["repo_url"]),
+                branch=str(options["branch"]),
+                custom_tag=str(options["custom_tag"]),
+                cuda_arch=str(options["cuda_arch"]),
+                multi_arch=bool(options["multi_arch"]),
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            log.write(f"[red]{exc}[/]")
+            self.notify(str(exc), severity="error", timeout=8)
+            return
+        for line in lines:
+            log.write(line)
+        if rc != 0:
+            self.notify(t("Development image build failed", "개발 이미지 빌드 실패"), severity="error", timeout=8)
+            return
+        self._refresh_images()
+        self.notify(t("Development image built", "개발 이미지를 빌드했습니다"))
+
+    def _validate_environment(self) -> None:
+        log = self.query_one("#environment-log", RichLog)
+        log.clear()
+        ok, messages = system_operations.environment_status(COMMON_ENV)
+        for message in messages:
+            log.write(message)
+        if ok:
+            log.write(t("[green]Status: OK[/]", "[green]상태: 정상[/]"))
+            self.notify(t("Environment is valid", "환경 설정이 유효합니다"))
+        else:
+            self.notify(t("Environment validation failed", "환경 설정 검증 실패"), severity="error", timeout=8)
+
+    def _render_environment(self) -> None:
+        log = self.query_one("#environment-log", RichLog)
+        log.clear()
+        try:
+            rendered, failures = system_operations.render_backend_envs("llamacpp")
+        except (OSError, RuntimeError, ValueError) as exc:
+            log.write(f"[red]{exc}[/]")
+            self.notify(str(exc), severity="error", timeout=8)
+            return
+        for path in rendered:
+            log.write(t(f"Rendered {path}", f"렌더링 완료: {path}"))
+        for failure in failures:
+            log.write(f"[red]{failure}[/]")
+        if failures:
+            self.notify(t("Some runtime envs failed", "일부 런타임 환경 렌더링 실패"), severity="error", timeout=8)
+        else:
+            self.notify(t("Runtime envs rendered", "런타임 환경을 렌더링했습니다"))
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-refresh-images":
             self._refresh_images()
             self.notify(t("Refreshing image list", "이미지 목록 새로고침"))
+        elif event.button.id == "btn-pull-image":
+            self._prompt_pull_image()
+        elif event.button.id == "btn-remove-image":
+            self._prompt_remove_image()
+        elif event.button.id == "btn-build-image":
+            self._prompt_build_image()
+        elif event.button.id == "btn-validate-env":
+            self._validate_environment()
+        elif event.button.id == "btn-render-envs":
+            self._render_environment()

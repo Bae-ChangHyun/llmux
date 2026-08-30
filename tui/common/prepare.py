@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import re
 import time
 from pathlib import Path
@@ -143,7 +144,7 @@ async def _run(*args: str, timeout: float = 30) -> tuple[int, str]:
     return rc, (out or b"").decode(errors="replace")
 
 
-async def stream_lines(args: list[str]):
+async def stream_lines(args: list[str], *, env: dict[str, str] | None = None):
     """Yield ("log", line) then ("rc", code), splitting on CR as well as LF.
 
     Download progress is redrawn with a bare CR, so a plain readline() would
@@ -153,6 +154,7 @@ async def stream_lines(args: list[str]):
     try:
         proc = await asyncio.create_subprocess_exec(
             *args,
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
@@ -198,8 +200,13 @@ async def stream_lines(args: list[str]):
 
 
 async def image_present(image_ref: str) -> bool:
-    rc, _ = await _run("docker", "image", "inspect", image_ref, timeout=20)
-    return rc == 0
+    rc, output = await _run("docker", "image", "inspect", image_ref, timeout=20)
+    if rc == 0:
+        return True
+    lowered = output.lower()
+    if "no such image" in lowered or "no such object" in lowered:
+        return False
+    raise RuntimeError(output.strip() or f"docker image inspect {image_ref} failed")
 
 
 async def stream_pull(image_ref: str):
@@ -227,12 +234,17 @@ async def stream_vllm_download(
         "-e", f"LLMUX_PREPARE_MODEL={model_id}",
         "-e", f"LLMUX_PREPARE_IGNORE={','.join(_VLLM_IGNORE_PATTERNS)}",
     ] + workers_env(max_workers)
+    process_env = None
     if token:
-        args += ["-e", f"HF_TOKEN={token}", "-e", f"HUGGING_FACE_HUB_TOKEN={token}"]
+        args += ["-e", "HF_TOKEN", "-e", "HUGGING_FACE_HUB_TOKEN"]
+        process_env = os.environ.copy()
+        process_env["HF_TOKEN"] = token
+        process_env["HUGGING_FACE_HUB_TOKEN"] = token
     args += ["--entrypoint", "python3", image_ref, "-c", _VLLM_DOWNLOAD_SNIPPET]
 
     try:
-        async for event in stream_lines(args):
+        stream = stream_lines(args, env=process_env) if process_env else stream_lines(args)
+        async for event in stream:
             yield event
     except asyncio.CancelledError:
         await _run("docker", "rm", "-f", container_name, timeout=30)
@@ -295,7 +307,13 @@ async def stream_llamacpp_download(
         ))
         yield ("rc", 1)
         return
-    if not await image_present(image_ref):
+    try:
+        present = await image_present(image_ref)
+    except RuntimeError as exc:
+        yield ("log", t(f"✗ image probe failed: {exc}", f"✗ 이미지 확인 실패: {exc}"))
+        yield ("rc", 1)
+        return
+    if not present:
         async for event in stream_pull(image_ref):
             if event[0] == "rc":
                 if int(event[1]) != 0:
@@ -315,13 +333,18 @@ async def stream_llamacpp_download(
         "-e", f"LLMUX_PREPARE_ALLOW={','.join(gguf_shard_names(hf_file))}",
     ]
     args += workers_env(max_workers)
+    process_env = None
     if token:
-        args += ["-e", f"HF_TOKEN={token}", "-e", f"HUGGING_FACE_HUB_TOKEN={token}"]
+        args += ["-e", "HF_TOKEN", "-e", "HUGGING_FACE_HUB_TOKEN"]
+        process_env = os.environ.copy()
+        process_env["HF_TOKEN"] = token
+        process_env["HUGGING_FACE_HUB_TOKEN"] = token
     args += ["--entrypoint", "python3", image_ref, "-c", _GGUF_DOWNLOAD_SNIPPET]
 
     rc = -1
     try:
-        async for event in stream_lines(args):
+        stream = stream_lines(args, env=process_env) if process_env else stream_lines(args)
+        async for event in stream:
             if event[0] == "rc":
                 rc = int(event[1])
             else:

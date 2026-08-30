@@ -33,11 +33,30 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate compose files
         run: |
-          for f in compose/*/docker-compose*.yaml; do
-            # `config -q` resolves interpolation, so a missing `${VAR:?...}`
-            # is a failure here rather than at a user's first `up`.
-            docker compose -f "$f" config -q --no-interpolate
-          done
+          export CONTAINER_NAME=test PROFILE_PATH=/tmp/profile.env HF_CACHE_PATH=/tmp/cache HF_TOKEN=
+
+          LLAMA_PORT=8080 GPU_ID=0 docker compose \
+            -f compose/llamacpp/docker-compose.yaml config -q
+          LLAMA_PORT=8080 GPU_ID=0 LLAMACPP_DEV_TAG=test docker compose \
+            -f compose/llamacpp/docker-compose.yaml \
+            -f compose/llamacpp/docker-compose.dev.yaml config -q
+
+          export VLLM_PORT=8000 GPU_ID=0 CONFIG_NAME=test TENSOR_PARALLEL_SIZE=1
+          docker compose -f compose/vllm/docker-compose.yaml config -q
+          docker compose \
+            -f compose/vllm/docker-compose.yaml \
+            -f compose/vllm/docker-compose.overrides.yaml config -q
+          VLLM_DEV_TAG=test docker compose \
+            -f compose/vllm/docker-compose.yaml \
+            -f compose/vllm/docker-compose.dev.yaml config -q
+          LORA_BASE_PATH=/tmp/lora docker compose \
+            -f compose/vllm/docker-compose.yaml \
+            -f compose/vllm/docker-compose.lora.yaml config -q
+
+          if env -u GPU_ID docker compose -f compose/vllm/docker-compose.yaml config -q; then
+            echo "compose accepted a missing required GPU_ID" >&2
+            exit 1
+          fi
       - name: Shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck

@@ -91,13 +91,13 @@
       <li><strong>Port conflicts</strong> — the target port is probed against running Docker containers <em>and</em> local processes (a raw socket bind). A static overlap between two <em>stopped</em> profiles is ignored.</li>
       <li><strong>GPU conflicts</strong> — the profile's <code>gpu_id</code> set is compared against every <em>running</em> container from <strong>both</strong> backends. Overlap produces a warning.</li>
     </ul>
-    <p>In the CLI, port conflicts are hard errors. In the TUI, the cross-backend conflict gate surfaces port + GPU clashes in a confirmation dialog so you can <strong>Start anyway</strong> or cancel.</p>
+    <p>Port conflicts and failed port probes are hard errors in both interfaces. GPU overlap is the only bypassable conflict: use <code>--force</code> in the CLI or confirm the warning in the TUI.</p>
 
     <h3 id="4-compose-up-health-validation">4. compose up + health validation</h3>
     <p>llmux runs <code>docker compose ... up -d</code> with the rendered env files. After compose returns, a post-start validation loop polls <code>docker inspect</code>:</p>
     <ul>
       <li>If the container is <code>restarting</code> / <code>exited</code> / <code>dead</code> or becomes <code>unhealthy</code>, startup is reported as <strong>failed</strong> and the last log lines are printed (this catches e.g. a GPU OOM during engine init).</li>
-      <li>Otherwise llmux waits for the model endpoint to respond — <code>/v1/models</code> for vLLM, <code>/health</code> for llama.cpp. If the model is still loading when the timeout hits, you get a warning, not a failure.</li>
+      <li>Otherwise llmux waits for <code>/v1/models</code> to return a served model id on either backend. A stalled model or an absolute timeout is reported as a startup failure.</li>
     </ul>
 
     <h2 id="the-lifecycle-commands">The lifecycle commands</h2>
@@ -109,7 +109,7 @@ llmux up qwen3-0-6b --backend vllm
 
 # image overrides
 llmux up qwen3-0-6b --tag v0.20.1          # specific vllm/vllm-openai tag
-llmux up qwen3-0-6b --tag v0.20.1 --pull   # force --pull always (vLLM only)
+llmux up qwen3-0-6b --tag v0.20.1 --pull   # force --pull always for a non-dev image
 llmux up qwen3-0-6b --dev                  # use the locally-built dev image
 llmux up gemma-3-4b --tag llamacpp-dev:master</code></pre>
 
@@ -119,9 +119,9 @@ llmux up gemma-3-4b --tag llamacpp-dev:master</code></pre>
       </thead>
       <tbody>
         <tr><td><code>--backend</code>, <code>-b</code></td><td>Force the backend instead of auto-detecting.</td></tr>
-        <tr><td><code>--tag</code>, <code>-t</code></td><td>Image tag override. Empty = highest local versioned tag (vLLM) or the profile/compose default (llama.cpp).</td></tr>
+        <tr><td><code>--tag</code>, <code>-t</code></td><td>Image tag override. Empty = highest local versioned vLLM tag, or Docker Hub's explicit current stable version when none is local; llama.cpp uses the profile/compose default.</td></tr>
         <tr><td><code>--dev</code></td><td>Use the locally-built <code>&lt;backend&gt;-dev:&lt;tag&gt;</code> image; builds it on demand if missing. See <a href="dev-build.html">Dev Builds</a>.</td></tr>
-        <tr><td><code>--pull</code></td><td>vLLM only: force <code>--pull always</code>. Ignored for llama.cpp.</td></tr>
+        <tr><td><code>--pull</code></td><td>Force <code>--pull always</code> for a non-dev image on either backend. Locally built dev images always use <code>--pull never</code>.</td></tr>
         <tr><td><code>--repo-url</code> / <code>--branch</code></td><td>Dev image source overrides (defaults from <code>.env.common</code>).</td></tr>
       </tbody>
     </table>
@@ -131,7 +131,7 @@ llmux up gemma-3-4b --tag llamacpp-dev:master</code></pre>
     <p><code>prepare</code> runs everything <code>up</code> does <em>except</em> launching the server: it renders the profile env (and llama.cpp's command override), makes sure the image is on disk (pulling it when it isn't), and downloads the weights into your HF cache. Nothing is served and no GPU is touched, so a later <code>up</code> only has to load what is already there.</p>
     <pre data-lang="bash"><code>llmux prepare qwen3-0-6b
 llmux prepare gemma-3-4b --backend llamacpp</code></pre>
-    <p>The download itself runs inside a throwaway container of the same image the profile would serve from — vLLM calls <code>huggingface_hub.snapshot_download</code>, llama.cpp uses llama-server's own <code>-hf</code> path and is stopped the moment the GGUF lands in the cache. There is no host-side <code>hf</code> CLI involved either way. In the TUI the same action is <strong>⬇ Prepare (download only)</strong> in a stopped profile's action menu, or the <code>p</code> key on the dashboard.</p>
+    <p>The download runs inside a throwaway container: vLLM uses the resolved serving image and <code>huggingface_hub.snapshot_download</code>; llama.cpp uses <code>PREPARE_DOWNLOADER_IMAGE</code> because its server image has no Python/Hugging Face client. There is no host-side <code>hf</code> CLI involved. In the TUI the same action is <strong>⬇ Prepare (download only)</strong> in a stopped profile's action menu, or the <code>p</code> key on the dashboard.</p>
 
     <div class="admonition warning">
       <p class="admonition-title">vLLM rejects <code>:latest</code></p>
@@ -164,6 +164,11 @@ llmux ps --backend vllm     # one backend only
 llmux ps --running          # only running containers
 llmux ps --json             # machine-readable output</code></pre>
     <p>Output columns: <code>backend</code>, <code>profile</code>, <code>status</code>, <code>port</code>, <code>gpu</code>, <code>container</code>, <code>model</code>. Status is derived from <code>docker ps</code> health state — <code>healthy</code>, <code>unhealthy</code>, <code>starting</code>, <code>running</code>, <code>exited</code>, or <code>stopped</code>.</p>
+
+    <div class="admonition note">
+      <p class="admonition-title">Local API binding</p>
+      <p>Both backend ports bind to <code>127.0.0.1</code>. The OpenAI-compatible API is available to clients on the same host without exposing an unauthenticated inference endpoint on every network interface.</p>
+    </div>
 
     <h3 id="render-env-regenerate-runtime-env-files"><code>render-env</code> — regenerate runtime env files</h3>
     <pre data-lang="bash"><code>llmux render-env qwen3-0-6b   # one profile

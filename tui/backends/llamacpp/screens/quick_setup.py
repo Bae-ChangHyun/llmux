@@ -144,6 +144,7 @@ class QuickSetupScreen(ModalScreen[str]):
     def __init__(self) -> None:
         super().__init__()
         self._last_repo = ""
+        self._listing_failed = False
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -159,6 +160,14 @@ class QuickSetupScreen(ModalScreen[str]):
                     [(t("(enter repo then Fetch)", "(repo 입력 후 Fetch)"), "__none__")],
                     allow_blank=False,
                     id="gguf-select",
+                )
+                yield Input(
+                    placeholder=t(
+                        "manual filename (enabled if lookup fails)",
+                        "수동 파일명 (조회 실패 시 활성화)",
+                    ),
+                    id="manual-file-input",
+                    disabled=True,
                 )
                 yield Static("", id="moe-hint")
 
@@ -284,12 +293,22 @@ class QuickSetupScreen(ModalScreen[str]):
         try:
             files = await list_hf_repo_files(repo)
         except HfListingUnavailable as exc:
-            info.update(t(f"[red]Could not reach huggingface.co: {exc}[/red]",
-                          f"[red]huggingface.co 조회 실패: {exc}[/red]"))
+            self._listing_failed = True
+            info.update(t(
+                f"[red]Could not reach huggingface.co: {exc}. Enter the GGUF filename manually.[/red]",
+                f"[red]huggingface.co 조회 실패: {exc}. GGUF 파일명을 직접 입력하세요.[/red]",
+            ))
             self.query_one("#gguf-select", Select).set_options(
                 [(t("(lookup failed)", "(조회 실패)"), "__none__")]
             )
+            manual = self.query_one("#manual-file-input", Input)
+            manual.disabled = False
+            manual.focus()
             return
+        self._listing_failed = False
+        manual = self.query_one("#manual-file-input", Input)
+        manual.value = ""
+        manual.disabled = True
         gguf_items = [
             f for f in files
             if isinstance(f, dict)
@@ -319,6 +338,7 @@ class QuickSetupScreen(ModalScreen[str]):
     def _on_gguf_changed(self, event: Select.Changed) -> None:
         if event.value in (Select.BLANK, "__none__", None):
             return
+        self.query_one("#manual-file-input", Input).value = str(event.value)
         self._update_moe_hint(str(event.value))
 
     def _update_moe_hint(self, gguf_file: str) -> None:
@@ -380,6 +400,8 @@ class QuickSetupScreen(ModalScreen[str]):
             if gguf_select.value not in (Select.BLANK, "__none__", None)
             else ""
         )
+        if self._listing_failed:
+            gguf_file = self._get("manual-file-input")
         name_raw = self._get("name-input")
         port_raw = self._get("port-input")
         gpu = self._get("gpu-input") or "0"
@@ -504,20 +526,36 @@ class QuickSetupScreen(ModalScreen[str]):
         else:
             params.pop("override-tensors", None)
 
-        save_config(Config(name=final_name, params=params, disabled_params=disabled_params))
-
-        save_profile(
-            Profile(
-                name=final_name,
-                container_name=final_name,
-                port=port_num,
-                gpu_id=gpu,
-                config_name=final_name,
-                model_file=gguf_file,
-                hf_repo=repo,
-                hf_file=gguf_file,
-            )
+        config = Config(
+            name=final_name,
+            params=params,
+            disabled_params=disabled_params,
         )
+        profile = Profile(
+            name=final_name,
+            container_name=final_name,
+            port=port_num,
+            gpu_id=gpu,
+            config_name=final_name,
+            model_file=gguf_file,
+            hf_repo=repo,
+            hf_file=gguf_file,
+        )
+        try:
+            save_config(config)
+            save_profile(profile)
+        except (OSError, RuntimeError, ValueError) as exc:
+            try:
+                config.path.unlink(missing_ok=True)
+            except OSError as rollback_exc:
+                self.notify(
+                    f"{exc}; config rollback failed: {rollback_exc}",
+                    severity="error",
+                    timeout=10,
+                )
+                return
+            self.notify(str(exc), severity="error", timeout=8)
+            return
 
         self.notify(
             t(

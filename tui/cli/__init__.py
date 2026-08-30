@@ -154,8 +154,11 @@ def _root(
 ) -> None:
     """Default behavior: launch the TUI when no subcommand is given."""
     _configure_logging(log_level)
-    _maybe_run_onboarding()
-    _maybe_check_for_update()
+    if ctx.invoked_subcommand == "update":
+        return
+    else:
+        _maybe_run_onboarding()
+        _maybe_check_for_update()
     if ctx.invoked_subcommand is not None:
         return
     from tui.cli._launch_tui import launch_tui
@@ -209,45 +212,66 @@ def update_cmd(
     from tui.common import version_check as vc
 
     status = vc.resolve_status(respect_cooldown=False)
+    payload = {
+        "state": status.state,
+        "latest_tag": status.tag,
+        "local_version": status.local_version,
+        "url": status.url,
+        "detail": status.detail,
+        "checkout": str(vc.PROJECT_ROOT),
+    }
 
-    if json_out:
-        emit_json({
-            "state": status.state,
-            "latest_tag": status.tag,
-            "local_version": status.local_version,
-            "url": status.url,
-            "detail": status.detail,
-            "checkout": str(vc.PROJECT_ROOT),
-        })
-        if status.state == vc.UNKNOWN:
-            raise typer.Exit(code=1)
-        if status.state == vc.CURRENT or check:
-            raise typer.Exit(code=0)
-    else:
-        if status.state == vc.UNKNOWN:
+    if status.state == vc.UNKNOWN:
+        if json_out:
+            emit_json(payload)
+        else:
             typer.echo(f"could not check for updates — {status.detail}", err=True)
-            raise typer.Exit(code=1)
-        if status.state == vc.CURRENT:
+        raise typer.Exit(code=1)
+    if status.state == vc.CURRENT:
+        if json_out:
+            emit_json(payload)
+        else:
             print(f"llmux is up to date ({status.tag or status.local_version}).")
-            raise typer.Exit(code=0)
-        print(f"llmux {status.tag} is available.  {status.url}".rstrip())
-        if check:
+        raise typer.Exit(code=0)
+    if check:
+        if json_out:
+            emit_json(payload)
+        else:
+            print(f"llmux {status.tag} is available.  {status.url}".rstrip())
             print(f"  local: {status.local_version or 'unknown'}  ({vc.PROJECT_ROOT})")
-            raise typer.Exit(code=0)
+        raise typer.Exit(code=0)
+
+    if not json_out:
+        print(f"llmux {status.tag} is available.  {status.url}".rstrip())
 
     blocked = vc.update_blocked_reason()
     if blocked:
-        typer.echo(
+        message = (
             f"refusing to update automatically — {blocked}. "
-            f"Pull it yourself in {vc.PROJECT_ROOT} when ready.",
-            err=True,
+            f"Pull it yourself in {vc.PROJECT_ROOT} when ready."
         )
+        if json_out:
+            payload["error"] = message
+            emit_json(payload)
+        else:
+            typer.echo(message, err=True)
         raise typer.Exit(code=1)
 
+    if json_out and not yes:
+        payload["error"] = "--json update requires --yes or --check"
+        emit_json(payload)
+        raise typer.Exit(code=2)
     if not yes and not typer.confirm("Update now?", default=True):
         raise typer.Exit(code=0)
 
     ok, message = vc.apply_update(status.tag)
+    if json_out:
+        payload["update_ok"] = ok
+        payload["message"] = message
+        emit_json(payload)
+        if not ok:
+            raise typer.Exit(code=1)
+        return
     if not ok:
         typer.echo(message, err=True)
         raise typer.Exit(code=1)
@@ -304,7 +328,11 @@ app.command(
 
 def main() -> None:
     """Console-script entrypoint (`llmux` in pyproject.scripts)."""
-    app()
+    try:
+        app()
+    except (OSError, RuntimeError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise SystemExit(2) from None
 
 
 if __name__ == "__main__":

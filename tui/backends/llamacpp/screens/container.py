@@ -34,6 +34,7 @@ from tui.backends.llamacpp import backend
 from tui.backends.llamacpp.backend import format_gpu_bar, get_gpu_info
 from tui.backends.llamacpp.backend_runtime import (
     LLAMACPP_DEV_SPEC,
+    _resolve_runtime_image,
     check_port_conflict,
     get_dev_build_defaults,
     stream_container_up,
@@ -211,8 +212,8 @@ class ContainerUpScreen(Screen):
                         )
                     yield RadioButton(
                         t(
-                            f"Default Image  ({LLAMACPP_OFFICIAL_IMAGE})",
-                            f"기본 이미지  ({LLAMACPP_OFFICIAL_IMAGE})",
+                            f"Default Image  ({_resolve_runtime_image(self._profile, use_default_image=True)})",
+                            f"기본 이미지  ({_resolve_runtime_image(self._profile, use_default_image=True)})",
                         ),
                         id=VER_DEFAULT,
                         value=not pinned,
@@ -354,9 +355,19 @@ class ContainerUpScreen(Screen):
         pressed = radio_set.pressed_button
         if pressed is None:
             return
-        if pressed.id == VER_CUSTOM and not self.query_one("#custom-tag-input", Input).value.strip():
-            self.query_one("#custom-tag-input", Input).focus()
-            return
+        if pressed.id == VER_CUSTOM:
+            custom = self.query_one("#custom-tag-input", Input)
+            value = custom.value.strip()
+            if not value:
+                custom.focus()
+                return
+            from tui.common.dev_build import image_tag_error
+
+            error = image_tag_error(value)
+            if error:
+                self.notify(error, severity="error", timeout=8)
+                custom.focus()
+                return
         if pressed.id == VER_DEV and not self.query_one("#dev-repo-input", Input).value.strip():
             self.query_one("#dev-repo-input", Input).focus()
             return
@@ -364,7 +375,7 @@ class ContainerUpScreen(Screen):
 
     @on(Button.Pressed, "#start-btn")
     def _on_start(self) -> None:
-        self._do_start()
+        self.action_confirm_start()
 
     @work(exclusive=True, group="llamacpp-start")
     async def _do_start(self) -> None:

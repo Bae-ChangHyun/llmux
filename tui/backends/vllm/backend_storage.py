@@ -62,16 +62,6 @@ def load_profile(name: str) -> Profile:
     stored = profile_store.load_profile(name, "vllm")
     if stored is None:
         return Profile(name=name)
-    try:
-        profile_store.render_env(stored)
-    except ValueError:
-        # A value the .env renderer refuses (quote/newline/control char, e.g.
-        # from a hand-edited profiles.yaml) must not take down every read path:
-        # this same load_profile backs `ps`, the dashboard scan, and the
-        # pre-flight of *other* profiles. Skip the .env refresh and let the
-        # profile load; the start path re-renders and fails loudly for the one
-        # profile that is actually broken.
-        pass
     return _to_profile(stored)
 
 
@@ -116,7 +106,9 @@ def load_config(name: str) -> Config:
     elif isinstance(raw_data, dict):
         data = dict(raw_data)
     else:
-        data = {}
+        raise ValueError(
+            f"{path} must contain a YAML mapping, got {type(raw_data).__name__}"
+        )
 
     model = str(data.pop("model", ""))
     gpu_mem = str(data.pop("gpu-memory-utilization", "0.9"))
@@ -144,7 +136,10 @@ def save_config(config: Config) -> None:
         data[key] = True if value == "" else value
     existing = config.path.read_text() if config.path.exists() else None
     text = dump_active_config(existing, data)
-    config.path.write_text(text + render_disabled_markers(config.disabled_params))
+    profile_store._atomic_write(
+        config.path,
+        text + render_disabled_markers(config.disabled_params),
+    )
 
 
 def parse_config_param_value(raw_value: str) -> Any:
