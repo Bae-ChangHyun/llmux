@@ -87,7 +87,7 @@ llmux unifies both under a single Textual dashboard backed by Docker Compose.
 - **Benchmarks** &mdash; `llmux bench` runs a warmup + median pass so you can compare quant A against quant B on the same hardware.
 - **btop-style live monitor** &mdash; Press `v` in the TUI, or run `llmux top` with no TUI at all. Every GPU is always shown (util·mem·temp·power·PCIe as heat bars), plus a panel per running model: braille throughput and KV graphs, cache-hit, requests, and TTFT/E2E percentiles (p50/p95/p99) with prefill/decode phases. Metrics an engine doesn't expose read `—` rather than a made-up number.
 - **Dev builds from source** &mdash; Build a `vllm-dev:` / `llamacpp-dev:` image from any fork/branch (GPU arch auto-detected) and pin a profile to it via `image_tag`.
-- **Everything scriptable** &mdash; Every TUI action is also a headless `llmux` subcommand with `--json` output, built for scripts, agents, and CI.
+- **Everything scriptable** &mdash; Every TUI action is also a headless `llmux` subcommand. Structured output is available only on commands that document `--json`. Lifecycle and mutation commands keep their documented text or stream output and exit codes.
 
 <br/>
 

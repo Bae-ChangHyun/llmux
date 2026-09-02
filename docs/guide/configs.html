@@ -124,7 +124,7 @@ jinja: true                        # Jinja chat template (recommended for Qwen/L
 
 # api-key: sk-your-key             # optional auth
 
-extra-args: []                     # verbatim args render-override.py appends as-is</code></pre>
+extra-args: []                     # validated additional llama-server args</code></pre>
 
     <table>
       <thead>
@@ -141,16 +141,17 @@ extra-args: []                     # verbatim args render-override.py appends as
         <tr><td><code>flash-attn</code></td><td>bool</td><td>Enable Flash Attention.</td></tr>
         <tr><td><code>parallel</code></td><td>int</td><td>Number of concurrent decoding slots.</td></tr>
         <tr><td><code>cont-batching</code></td><td>bool</td><td>Continuous batching.</td></tr>
-        <tr><td><code>metrics</code></td><td>bool</td><td>Expose the <code>/metrics</code> Prometheus endpoint.</td></tr>
         <tr><td><code>api-key</code></td><td>string</td><td>Require this key on incoming requests.</td></tr>
         <tr><td><code>override-tensors</code></td><td>list</td><td>MoE CPU offload. Each entry is a <code>&lt;regex&gt;=&lt;device&gt;</code> rule, e.g. <code>".ffn_.*_exps.=CPU"</code>, applied as <code>-ot</code>. Keeps experts on CPU while attention/embeddings stay on GPU.</td></tr>
-        <tr><td><code>extra-args</code></td><td>list</td><td>Escape hatch — items are appended to the <code>llama-server</code> command verbatim, for newer flags not expressible in the schema above.</td></tr>
+        <tr><td><code>extra-args</code></td><td>list</td><td>Escape hatch for newer flags not expressible in the schema above. Values are appended after validation and cannot override llmux-managed server options.</td></tr>
       </tbody>
     </table>
 
+    <p>llmux always enables the metrics endpoint for the dashboard, <code>stats</code>, and live monitor. The <code>metrics</code> key is managed by llmux rather than exposed as a user-selectable boolean.</p>
+
     <div class="admonition warning">
-      <p class="admonition-title"><code>host</code> / <code>port</code> / <code>no-webui</code> are forced</p>
-      <p><code>render-override.py</code> always sets <code>--host 0.0.0.0 --port 8080 --no-webui</code> and drops any <code>host</code>, <code>port</code>, <code>webui</code>, or <code>no-webui</code> keys from your config. Map the host port via the profile's <code>port</code> field instead.</p>
+      <p class="admonition-title">Server binding, Web UI, and metrics are managed</p>
+      <p><code>render-override.py</code> always sets <code>--host 0.0.0.0 --port 8080 --no-webui --metrics</code> and ignores matching config keys. The same <code>--host</code>, <code>--port</code>, <code>--webui</code>, <code>--no-webui</code>, and <code>--metrics</code> options are rejected inside <code>extra-args</code>. Map the host port via the profile's <code>port</code> field instead.</p>
     </div>
 
     <h3 id="moe-expert-cpu-offload">MoE expert CPU offload</h3>

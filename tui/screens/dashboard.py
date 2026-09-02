@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 from time import monotonic
 
@@ -25,20 +26,26 @@ from tui.common.conflicts import (
     gpu_conflicts,
     port_conflicts,
 )
-from tui.common.http import list_served_models, run_bench
+from tui.common.http import BENCH_RUNS, BENCH_WARMUP, list_served_models, run_bench
 from tui.common.i18n import t
 from tui.common.mem import estimate_model_memory
-from tui.common.metrics import ThroughputTracker, fetch_token_counters
+from tui.common.metrics import (
+    MetricsUnavailableError,
+    ThroughputTracker,
+    fetch_token_counters,
+)
+from tui.common.profile_store import (
+    clone_profile,
+    load_profile,
+    render_env_for_profile,
+)
 from tui.common.widgets import BackendPickerModal, ConfirmModal, TextPromptModal
 
 
 class DashboardScreen(Screen):
     """두 backend 프로필을 단일 DataTable 로 통합 표시."""
 
-    # Footer labels resolve at import time — fine, since the UI language is
-    # fixed for the process lifetime (set via LLMUX_LANG / locale before launch).
     BINDINGS = [
-        # 시각적 Footer
         Binding("enter", "action_menu", t("Action", "작업")),
         Binding("n", "new_profile", t("New", "새로")),
         Binding("m", "mem_estimate", t("Memory", "메모리")),
@@ -47,7 +54,6 @@ class DashboardScreen(Screen):
         Binding("t", "plain_mode", t("Terminal", "터미널")),
         Binding("r", "refresh", t("Refresh", "새로고침")),
         Binding("q", "quit", t("Quit", "종료")),
-        # Power-user: footer 에서 숨김
         Binding("u", "start_container", show=False),
         Binding("p", "prepare_profile", show=False),
         Binding("U", "check_update", show=False),
@@ -66,9 +72,13 @@ class DashboardScreen(Screen):
         self._vllm = VllmAdapter()
         self._llamacpp = LlamacppAdapter()
         self._rows: list[DashboardRow] = []
+        self._container_snapshots: dict[str, common_docker.ContainerSnapshot] = {}
         self._gpus = []
+        self._gpu_scan_error = ""
+        self._scan_errors: set[str] = set()
         self._refresh_timer = None
         self._tps: dict[str, str] = {}
+        self._tps_errors: dict[str, str] = {}
         self._tps_tracker = ThroughputTracker()
         self._preferred_profile_name: str | None = None
 
@@ -98,20 +108,12 @@ class DashboardScreen(Screen):
         self._col_keys = table.add_columns(
             "Status", "Backend", "Profile", "Port", "tok/s", "Model", "Detail"
         )
-        # tok/s is column index 4 — kept as a key so live updates can address
-        # the cell without re-rendering the whole table.
         self._tps_col_key = self._col_keys[4]
         self._reload()
         self._poll_gpu()
         self._poll_throughput()
-        # /metrics deltas need two samples to produce a rate; 3s keeps the
-        # first number appearing quickly without hammering the servers.
         self._tps_timer = self.set_interval(3.0, lambda: self._poll_throughput())
-        # Profile rows refresh every 5s — `docker ps` is cheap, and a stopped
-        # container should drop off the running list quickly.
         self._refresh_timer = self.set_interval(5.0, lambda: self._reload())
-        # GPU bar refreshes on a tighter 2s cadence so the memory bar catches
-        # up after a container stops.
         self._gpu_timer = self.set_interval(2.0, lambda: self._poll_gpu())
 
     def on_screen_suspend(self) -> None:
@@ -134,12 +136,10 @@ class DashboardScreen(Screen):
 
     @work(exclusive=True, group="dashboard-reload")
     async def _reload(self) -> None:
-        """모든 backend 프로필 재스캔. `docker ps` 는 단 한 번만 호출해 두 adapter 에 주입.
-
-        Adapter 하나가 실패해도 다른 쪽 상태가 유지되도록 예외를 분리한다."""
         try:
             running = await common_docker.running_container_names()
         except Exception as exc:
+            self._scan_errors = {"docker"}
             self.notify(
                 t(f"Docker status scan failed: {exc}",
                   f"Docker 상태 스캔 실패: {exc}"),
@@ -154,20 +154,25 @@ class DashboardScreen(Screen):
             )
             return
 
+        self._container_snapshots = getattr(running, "snapshots", {})
+
         rows: list[DashboardRow] = []
+        scan_errors: set[str] = set()
         try:
             rows.extend(self._vllm.rows(running))
         except Exception as exc:
+            scan_errors.add("vllm")
+            rows.extend(row for row in self._rows if row.backend == "vllm")
             self.notify(t(f"vLLM scan failed: {exc}", f"vLLM 스캔 실패: {exc}"),
                         severity="error")
         try:
             rows.extend(self._llamacpp.rows(running))
         except Exception as exc:
+            scan_errors.add("llamacpp")
+            rows.extend(row for row in self._rows if row.backend == "llamacpp")
             self.notify(t(f"llama.cpp scan failed: {exc}", f"llama.cpp 스캔 실패: {exc}"),
                         severity="error")
-        # Running containers float to the top so the active workload is
-        # always visible without scrolling. Within each running/stopped group
-        # rows stay (backend, name)-sorted for predictable navigation.
+        self._scan_errors = scan_errors
         rows.sort(key=lambda r: (not r.running, r.backend, r.profile_name))
         self._rows = rows
         self._render_rows(rows)
@@ -190,7 +195,11 @@ class DashboardScreen(Screen):
         if not rows:
             table.styles.display = "none"
             empty.styles.display = "block"
-            status_bar.update("")
+            if self._scan_errors:
+                failed = ", ".join(sorted(self._scan_errors))
+                status_bar.update(f" [red]Profile status unavailable:[/] {failed}")
+            else:
+                status_bar.update("")
             return
 
         table.styles.display = "block"
@@ -200,20 +209,23 @@ class DashboardScreen(Screen):
         l_run = sum(1 for r in rows if r.backend == "llamacpp" and r.running)
         v_total = sum(1 for r in rows if r.backend == "vllm")
         l_total = sum(1 for r in rows if r.backend == "llamacpp")
-        status_bar.update(
+        status = (
             f" [#4c8dff]vLLM[/] {v_run}/{v_total}  ·  "
             f"[green]llama.cpp[/] {l_run}/{l_total}  ·  "
             + t("[dim]Enter = actions[/dim]", "[dim]Enter = 작업 메뉴[/dim]")
         )
+        if self._scan_errors:
+            failed = ", ".join(sorted(self._scan_errors))
+            status += f"  ·  [red]{failed} status unknown[/]"
+        if self._gpu_scan_error:
+            status += "  ·  [red]GPU status unknown[/]"
+        status_bar.update(status)
 
         for r in rows:
             backend_cell = (
                 "[#4c8dff]vLLM[/]" if r.backend == "vllm" else "[green]llama.cpp[/]"
             )
-            if r.running:
-                status_cell = "[green]● running[/]"
-            else:
-                status_cell = "[dim]○ stopped[/]"
+            status_cell = self._container_status_cell(r)
             port_cell = str(r.port) if r.port is not None else "—"
             model_short = r.model.split("/")[-1] if "/" in r.model else (r.model or "—")
             detail = r.detail or "—"
@@ -248,36 +260,72 @@ class DashboardScreen(Screen):
                         pass
                     break
 
+    def _container_status_cell(self, row: DashboardRow) -> str:
+        snapshot = self._container_snapshots.get(row.container_name)
+        status = snapshot.display_status if snapshot is not None else (
+            "running" if row.running else "stopped"
+        )
+        if status in {"running", "healthy"}:
+            return f"[green]● {status}[/]"
+        if status in {"starting", "paused", "restarting", "removing"}:
+            return f"[yellow]● {status}[/]"
+        if status in {"unhealthy", "dead", "unknown"}:
+            return f"[red]● {status}[/]"
+        return f"[dim]○ {status}[/]"
+
     @work(exclusive=True, group="dashboard-gpu")
     async def _poll_gpu(self) -> None:
-        self._gpus = await common_docker.get_gpu_info()
         try:
-            self.query_one("#gpu-bar", Static).update(
-                common_docker.format_gpu_bar(self._gpus)
+            gpus = await common_docker.get_gpu_info()
+        except Exception as exc:
+            self._gpu_scan_error = str(exc)
+            last_known = ""
+            if self._gpus:
+                try:
+                    last_known = common_docker.format_gpu_bar(self._gpus)
+                except Exception as render_exc:
+                    self._gpu_scan_error += f"; last verified GPU rendering failed: {render_exc}"
+            message = t(
+                f" [red]GPU status unavailable:[/] {exc}",
+                f" [red]GPU 상태 확인 불가:[/] {exc}",
             )
-        except Exception:
-            pass
+            if last_known:
+                message += t(" · last verified: ", " · 마지막 확인: ") + last_known
+            self.query_one("#gpu-bar", Static).update(message)
+            self.notify(
+                t(f"GPU scan failed: {exc}", f"GPU 스캔 실패: {exc}"),
+                severity="error",
+                timeout=8,
+            )
+            return
+        try:
+            rendered = common_docker.format_gpu_bar(gpus)
+        except Exception as exc:
+            self._gpu_scan_error = f"GPU rendering failed: {exc}"
+            self.query_one("#gpu-bar", Static).update(
+                t(
+                    f" [red]GPU rendering failed:[/] {exc}",
+                    f" [red]GPU 렌더링 실패:[/] {exc}",
+                )
+            )
+            self.notify(self._gpu_scan_error, severity="error", timeout=8)
+            return
+        self._gpus = gpus
+        self._gpu_scan_error = ""
+        self.query_one("#gpu-bar", Static).update(rendered)
 
     @work(exclusive=True, group="dashboard-tps")
     async def _poll_throughput(self) -> None:
-        """Live generation tok/s per running profile, from Prometheus /metrics.
-
-        Rates are deltas between successive samples, so a freshly-started
-        container shows "—" for one tick. A server without metrics exposed
-        (or not yet up) stays "—" rather than erroring the whole poll.
-        """
         live: list[DashboardRow] = []
         for r in list(self._rows):
             key = f"{r.backend}:{r.profile_name}"
             if not r.running or not r.port:
                 self._tps.pop(key, None)
+                self._tps_errors.pop(key, None)
                 self._tps_tracker.forget(key)
                 continue
             live.append(r)
 
-        # Fetch concurrently — awaiting each container in turn meant one
-        # slow/hanging /metrics endpoint delayed (and could starve) every
-        # profile behind it in the list.
         samples = await asyncio.gather(
             *(fetch_token_counters(r.port) for r in live),
             return_exceptions=True,
@@ -286,18 +334,25 @@ class DashboardScreen(Screen):
 
         for r, counters in zip(live, samples):
             key = f"{r.backend}:{r.profile_name}"
-            if isinstance(counters, BaseException):
-                counters = None
+            if isinstance(counters, MetricsUnavailableError):
+                message = str(counters)
+                if self._tps_errors.get(key) != message:
+                    self.notify(message, severity="error", timeout=8)
+                self._tps_errors[key] = message
+                self._tps[key] = "[red]error[/]"
+                self._tps_tracker.forget(key)
+                cell = "[red]error[/]"
+            elif isinstance(counters, BaseException):
+                raise counters
             if counters is None:
+                self._tps_errors.pop(key, None)
                 self._tps.pop(key, None)
                 self._tps_tracker.forget(key)
                 cell = "—"
-            else:
+            elif not isinstance(counters, BaseException):
+                self._tps_errors.pop(key, None)
                 rate = self._tps_tracker.update(key, counters, now)
                 if rate is None:
-                    # First sample, or the counters went backwards (server
-                    # restart). Drop the cached value too — otherwise the next
-                    # _render_rows would resurrect the pre-restart tok/s.
                     self._tps.pop(key, None)
                     cell = "—"
                 else:
@@ -308,8 +363,6 @@ class DashboardScreen(Screen):
                 table = self.query_one("#profile-table", DataTable)
                 table.update_cell(key, self._tps_col_key, cell)
             except Exception:
-                # Row went away between the reload and this update — the next
-                # _render_rows pass will pick the value up from self._tps.
                 pass
 
     def _selected_row(self) -> DashboardRow | None:
@@ -364,23 +417,32 @@ class DashboardScreen(Screen):
         self.app.push_screen(ActionModal(profile), after)
 
     def _confirm_conflicts_before_start(self, row: DashboardRow, on_ok) -> None:
-        """start 실행 전 다른 backend 포함 port/gpu 충돌 체크 (비동기 external 감지 포함)."""
         self._check_and_confirm(row, on_ok)
 
     @work(exclusive=False, group="conflict-check")
     async def _check_and_confirm(self, row: DashboardRow, on_ok) -> None:
+        modal_generation = self.app.modal_generation
         port_msgs = port_conflicts(row, self._rows)
         gpu_msgs = gpu_conflicts(row, self._rows)
         probe_msgs: list[str] = []
+        if self._scan_errors:
+            failed = ", ".join(sorted(self._scan_errors))
+            probe_msgs.append(
+                "Could not verify every profile's port/GPU assignment because "
+                f"these scans failed: {failed}."
+            )
         try:
             ext_ports = await common_docker.running_container_ports()
+            ext_msgs = external_port_conflicts(row, self._rows, ext_ports)
         except Exception as exc:
-            ext_ports = {}
+            ext_msgs = []
             probe_msgs.append(
                 "Could not inspect running Docker container ports. "
                 f"Runtime port check will still run before start. ({exc})"
             )
-        ext_msgs = external_port_conflicts(row, self._rows, ext_ports)
+
+        if not self.app.can_push_modal(modal_generation):
+            return
 
         if not port_msgs and not gpu_msgs and not ext_msgs and not probe_msgs:
             on_ok()
@@ -505,23 +567,28 @@ class DashboardScreen(Screen):
 
     @work(exclusive=True)
     async def _run_vllm_bench(self, row: DashboardRow) -> None:
-        """vLLM /v1/chat/completions — warmup then 3 measured runs, median."""
         if not row.port:
             self.notify(t("No port information", "포트 정보 없음"), severity="error")
             return
-        models = await list_served_models(row.port)
-        model = models[0] if models else (row.model or "")
-        if not model:
-            self.notify(
-                t("Could not identify a served model (/v1/models returned nothing)",
-                  "서빙 모델 식별 실패 (/v1/models 응답 없음)"),
-                severity="error",
-            )
-            return
-        self.notify(t(f"Benchmarking (warmup + 3 runs, {model})…",
-                      f"벤치마크 실행 (warmup+3회, {model})…"))
         try:
-            r = await run_bench(row.port, model, runs=3, warmup=1)
+            models = await list_served_models(row.port)
+            model = models[0] if models else (row.model or "")
+            if not model:
+                raise RuntimeError(
+                    "could not identify a served model (/v1/models returned nothing)"
+                )
+            self.notify(
+                t(
+                    f"Benchmarking (warmup + {BENCH_RUNS} runs, {model})…",
+                    f"벤치마크 실행 (warmup+{BENCH_RUNS}회, {model})…",
+                )
+            )
+            r = await run_bench(
+                row.port,
+                model,
+                runs=BENCH_RUNS,
+                warmup=BENCH_WARMUP,
+            )
             self.notify(
                 f"✓ median [b]{r['median_tps']:.1f} tok/s[/b] "
                 f"({r['min_tps']:.1f}–{r['max_tps']:.1f})",
@@ -542,9 +609,6 @@ class DashboardScreen(Screen):
             self.notify(t(f"Error stopping {name}: {output}",
                           f"{name} 중지 오류: {output}"), severity="error")
         self._reload()
-        # Trigger an immediate GPU poll so the memory bar reflects the
-        # released VRAM right away — without this the bar waits for the
-        # next 2s tick, which feels stuck on a fast workflow.
         self._poll_gpu()
 
 
@@ -599,7 +663,7 @@ class DashboardScreen(Screen):
             if not destination:
                 return
             try:
-                clone = profile_store.clone_profile(source, destination, backend)
+                clone = clone_profile(source, destination, backend)
             except ValueError as exc:
                 self.notify(str(exc), severity="error", timeout=8)
                 return
@@ -621,7 +685,7 @@ class DashboardScreen(Screen):
         )
 
     def _render_profile_env(self, name: str, backend: str) -> None:
-        profile = profile_store.load_profile(name, backend)
+        profile = load_profile(name, backend)
         if profile is None:
             self.notify(
                 t(f"Profile not found: {name}", f"프로필을 찾을 수 없습니다: {name}"),
@@ -629,7 +693,7 @@ class DashboardScreen(Screen):
             )
             return
         try:
-            path = profile_store.render_env(profile)
+            path = render_env_for_profile(profile.name, profile.backend)
         except (OSError, RuntimeError, ValueError) as exc:
             self.notify(str(exc), severity="error", timeout=8)
             return
@@ -661,21 +725,30 @@ class DashboardScreen(Screen):
             self.notify(t(f"✗ stop failed: {msg}", f"✗ 중지 실패: {msg}"),
                         severity="error")
         self._reload()
-        # See _run_vllm_stop — refresh the GPU bar immediately so the
-        # VRAM bar mirrors the just-released allocation.
         self._poll_gpu()
 
     @work(exclusive=True)
     async def _run_llamacpp_bench(self, profile) -> None:
-        # config_name defaults to the profile name when unset — same fallback
-        # the CLI's bench uses.
-        config_name = profile.config_name or profile.name
-        cfg = lbackend.load_config(config_name)
-        alias = cfg.get("alias", config_name)
-        self.notify(t(f"Benchmarking (warmup + 3 runs, {alias})…",
-                      f"벤치마크 실행 (warmup+3회, {alias})…"))
         try:
-            r = await run_bench(profile.port, alias, runs=3, warmup=1)
+            config_name = profile.config_name or profile.name
+            cfg = lbackend.load_config(config_name)
+            alias = cfg.get("alias", config_name)
+            if not isinstance(alias, str) or not alias.strip():
+                raise ValueError(f"invalid benchmark alias in config {config_name!r}")
+            if not profile.port:
+                raise ValueError(f"profile {profile.name!r} has no metrics port")
+            self.notify(
+                t(
+                    f"Benchmarking (warmup + {BENCH_RUNS} runs, {alias})…",
+                    f"벤치마크 실행 (warmup+{BENCH_RUNS}회, {alias})…",
+                )
+            )
+            r = await run_bench(
+                profile.port,
+                alias,
+                runs=BENCH_RUNS,
+                warmup=BENCH_WARMUP,
+            )
             self.notify(
                 f"✓ median [b]{r['median_tps']:.1f} tok/s[/b] "
                 f"({r['min_tps']:.1f}–{r['max_tps']:.1f})",
@@ -724,13 +797,9 @@ class DashboardScreen(Screen):
 
     @work(exclusive=True, group="update-check")
     async def _check_update(self) -> None:
-        """Ask GitHub whether a newer release exists, and offer to install it.
-
-        Mirrors `llmux update`: the failure back-off is ignored, so this always
-        answers.
-        """
         from tui.common import version_check as vc
 
+        modal_generation = self.app.modal_generation
         self.notify(t("Checking for updates…", "업데이트 확인 중…"), timeout=3)
         status = await asyncio.to_thread(vc.resolve_status, respect_cooldown=False)
 
@@ -757,6 +826,9 @@ class DashboardScreen(Screen):
                   f"{status.tag} 이(가) 있지만 자동 업데이트 불가 — {blocked}"),
                 severity="warning", timeout=10,
             )
+            return
+
+        if not self.app.can_push_modal(modal_generation):
             return
 
         def after(confirmed: bool) -> None:
@@ -799,11 +871,6 @@ class DashboardScreen(Screen):
         row = self._selected_row()
         if row is None:
             return
-        # `docker logs` works for stopped/exited containers too — the previous
-        # gate matched neither the CLI (`llmux logs <profile>` already shows
-        # last-run logs) nor users' mental model. Allow the modal to open and
-        # let it surface a friendly message if there is genuinely no
-        # container record yet.
         if row.backend == "vllm":
             self._dispatch_vllm("logs", row)
         else:
@@ -812,9 +879,6 @@ class DashboardScreen(Screen):
             )
 
     async def action_plain_mode(self) -> None:
-        """Suspend the Textual UI and show the btop-style monitor in the normal
-        terminal (for low-bandwidth SSH or dumb terminals). System-wide: GPUs
-        always, plus every running model — a stopped row just means no focus."""
         row = self._selected_row()
         from tui.common.plain_monitor import run_plain_monitor
 
@@ -885,8 +949,6 @@ class DashboardScreen(Screen):
         self.app.push_screen(BackendPickerModal(), after)
 
     def action_system_info(self) -> None:
-        """현재 커서 위치의 backend 에 맞는 System 화면으로 이동.
-        선택된 row 가 없으면 backend picker 로 사용자 선택."""
         row = self._selected_row()
         if row is not None:
             screen_id = "vllm_system" if row.backend == "vllm" else "llamacpp_system"
@@ -902,8 +964,6 @@ class DashboardScreen(Screen):
         self.app.push_screen(BackendPickerModal(), after)
 
     def action_config_list(self) -> None:
-        """커서 위치의 backend config 목록으로 이동.
-        선택된 row 가 없으면 backend picker 로 사용자 선택."""
         row = self._selected_row()
         if row is not None:
             screen_id = "vllm_configs" if row.backend == "vllm" else "llamacpp_configs"
@@ -961,12 +1021,6 @@ class DashboardScreen(Screen):
         bar.styles.display = "block" if visible else "none"
 
     def action_mem_estimate(self) -> None:
-        """Toggle the HF memory-estimate row (hidden by default to save rows).
-
-        While the Input has focus `m` is a literal character, so the only way
-        this fires with the area open is from the table — treat that as a
-        request to collapse it again.
-        """
         if self._mem_area_visible():
             self._set_mem_area(False)
             self.query_one("#profile-table", DataTable).focus()
@@ -997,56 +1051,87 @@ class DashboardScreen(Screen):
         result = await estimate_model_memory(model_id)
 
         match = re.search(r"~([\d.]+)GB", result)
-        est_gb = float(match.group(1)) if match else 0
+        model_short = model_id.split("/")[-1] if "/" in model_id else model_id
+        if match is None:
+            result_bar.update(
+                f"  📦 [bold]{model_short}[/bold]  [red]{result}[/red]"
+            )
+            return
+        est_gb = float(match.group(1))
+        if not math.isfinite(est_gb) or est_gb <= 0:
+            result_bar.update(
+                f"  📦 [bold]{model_short}[/bold]  [red]GPU fit UNKNOWN: {result}[/red]"
+            )
+            return
 
-        try:
-            model_short = model_id.split("/")[-1] if "/" in model_id else model_id
-            if est_gb > 0 and self._gpus:
-                n_gpus = len(self._gpus)
-                per_gpu_gb = est_gb / n_gpus if n_gpus > 1 else est_gb
-                tp_note = (
-                    f"  [dim]TP={n_gpus}: {per_gpu_gb:.1f}GB/GPU[/dim]"
-                    if n_gpus > 1
-                    else ""
+        if self._gpu_scan_error:
+            result_bar.update(
+                f"  📦 [bold]{model_short}[/bold]  {result}  "
+                f"[yellow](GPU fit UNKNOWN: {self._gpu_scan_error})[/yellow]"
+            )
+            return
+
+        if not self._gpus:
+            result_bar.update(
+                f"  📦 [bold]{model_short}[/bold]  {result}  "
+                "[yellow](GPU fit UNKNOWN: no GPUs detected)[/yellow]"
+            )
+            return
+
+        n_gpus = len(self._gpus)
+        per_gpu_gb = est_gb / n_gpus if n_gpus > 1 else est_gb
+        tp_note = (
+            f"  [dim]TP={n_gpus}: {per_gpu_gb:.1f}GB/GPU[/dim]"
+            if n_gpus > 1
+            else ""
+        )
+        parts = []
+        any_unknown = False
+        for g in self._gpus:
+            try:
+                total_gb = common_docker.parse_gpu_reading(
+                    g.memory_total, "memory total"
+                ) / 1024
+                if total_gb <= 0:
+                    raise ValueError(
+                        f"invalid GPU memory total: {g.memory_total!r}"
+                    )
+            except ValueError as exc:
+                any_unknown = True
+                parts.append(
+                    f"GPU{g.index} [dim]{'░' * 12}[/dim] "
+                    f"[yellow]UNKNOWN[/yellow] {per_gpu_gb:.1f}/?GB ({exc})"
                 )
-
-                parts = []
-                for g in self._gpus:
-                    total_gb = int(g.memory_total) / 1024
-                    ratio = per_gpu_gb / total_gb if total_gb > 0 else 0
-                    bar_w = 12
-                    if ratio > 1.0:
-                        bar = f"[red bold]{'✗' * bar_w}[/red bold]"
-                        label = (
-                            f"[red bold]OVER[/red bold] "
-                            f"{per_gpu_gb:.1f}/{total_gb:.0f}GB"
-                        )
-                    else:
-                        filled = round(ratio * bar_w)
-                        empty = bar_w - filled
-                        color = (
-                            "green"
-                            if ratio < 0.7
-                            else ("yellow" if ratio < 0.9 else "red")
-                        )
-                        bar = (
-                            f"[{color}]{'━' * filled}[/{color}]"
-                            f"[dim]{'╌' * empty}[/dim]"
-                        )
-                        label = (
-                            f"[{color}]{ratio * 100:.0f}%[/{color}] "
-                            f"{per_gpu_gb:.1f}/{total_gb:.0f}GB"
-                        )
-                    parts.append(f"GPU{g.index} {bar} {label}")
-                gpu_line = " [dim]│[/dim] ".join(parts)
-                text = (
-                    f"  📦 [bold]{model_short}[/bold] {result}{tp_note}\n"
-                    f"     {gpu_line}"
+                continue
+            ratio = per_gpu_gb / total_gb
+            bar_w = 12
+            if ratio > 1.0:
+                bar = f"[red bold]{'✗' * bar_w}[/red bold]"
+                label = (
+                    f"[red bold]OVER[/red bold] "
+                    f"{per_gpu_gb:.1f}/{total_gb:.0f}GB"
                 )
             else:
-                text = f"  📦 [bold]{model_short}[/bold]  {result}"
-        except Exception as exc:
-            # A GPU reporting `[N/A]` memory must not hide an estimate we
-            # already have.
-            text = f"  📦 [bold]{model_id}[/bold]  {result}  [yellow](GPU fit unavailable: {exc})[/yellow]"
+                filled = round(ratio * bar_w)
+                empty = bar_w - filled
+                color = (
+                    "green"
+                    if ratio < 0.7
+                    else ("yellow" if ratio < 0.9 else "red")
+                )
+                bar = (
+                    f"[{color}]{'━' * filled}[/{color}]"
+                    f"[dim]{'╌' * empty}[/dim]"
+                )
+                label = (
+                    f"[{color}]{ratio * 100:.0f}%[/{color}] "
+                    f"{per_gpu_gb:.1f}/{total_gb:.0f}GB"
+                )
+            parts.append(f"GPU{g.index} {bar} {label}")
+        unknown_note = "  [yellow]FIT UNKNOWN[/yellow]" if any_unknown else ""
+        gpu_line = " [dim]│[/dim] ".join(parts)
+        text = (
+            f"  📦 [bold]{model_short}[/bold] {result}{tp_note}{unknown_note}\n"
+            f"     {gpu_line}"
+        )
         result_bar.update(text)

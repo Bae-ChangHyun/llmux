@@ -9,6 +9,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, OptionList, Static, Switch
 from textual.widgets.option_list import Option
 
+from tui.common.dev_build import repo_url_error
 from tui.common.i18n import t
 
 
@@ -70,9 +71,7 @@ class ConfirmModal(ModalScreen[bool]):
     ) -> None:
         super().__init__()
         self._message = message
-        # Resolve the default labels lazily in compose(), not here — a t()
-        # default argument would be evaluated once at import time and lock the
-        # language, defeating the fresh-per-call resolution i18n relies on.
+        # Resolve translated defaults in compose because default arguments freeze imports.
         self._confirm_label = confirm_label
         self._cancel_label = cancel_label
         self._variant = variant
@@ -102,9 +101,6 @@ class ConfirmModal(ModalScreen[bool]):
 class TextPromptModal(ModalScreen[str | None]):
     """공용 텍스트 입력 다이얼로그. 취소 시 None, 확인 시 입력 문자열."""
 
-    # Without an explicit height the generic `ModalScreen > Vertical` rule in
-    # app.tcss leaves Vertical at its default `height: 1fr`, so the dialog
-    # stretched to nearly the full terminal around three rows of content.
     DEFAULT_CSS = """
     TextPromptModal > Vertical {
         width: 52;
@@ -137,8 +133,6 @@ class TextPromptModal(ModalScreen[str | None]):
         self._message = message
         self._default = default
         self._placeholder = placeholder
-        # See ConfirmModal — resolve default labels in compose(), not as t()
-        # default arguments (which would freeze the language at import time).
         self._confirm_label = confirm_label
         self._cancel_label = cancel_label
 
@@ -198,7 +192,8 @@ class DevBuildPromptModal(ModalScreen[dict[str, object] | None]):
     def __init__(self, backend: str, repo_url: str, branch: str) -> None:
         super().__init__()
         self._backend = backend
-        self._repo_url = repo_url
+        self._repo_url_error = repo_url_error(repo_url)
+        self._repo_url = "" if self._repo_url_error else repo_url
         self._branch = branch
 
     def compose(self) -> ComposeResult:
@@ -224,14 +219,25 @@ class DevBuildPromptModal(ModalScreen[dict[str, object] | None]):
                 yield Button(t("Build", "빌드"), id="build-submit", variant="primary")
                 yield Button(t("Cancel", "취소"), id="build-cancel")
 
+    def on_mount(self) -> None:
+        self.query_one("#build-repo-input", Input).focus()
+        if self._repo_url_error:
+            self.notify(self._repo_url_error, severity="error")
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "build-cancel":
             self.dismiss(None)
             return
-        repo_url = self.query_one("#build-repo-input", Input).value.strip()
+        repo_input = self.query_one("#build-repo-input", Input)
+        repo_url = repo_input.value.strip()
         branch = self.query_one("#build-branch-input", Input).value.strip()
         if not repo_url or not branch:
             self.notify(t("Repository and branch are required", "저장소와 브랜치는 필수입니다"), severity="error")
+            return
+        error = repo_url_error(repo_url)
+        if error:
+            repo_input.value = ""
+            self.notify(error, severity="error")
             return
         result: dict[str, object] = {
             "repo_url": repo_url,

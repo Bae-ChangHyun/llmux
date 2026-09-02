@@ -88,6 +88,11 @@ llmux image build-dev --backend llamacpp</code></pre>
       <p>The builder refuses to silently switch the <code>.vllm-src/</code> / <code>.llamacpp-src/</code> checkout to a different remote URL. If you want to swap repos, move or delete the checkout directory yourself first.</p>
     </div>
 
+    <div class="admonition warning">
+      <p class="admonition-title">Do not embed credentials in the repo URL</p>
+      <p>An HTTP(S) URL containing userinfo, a query, or a fragment is rejected before Git runs. Use a credential helper or a credential-free SSH URL such as <code>ssh://git@host/path</code> instead; its username-only <code>git@</code> authority is allowed.</p>
+    </div>
+
     <h3 id="build-dev-options"><code>build-dev</code> options</h3>
     <table>
       <thead>

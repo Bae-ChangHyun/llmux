@@ -44,6 +44,7 @@ class LlmuxApp(App):
         super().__init__()
         self._too_narrow: TooNarrowScreen | None = None
         self._width_guard_armed = False
+        self._modal_generation = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -51,12 +52,20 @@ class LlmuxApp(App):
 
     def on_mount(self) -> None:
         self.push_screen("dashboard")
-        # Only arm the guard once the dashboard is on the stack. Textual
-        # delivers the initial Resize *before* on_mount, so an unarmed
-        # on_resize would push the guard first and let the dashboard land on
-        # top of it — a buried guard that can never surface to release itself.
+        # Textual sends the initial Resize before on_mount, so arm after dashboard push.
         self._width_guard_armed = True
         self._enforce_width(self.size.width)
+
+    @property
+    def modal_generation(self) -> int:
+        return self._modal_generation
+
+    def can_push_modal(self, generation: int) -> bool:
+        return (
+            generation == self._modal_generation
+            and self._too_narrow is None
+            and self.size.width >= self.MIN_WIDTH
+        )
 
     def on_resize(self, event: Resize) -> None:
         if not self._width_guard_armed:
@@ -66,6 +75,7 @@ class LlmuxApp(App):
     def _enforce_width(self, width: int) -> None:
         if width < self.MIN_WIDTH:
             if self._too_narrow is None:
+                self._modal_generation += 1
                 self._too_narrow = TooNarrowScreen(self.MIN_WIDTH, width)
                 self.push_screen(self._too_narrow)
             else:
@@ -75,30 +85,20 @@ class LlmuxApp(App):
             guard = self._too_narrow
             if self.screen is guard:
                 self._release_width_guard(guard)
-            # Guard is buried under another screen — keep the reference so a
-            # re-narrow reuses it instead of pushing a duplicate. The guard
-            # pops itself from on_screen_resume once it surfaces on a
-            # wide-enough terminal.
 
     def _release_width_guard(self, guard: TooNarrowScreen) -> None:
-        """Pop the width guard and drop our reference. Called by `_enforce_width`
-        and by the guard itself when it resumes on a wide-enough terminal."""
         if self._too_narrow is not guard:
             return
         self._too_narrow = None
+        self._modal_generation += 1
         if self.screen is guard:
             self.pop_screen()
 
     def action_show_dashboard(self) -> None:
-        # Pop back to the dashboard already at the bottom of the stack, rather
-        # than pushing/switching in a second DashboardScreen instance.
         while not isinstance(self.screen, DashboardScreen) and len(self.screen_stack) > 1:
             if self.screen is self._too_narrow:
-                # The guard outranks F1 while the terminal is still narrow —
-                # popping it would expose the very screens it exists to hide.
                 if self.size.width < self.MIN_WIDTH:
                     return
-                # Wide again: release it and keep unwinding to the dashboard.
                 self._release_width_guard(self.screen)
                 continue
             self.pop_screen()

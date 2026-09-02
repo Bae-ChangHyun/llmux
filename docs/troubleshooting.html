@@ -102,7 +102,7 @@
     <h2 id="env-common-not-found"><code>.env.common</code> not found</h2>
     <p><strong>Symptom.</strong> The start fails with <code>Error: .env.common not found</code> (vLLM) or <code>✗ .env.common 없음</code> (llama.cpp).</p>
     <p><strong>Cause.</strong> <code>.env.common</code> holds shared host paths and tokens and is gitignored. The first-run wizard may not have completed.</p>
-    <p><strong>Fix.</strong> Run <code>llmux</code> and complete the wizard. For a manual checkout, you can instead copy <code>.env.common.example</code> and edit it.</p>
+    <p><strong>Fix.</strong> Run <code>llmux</code> and complete the wizard. For a manual checkout, run <code>install -m 600 .env.common.example .env.common</code> and then edit it.</p>
     <p>Then run <code>llmux env-check</code> to confirm. Note that <code>HF_CACHE_PATH</code> <strong>must be an absolute path</strong> — a relative value is rejected. If the profile uses LoRA, <code>LORA_BASE_PATH</code> must also be set and absolute.</p>
 
     <h2 id="gated-model-download-fails-missing-hf-token">Gated model download fails (missing <code>HF_TOKEN</code>)</h2>

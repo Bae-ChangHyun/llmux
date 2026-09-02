@@ -13,10 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.13"]
-    # GitHub Actions sets CI=true, which makes Rich enable ANSI color — that
-    # splits flag names like "--model" across escape codes and breaks the CLI
-    # tests' plain-substring assertions. Force plain output to match a normal
-    # non-TTY run.
+    # ANSI colors split CLI flags across escape sequences in CI substring tests.
     env:
       NO_COLOR: "1"
       TERM: dumb
@@ -33,30 +30,63 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate compose files
         run: |
-          export CONTAINER_NAME=test PROFILE_PATH=/tmp/profile.env HF_CACHE_PATH=/tmp/cache HF_TOKEN=
+          expect_missing() {
+            local label=$1
+            local variable=$2
+            local output
+            shift 2
+            if output=$(env -u "$variable" docker compose "$@" config -q 2>&1); then
+              echo "compose accepted missing required $label" >&2
+              exit 1
+            fi
+            if [[ $output != *"$variable"* ]]; then
+              echo "compose failed for an unexpected reason while checking $label" >&2
+              echo "$output" >&2
+              exit 1
+            fi
+            echo "compose rejected missing required $label"
+          }
 
-          LLAMA_PORT=8080 GPU_ID=0 docker compose \
-            -f compose/llamacpp/docker-compose.yaml config -q
-          LLAMA_PORT=8080 GPU_ID=0 LLAMACPP_DEV_TAG=test docker compose \
+          export CONTAINER_NAME=test CONFIG_NAME=test HF_CACHE_PATH=/tmp/cache HF_TOKEN=
+          export LLAMA_PORT=8080 LLAMACPP_DEV_TAG=test
+          export VLLM_PORT=8000 VLLM_DEV_TAG=test TENSOR_PARALLEL_SIZE=1
+          export GPU_ID=0 LORA_BASE_PATH=/tmp/lora
+          export PROFILE_PATH="$RUNNER_TEMP/llmux-profile.env"
+          install -m 600 /dev/null "$PROFILE_PATH"
+
+          docker compose -f compose/llamacpp/docker-compose.yaml config -q
+          docker compose \
             -f compose/llamacpp/docker-compose.yaml \
             -f compose/llamacpp/docker-compose.dev.yaml config -q
 
-          export VLLM_PORT=8000 GPU_ID=0 CONFIG_NAME=test TENSOR_PARALLEL_SIZE=1
           docker compose -f compose/vllm/docker-compose.yaml config -q
           docker compose \
             -f compose/vllm/docker-compose.yaml \
             -f compose/vllm/docker-compose.overrides.yaml config -q
-          VLLM_DEV_TAG=test docker compose \
+          docker compose \
             -f compose/vllm/docker-compose.yaml \
             -f compose/vllm/docker-compose.dev.yaml config -q
-          LORA_BASE_PATH=/tmp/lora docker compose \
+          docker compose \
             -f compose/vllm/docker-compose.yaml \
             -f compose/vllm/docker-compose.lora.yaml config -q
 
-          if env -u GPU_ID docker compose -f compose/vllm/docker-compose.yaml config -q; then
-            echo "compose accepted a missing required GPU_ID" >&2
-            exit 1
-          fi
+          expect_missing compose/llamacpp/docker-compose.yaml:CONTAINER_NAME CONTAINER_NAME -f compose/llamacpp/docker-compose.yaml
+          expect_missing compose/llamacpp/docker-compose.yaml:LLAMA_PORT LLAMA_PORT -f compose/llamacpp/docker-compose.yaml
+          expect_missing compose/llamacpp/docker-compose.yaml:HF_CACHE_PATH HF_CACHE_PATH -f compose/llamacpp/docker-compose.yaml
+          expect_missing compose/llamacpp/docker-compose.yaml:CONFIG_NAME CONFIG_NAME -f compose/llamacpp/docker-compose.yaml
+          expect_missing compose/llamacpp/docker-compose.yaml:GPU_ID GPU_ID -f compose/llamacpp/docker-compose.yaml
+          expect_missing compose/llamacpp/docker-compose.yaml:PROFILE_PATH PROFILE_PATH -f compose/llamacpp/docker-compose.yaml
+          expect_missing compose/llamacpp/docker-compose.dev.yaml:LLAMACPP_DEV_TAG LLAMACPP_DEV_TAG -f compose/llamacpp/docker-compose.yaml -f compose/llamacpp/docker-compose.dev.yaml
+
+          expect_missing compose/vllm/docker-compose.yaml:CONTAINER_NAME CONTAINER_NAME -f compose/vllm/docker-compose.yaml
+          expect_missing compose/vllm/docker-compose.yaml:VLLM_PORT VLLM_PORT -f compose/vllm/docker-compose.yaml
+          expect_missing compose/vllm/docker-compose.yaml:HF_CACHE_PATH HF_CACHE_PATH -f compose/vllm/docker-compose.yaml
+          expect_missing compose/vllm/docker-compose.yaml:GPU_ID GPU_ID -f compose/vllm/docker-compose.yaml
+          expect_missing compose/vllm/docker-compose.yaml:CONFIG_NAME CONFIG_NAME -f compose/vllm/docker-compose.yaml
+          expect_missing compose/vllm/docker-compose.yaml:TENSOR_PARALLEL_SIZE TENSOR_PARALLEL_SIZE -f compose/vllm/docker-compose.yaml
+          expect_missing compose/vllm/docker-compose.overrides.yaml:PROFILE_PATH PROFILE_PATH -f compose/vllm/docker-compose.yaml -f compose/vllm/docker-compose.overrides.yaml
+          expect_missing compose/vllm/docker-compose.dev.yaml:VLLM_DEV_TAG VLLM_DEV_TAG -f compose/vllm/docker-compose.yaml -f compose/vllm/docker-compose.dev.yaml
+          expect_missing compose/vllm/docker-compose.lora.yaml:LORA_BASE_PATH LORA_BASE_PATH -f compose/vllm/docker-compose.yaml -f compose/vllm/docker-compose.lora.yaml
       - name: Shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck

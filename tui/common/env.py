@@ -93,8 +93,20 @@ def expand_env_values(env: dict[str, str]) -> dict[str, str]:
     return {k: host_expand(v) for k, v in env.items()}
 
 
+def required_image_reference_error(key: str, image_ref: str) -> str:
+    if not image_ref.strip():
+        return f"Error: {key} is not set in .env.common"
+    from tui.common.dev_build import image_tag_error
+
+    error = image_tag_error(image_ref)
+    return f"Error: invalid {key}: {error}" if error else ""
+
+
 def validate_common_env(
-    common_env_path: Path, *, require_lora_base_path: bool = False
+    common_env_path: Path,
+    *,
+    require_lora_base_path: bool = False,
+    require_downloader_image: bool = False,
 ) -> tuple[bool, list[str]]:
     """Validate `.env.common` for shared cross-backend invariants.
 
@@ -115,6 +127,15 @@ def validate_common_env(
             "Error: .env.common not found.",
             "Create it from .env.common.example before starting containers.",
         ]
+    try:
+        mode = common_env_path.stat().st_mode & 0o777
+    except OSError as exc:
+        return False, [f"Error: cannot inspect .env.common permissions: {exc}"]
+    if mode & 0o077:
+        return False, [
+            "Error: .env.common permissions must be owner-only "
+            f"(for example 0600). Current mode: {mode:04o}"
+        ]
     common = parse_env_file(common_env_path)
     hf_cache_path = common.get("HF_CACHE_PATH", "")
     if not hf_cache_path:
@@ -129,6 +150,14 @@ def validate_common_env(
             "Error: PREPARE_MAX_WORKERS must be empty or a positive integer. "
             f"Current value: {workers}"
         ]
+    if require_downloader_image:
+        downloader_error = required_image_reference_error(
+            "PREPARE_DOWNLOADER_IMAGE",
+            common.get("PREPARE_DOWNLOADER_IMAGE", ""),
+        )
+        if downloader_error:
+            return False, [downloader_error]
+
     from tui.common.dev_build import image_tag_error
 
     for key in ("VLLM_IMAGE", "LLAMACPP_IMAGE"):

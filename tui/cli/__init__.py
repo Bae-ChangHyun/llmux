@@ -6,6 +6,8 @@ Subcommands provide non-interactive access for scripts and agents.
 
 from __future__ import annotations
 
+import re
+
 import typer
 
 app = typer.Typer(
@@ -83,25 +85,36 @@ def _maybe_check_for_update() -> None:
 
 
 def llmux_version() -> str:
-    """Installed llmux version, from the package metadata.
-
-    A source checkout that was never `pip install`ed has no metadata; fall back
-    to reading pyproject.toml so `--version` still answers in a dev tree.
-    """
+    """Return installed metadata or the source checkout's declared version."""
     from importlib.metadata import PackageNotFoundError, version
 
     try:
         return version("llmux")
     except PackageNotFoundError:
-        import tomllib
-
         from tui.common.profile_store import PROJECT_ROOT
 
         pyproject = PROJECT_ROOT / "pyproject.toml"
-        if not pyproject.exists():
-            return "unknown"
-        data = tomllib.loads(pyproject.read_text())
-        return data.get("project", {}).get("version", "unknown")
+        try:
+            content = pyproject.read_text()
+        except OSError as exc:
+            raise RuntimeError(
+                f"llmux package metadata is unavailable and {pyproject} could not be read: {exc}"
+            ) from exc
+        project = re.search(
+            r"^\[project\]\s*$\n(?P<body>.*?)(?=^\[|\Z)",
+            content,
+            re.MULTILINE | re.DOTALL,
+        )
+        match = (
+            re.search(r'^version\s*=\s*"([^"]+)"', project.group("body"), re.MULTILINE)
+            if project
+            else None
+        )
+        if match is None:
+            raise RuntimeError(
+                f"llmux package metadata is unavailable and [project].version is missing from {pyproject}"
+            )
+        return match.group(1)
 
 
 def _version_callback(value: bool) -> None:

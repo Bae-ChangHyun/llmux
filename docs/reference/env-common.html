@@ -47,21 +47,26 @@
     <div class="docs-header">
       <h1><code>.env.common</code> Reference</h1>
       <p class="lede">
-        <code>.env.common</code> holds the <strong>host-wide</strong> settings shared by every profile across both backends — Hugging Face credentials, cache paths, downloader settings, dev-build sources, and the timezone. It lives at the repo root and is <strong>gitignored</strong>. Running <code>llmux</code> creates it through the first-run wizard; manual installs can copy the template:
+        <code>.env.common</code> holds the <strong>host-wide</strong> settings shared by every profile across both backends — Hugging Face credentials, cache paths, downloader settings, dev-build sources, and the timezone. It lives at the repo root and is <strong>gitignored</strong>. Running <code>llmux</code> creates it through the first-run wizard; manual installs must initialize the template with owner-only permissions:
       </p>
-      <pre data-lang="bash"><code>cp .env.common.example .env.common
+      <pre data-lang="bash"><code>install -m 600 .env.common.example .env.common
 # then edit the values</code></pre>
       <p>llmux loads this file at launch time and merges it into the Compose environment for both backends. Per-model settings (sampling flags, context length, GPU ids, …) belong in <code>profiles.yaml</code> and <code>config/&lt;backend&gt;/&lt;name&gt;.yaml</code>, <strong>not</strong> here.</p>
     </div>
 
     <div class="admonition tip">
       <p class="admonition-title">Validate it</p>
-      <p>Run <a href="cli.html#system-env-check"><code>llmux env-check</code></a> to confirm the file exists and that required paths such as <code>HF_CACHE_PATH</code> are set and absolute. <code>HF_TOKEN</code> is optional, and the selected vLLM version is injected at start time.</p>
+      <p>Run <a href="cli.html#system-env-check"><code>llmux env-check</code></a> to confirm the file exists, has owner-only permissions, and that required paths such as <code>HF_CACHE_PATH</code> are set and absolute. <code>HF_TOKEN</code> is optional, and the selected vLLM version is injected at start time.</p>
     </div>
 
     <div class="admonition note">
       <p class="admonition-title">Shell expansion</p>
       <p><code>$HOME</code> in the template is expanded by llmux before host-path validation and Docker Compose startup, so <code>$HOME/.cache/huggingface</code> resolves to your home directory. A path that remains relative after expansion is rejected.</p>
+    </div>
+
+    <div class="admonition warning">
+      <p class="admonition-title">Keep credentials owner-only</p>
+      <p><code>.env.common</code> can contain <code>HF_TOKEN</code>. The setup wizard writes it with owner-only mode <code>0600</code>; manual setup must use the <code>install -m 600</code> command above rather than a plain copy that may inherit group or world read access.</p>
     </div>
 
     <h2 id="all-variables-at-a-glance">All variables at a glance</h2>

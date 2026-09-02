@@ -100,6 +100,11 @@
     <h3 id="1-create-and-edit-env-common">1. Complete the shared-settings wizard</h3>
     <p>On the first launch, llmux asks for the Hugging Face cache path, a legacy model-directory path used by disk views, and an optional Hugging Face token. The token prompt is hidden. The wizard creates the directories and writes the gitignored <code>.env.common</code> file for you.</p>
 
+    <div class="admonition warning">
+      <p class="admonition-title">Manual setup must keep the token private</p>
+      <p>The wizard writes <code>.env.common</code> with owner-only mode <code>0600</code>. If you create it manually, run <code>install -m 600 .env.common.example .env.common</code> before editing it; a plain copy can leave <code>HF_TOKEN</code> readable by other local users.</p>
+    </div>
+
     <p>The variables you can set:</p>
     <table>
       <thead>
@@ -130,7 +135,7 @@
     <h3 id="2-prepare-profiles-yaml">2. Create a profile with Quick Setup</h3>
     <p>Press <kbd>n</kbd> in the dashboard, or use the CLI. Both vLLM and llama.cpp are supported, and llmux writes <code>profiles.yaml</code> plus the matching backend config:</p>
     <pre data-lang="bash"><code>llmux profile quick-setup Qwen/Qwen3-0.6B --gpu-id 0</code></pre>
-    <p><code>profiles.yaml</code> remains the single source of truth. You can still copy <code>profiles.example.yaml</code> and edit it by hand if you prefer.</p>
+    <p><code>profiles.yaml</code> remains the single source of truth. For a manual setup, run <code>install -m 600 profiles.example.yaml profiles.yaml</code> and then edit it by hand; profile environment values can contain secrets.</p>
 
     <p>The template defines a <code>defaults</code> block per backend plus one example profile for each engine:</p>
     <pre data-lang="yaml"><code>version: 1
@@ -172,13 +177,13 @@ profiles:
     <p><code>llmux env-check</code> validates <code>.env.common</code> and reports the resolved project paths. Run it from inside the repo (or with <code>LLMUX_ROOT</code> set):</p>
     <pre data-lang="bash"><code>llmux env-check</code></pre>
 
-    <p>A healthy setup ends with <code>Status       : OK</code>. If something is missing, the command lists each issue and exits non-zero — for example a missing <code>.env.common</code> or a relative <code>HF_CACHE_PATH</code>. <code>HF_TOKEN</code> is optional.</p>
+    <p>A healthy setup ends with <code>Status       : OK</code>. If something is missing or unsafe, the command lists each issue and exits non-zero — for example a missing or group/world-accessible <code>.env.common</code>, or a relative <code>HF_CACHE_PATH</code>. <code>HF_TOKEN</code> is optional.</p>
 
     <p>You can also confirm the GPU runtime is visible to llmux:</p>
     <pre data-lang="bash"><code>llmux gpu          # nvidia-smi summary, one row per GPU</code></pre>
 
     <div class="admonition tip">
-      <p class="admonition-title"><code>--json</code> everywhere</p>
+      <p class="admonition-title">Machine-readable checks</p>
       <p><code>env-check</code>, <code>gpu</code>, and every <code>list</code>/<code>show</code> command accept <code>--json</code> for clean piping into scripts and agents. Token JSON reports only whether a token is set and its length, never its value.</p>
     </div>
 

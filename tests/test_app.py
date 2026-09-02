@@ -110,6 +110,17 @@ def _patched_vllm_config_dir(path: Path):
         yield
 
 
+@contextlib.contextmanager
+def _patched_llamacpp_config_dir(path: Path):
+    from tui.backends.llamacpp import backend
+    from tui.backends.llamacpp.screens import quick_setup
+
+    with patch.object(backend, "CONFIG_DIR", path), patch.object(
+        quick_setup, "CONFIG_DIR", path
+    ):
+        yield
+
+
 class ConfigFormDisableSwitchTests(unittest.IsolatedAsyncioTestCase):
     """The config form's per-row Switch decides active vs disabled; toggling it
     off and saving must write a disabled marker, and re-opening must restore the
@@ -598,24 +609,31 @@ class ProfileParityTests(unittest.IsolatedAsyncioTestCase):
         from textual.widgets import Input
         from tui.backends.vllm.screens import quick_setup as screen_module
 
-        saved_profiles = []
-        with patch.object(screen_module.profile_store, "list_profile_names", return_value=[]), \
-            patch("tui.backends.vllm.backend.list_profile_names", return_value=[]), \
-            patch("tui.backends.vllm.backend.list_config_names", return_value=[]), \
-            patch("tui.backends.vllm.backend.save_profile", side_effect=saved_profiles.append), \
-            patch("tui.backends.vllm.backend.save_config"):
-            app = LlmuxApp()
-            async with app.run_test(size=WIDE) as pilot:
-                await pilot.pause()
-                screen = screen_module.QuickSetupScreen()
-                await app.push_screen(screen)
-                await pilot.pause()
-                screen.query_one("#model-input", Input).value = "org/Model"
-                screen.query_one("#name-input", Input).value = "custom-name"
-                screen.query_one("#create-btn").press()
-                await pilot.pause()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / "config" / "vllm"
+            with _patched_vllm_config_dir(config_dir), patch.object(
+                screen_module.profile_store, "PROFILES_YAML", root / "profiles.yaml"
+            ), patch.object(
+                screen_module.profile_store, "RUNTIME_DIR", root / ".runtime"
+            ):
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    screen = screen_module.QuickSetupScreen()
+                    await app.push_screen(screen)
+                    await pilot.pause()
+                    screen.query_one("#model-input", Input).value = "org/Model"
+                    screen.query_one("#name-input", Input).value = "custom-name"
+                    screen.query_one("#create-btn").press()
+                    await pilot.pause()
 
-        self.assertEqual(saved_profiles[0].name, "custom-name")
+                stored = screen_module.profile_store.load_profile(
+                    "custom-name", "vllm"
+                )
+                self.assertIsNotNone(stored)
+                self.assertEqual(stored.name, "custom-name")
+                self.assertTrue((config_dir / "custom-name.yaml").exists())
 
 
 class LlamacppQuickSetupManualFileTests(unittest.IsolatedAsyncioTestCase):
@@ -623,34 +641,36 @@ class LlamacppQuickSetupManualFileTests(unittest.IsolatedAsyncioTestCase):
         from textual.widgets import Input
         from tui.backends.llamacpp.screens import quick_setup as screen_module
 
-        saved_profiles = []
-        saved_configs = []
-        with patch.object(screen_module, "list_profile_names", return_value=[]), \
-            patch.object(screen_module, "list_config_names", return_value=[]), \
-            patch.object(
-                screen_module.profile_store, "list_profile_names", return_value=[]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / "config" / "llamacpp"
+            with _patched_llamacpp_config_dir(config_dir), patch.object(
+                screen_module.profile_store, "PROFILES_YAML", root / "profiles.yaml"
             ), patch.object(
-                screen_module, "save_profile", side_effect=saved_profiles.append
-            ), patch.object(
-                screen_module, "save_config", side_effect=saved_configs.append
+                screen_module.profile_store, "RUNTIME_DIR", root / ".runtime"
             ):
-            app = LlmuxApp()
-            async with app.run_test(size=WIDE) as pilot:
-                await pilot.pause()
-                screen = screen_module.QuickSetupScreen()
-                await app.push_screen(screen)
-                await pilot.pause()
-                screen.query_one("#repo-input", Input).value = "org/model-GGUF"
-                screen._listing_failed = True
-                manual = screen.query_one("#manual-file-input", Input)
-                manual.disabled = False
-                manual.value = "model.gguf"
-                screen.query_one("#name-input", Input).value = "manual-model"
-                screen.query_one("#create-btn").press()
-                await pilot.pause()
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    screen = screen_module.QuickSetupScreen()
+                    await app.push_screen(screen)
+                    await pilot.pause()
+                    screen.query_one("#repo-input", Input).value = "org/model-GGUF"
+                    screen._listing_failed = True
+                    manual = screen.query_one("#manual-file-input", Input)
+                    manual.disabled = False
+                    manual.value = "model.gguf"
+                    screen.query_one("#name-input", Input).value = "manual-model"
+                    screen.query_one("#create-btn").press()
+                    await pilot.pause()
 
-        self.assertEqual(saved_profiles[0].hf_file, "model.gguf")
-        self.assertEqual(saved_configs[0].params["model-file"], "model.gguf")
+                stored = screen_module.profile_store.load_profile(
+                    "manual-model", "llamacpp"
+                )
+                config = screen_module.load_config("manual-model")
+                self.assertIsNotNone(stored)
+                self.assertEqual(stored.hf_file, "model.gguf")
+                self.assertEqual(config.params["model-file"], "model.gguf")
 
 
 class ConfigFormRenameTests(unittest.IsolatedAsyncioTestCase):
@@ -721,8 +741,6 @@ class MonitorScreenTests(unittest.IsolatedAsyncioTestCase):
         from tui.common.metrics import MetricsSnapshot
         from tui.common.docker import GpuInfo
         from tui.screens.monitor import MonitorScreen
-        from textual.widgets import Static
-
         snap = MetricsSnapshot(
             backend="vllm", prompt_tokens=100.0, generation_tokens=200.0,
             requests_running=3.0, requests_waiting=1.0, kv_cache_usage=0.34,
@@ -1322,15 +1340,23 @@ class SystemOperationTests(unittest.IsolatedAsyncioTestCase):
         from types import SimpleNamespace
         from tui.common import system_operations
 
-        profiles = [SimpleNamespace(name="ok"), SimpleNamespace(name="bad")]
+        profiles = [
+            SimpleNamespace(name="ok", backend="vllm"),
+            SimpleNamespace(name="bad", backend="vllm"),
+        ]
 
-        def render(profile):
-            if profile.name == "bad":
+        def render(name, backend):
+            self.assertEqual(backend, "vllm")
+            if name == "bad":
                 raise ValueError("invalid config")
             return Path("/runtime/ok.env")
 
         with patch.object(system_operations.profile_store, "list_profiles", return_value=profiles), \
-            patch.object(system_operations.profile_store, "render_env", side_effect=render):
+            patch.object(
+                system_operations.profile_store,
+                "render_env_for_profile",
+                side_effect=render,
+            ):
             rendered, failures = system_operations.render_backend_envs("vllm")
 
         self.assertEqual(rendered, [Path("/runtime/ok.env")])

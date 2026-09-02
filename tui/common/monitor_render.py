@@ -1,13 +1,3 @@
-"""btop-style live monitor rendering, shared by the plain-terminal monitor
-(`llmux top`, `t` on a dashboard row) and the Textual monitor screen (`v`).
-
-`render_dashboard` returns a Rich renderable so both hosts draw the exact same
-multi-panel view. `MonitorState` turns successive `/metrics` snapshots into the
-per-second rates, rolling histories, peaks, and windowed latency the panels
-need. Panels degrade gracefully: llama.cpp exposes no latency histograms or
-prefix-cache breakdown, so those cells read `—` rather than inventing numbers.
-"""
-
 from __future__ import annotations
 
 from collections import deque
@@ -19,6 +9,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from tui.common.docker import parse_gpu_reading
 from tui.common.i18n import t
 from tui.common.metrics import Hist, MetricsSnapshot
 
@@ -29,17 +20,12 @@ _ALERT = "#f87171"
 _TITLE = "#8b93a7"
 _DIM = "#6b7280"
 
-# Poll cadence shared by the TUI monitor screen and `llmux top` — both views
-# render through this module, so +/- must move them identically.
 MIN_INTERVAL = 0.25
 MAX_INTERVAL = 5.0
 INTERVAL_STEP = 0.25
 
-# Requests-in-flight gauge saturation. vLLM's default max-num-seqs is far
-# higher, so a fixed small ceiling would peg the bar red under any real load.
 REQUEST_GAUGE_FULL = 32.0
 
-# Vertical heat gradient (cool → hot), used for braille graphs and value bars.
 _STOPS = [
     (59, 130, 246),   # blue
     (34, 211, 238),   # cyan
@@ -71,22 +57,23 @@ def _heat(ratio: float) -> str:
 def braille_lines(
     values, cols: int, rows: int, max_val: float | None = None
 ) -> list[Text]:
-    """Area graph of `values` in a `cols`×`rows` cell grid of braille dots.
-
-    One dot-column per sample (2 per cell), filled from the baseline up; each
-    cell-row is tinted along the heat gradient so peaks read hot at the top.
-    """
+    """Render an area graph in a braille cell grid."""
     cols = max(1, cols)
     rows = max(1, rows)
     dot_cols = cols * 2
     dot_rows = rows * 4
-    series = [max(0.0, float(v)) for v in list(values)[-dot_cols:]]
-    series = [0.0] * (dot_cols - len(series)) + series
-    hi = max_val if max_val and max_val > 0 else (max(series) if series else 0.0)
+    series = [None if v is None else max(0.0, float(v)) for v in list(values)[-dot_cols:]]
+    series = [None] * (dot_cols - len(series)) + series
+    measured = [v for v in series if v is not None]
+    hi = max_val if max_val is not None and max_val > 0 else (
+        max(measured) if measured else 0.0
+    )
 
     grid = [[False] * dot_cols for _ in range(dot_rows)]
     if hi > 0:
         for dx, v in enumerate(series):
+            if v is None:
+                continue
             level = int(round(min(1.0, v / hi) * dot_rows))
             for filled in range(level):
                 grid[dot_rows - 1 - filled][dx] = True
@@ -109,8 +96,13 @@ def _spark(values, width: int) -> str:
     vals = list(values)[-width:]
     if not vals:
         return ""
-    hi = max(vals) or 1.0
-    return "".join(_BLOCKS[min(7, int(v / hi * 7))] for v in vals)
+    measured = [v for v in vals if v is not None]
+    if not measured:
+        return ""
+    hi = max(measured) or 1.0
+    return "".join(
+        " " if v is None else _BLOCKS[min(7, int(v / hi * 7))] for v in vals
+    )
 
 
 def gradient_bar(ratio: float | None, width: int) -> Text:
@@ -153,40 +145,36 @@ class Derived:
     prefix_rate: float | None = None
     done_tps: float | None = None
     lat: dict[str, float | None] = field(default_factory=dict)
-    uptime: float = 0.0
 
 
 class MonitorState:
     """Rolling history + previous samples → per-window rates, peaks, uptime."""
 
     def __init__(self, history: int = 240) -> None:
-        self.gen: deque[float] = deque([0.0], maxlen=history)
-        self.prompt: deque[float] = deque([0.0], maxlen=history)
-        self.kv: deque[float] = deque([0.0], maxlen=history)
-        self.peak_gen = 0.0
-        self.peak_prompt = 0.0
-        self.peak_kv = 0.0
-        self.last_lag_ms = 0.0
-        self.samples = 0
-        self._start: float | None = None
+        self.gen: deque[float | None] = deque(maxlen=history)
+        self.prompt: deque[float | None] = deque(maxlen=history)
+        self.kv: deque[float | None] = deque(maxlen=history)
+        self.peak_gen: float | None = None
+        self.peak_prompt: float | None = None
+        self.peak_kv: float | None = None
         self._prev_tokens: tuple[float, float, float] | None = None
         self._prev_prefix: tuple[float, float] | None = None
         self._prev_done: tuple[float, float] | None = None
         self._prev_hist: dict[str, tuple[float, float]] = {}
 
     def reset_peaks(self) -> None:
-        self.peak_gen = self.peak_prompt = self.peak_kv = 0.0
+        self.peak_gen = self.peak_prompt = self.peak_kv = None
 
-    def update(self, snap: MetricsSnapshot | None, now: float, lag_ms: float) -> Derived:
-        if self._start is None:
-            self._start = now
-        self.last_lag_ms = lag_ms
-        self.samples += 1
-        d = Derived(uptime=now - self._start)
+    def update(self, snap: MetricsSnapshot | None, now: float, _lag_ms: float) -> Derived:
+        d = Derived()
         if snap is None:
-            self.gen.append(0.0)
-            self.prompt.append(0.0)
-            self.kv.append(0.0)
+            self.gen.append(None)
+            self.prompt.append(None)
+            self.kv.append(None)
+            self._prev_tokens = None
+            self._prev_prefix = None
+            self._prev_done = None
+            self._prev_hist.clear()
             return d
 
         counters = snap.token_counters()
@@ -199,19 +187,29 @@ class MonitorState:
                     d.prompt_tps = (p - p0) / dt
                     d.gen_tps = (g - g0) / dt
             self._prev_tokens = (p, g, now)
-        # llama.cpp reports tok/s directly; use it before a delta exists / when idle.
+        else:
+            self._prev_tokens = None
         if d.gen_tps is None and snap.gen_tps_gauge is not None:
             d.gen_tps = snap.gen_tps_gauge
         if d.prompt_tps is None and snap.prompt_tps_gauge is not None:
             d.prompt_tps = snap.prompt_tps_gauge
 
-        self.gen.append(d.gen_tps or 0.0)
-        self.prompt.append(d.prompt_tps or 0.0)
-        kv_pct = (snap.kv_cache_usage or 0.0) * 100 if snap.kv_cache_usage is not None else 0.0
+        self.gen.append(d.gen_tps)
+        self.prompt.append(d.prompt_tps)
+        kv_pct = snap.kv_cache_usage * 100 if snap.kv_cache_usage is not None else None
         self.kv.append(kv_pct)
-        self.peak_gen = max(self.peak_gen, d.gen_tps or 0.0)
-        self.peak_prompt = max(self.peak_prompt, d.prompt_tps or 0.0)
-        self.peak_kv = max(self.peak_kv, kv_pct)
+        if d.gen_tps is not None:
+            self.peak_gen = d.gen_tps if self.peak_gen is None else max(
+                self.peak_gen, d.gen_tps
+            )
+        if d.prompt_tps is not None:
+            self.peak_prompt = d.prompt_tps if self.peak_prompt is None else max(
+                self.peak_prompt, d.prompt_tps
+            )
+        if kv_pct is not None:
+            self.peak_kv = kv_pct if self.peak_kv is None else max(
+                self.peak_kv, kv_pct
+            )
 
         if snap.prefix_hits is not None and snap.prefix_queries is not None:
             h, q = snap.prefix_hits, snap.prefix_queries
@@ -239,7 +237,8 @@ class MonitorState:
         return d
 
     def _win_avg(self, field_name: str, h: Hist | None) -> float | None:
-        if h is None:
+        if h is None or h.sum is None or h.count is None:
+            self._prev_hist.pop(field_name, None)
             return None
         prev = self._prev_hist.get(field_name)
         self._prev_hist[field_name] = (h.sum, h.count)
@@ -250,7 +249,11 @@ class MonitorState:
 
 def _throughput_panel(snap, state: MonitorState, d: Derived, width: int) -> Panel:
     cols = max(20, width - 6)
-    scale = max(state.peak_gen, max(state.gen) if state.gen else 0.0, 1.0)
+    measured_gen = [value for value in state.gen if value is not None]
+    scale_candidates = list(measured_gen)
+    if state.peak_gen is not None:
+        scale_candidates.append(state.peak_gen)
+    scale = max(scale_candidates) if scale_candidates else None
     graph = braille_lines(state.gen, cols, 5, max_val=scale)
 
     stats = Text()
@@ -258,11 +261,11 @@ def _throughput_panel(snap, state: MonitorState, d: Derived, width: int) -> Pane
     prompt = d.prompt_tps
     stats.append("  generation ", style=_TITLE)
     stats.append(f"{gen:7.1f}" if gen is not None else "      —", style="bold #51cf66")
-    stats.append(f"  ▲{state.peak_gen:.0f}", style=_DIM)
+    stats.append(f"  ▲{_num(state.peak_gen)}", style=_DIM)
     stats.append("     prompt ", style=_TITLE)
     stats.append(f"{prompt:6.1f}" if prompt is not None else "     —", style=f"bold {_VLLM_BLUE}")
-    stats.append(f"  ▲{state.peak_prompt:.0f}", style=_DIM)
-    stats.append(f"     scale {scale:.0f} tok/s", style=_DIM)
+    stats.append(f"  ▲{_num(state.peak_prompt)}", style=_DIM)
+    stats.append(f"     scale {_num(scale)} tok/s", style=_DIM)
 
     prompt_spark = Text("  prompt   ", style=_DIM)
     prompt_spark.append(_spark(state.prompt, cols), style=_VLLM_BLUE)
@@ -276,13 +279,14 @@ def _throughput_panel(snap, state: MonitorState, d: Derived, width: int) -> Pane
 
 def _kv_panel(snap, state: MonitorState, width: int) -> Panel:
     cols = max(12, width - 6)
-    kv_now = state.kv[-1] if state.kv else 0.0
+    kv_now = state.kv[-1] if state.kv else None
     has_kv = snap is not None and snap.kv_cache_usage is not None
     graph = braille_lines(state.kv, cols, 4, max_val=100.0)
     stat = Text()
     stat.append("  KV ", style=_TITLE)
-    stat.append(f"{kv_now:4.0f}%" if has_kv else "   —", style="bold white")
-    stat.append(f"   ▲peak {state.peak_kv:.0f}%", style=_DIM)
+    stat.append(f"{kv_now:4.0f}%" if has_kv and kv_now is not None else "   —", style="bold white")
+    peak = "—" if state.peak_kv is None else f"{state.peak_kv:.0f}%"
+    stat.append(f"   ▲peak {peak}", style=_DIM)
     body = Group(*graph, stat)
     return Panel(
         body, title="KV CACHE · %", title_align="left",
@@ -333,8 +337,13 @@ def _cache_panel(snap, d: Derived) -> Panel:
     row("KV", kv)
     row("prefix", d.prefix_rate)
     ext = None
-    if snap is not None and snap.ext_prefix_queries:
-        ext = (snap.ext_prefix_hits or 0.0) / snap.ext_prefix_queries
+    if (
+        snap is not None
+        and snap.ext_prefix_hits is not None
+        and snap.ext_prefix_queries is not None
+        and snap.ext_prefix_queries > 0
+    ):
+        ext = snap.ext_prefix_hits / snap.ext_prefix_queries
     row("external", ext)
     return Panel(
         tbl, title="CACHE HIT", title_align="left",
@@ -389,7 +398,6 @@ def _latency_panel(snap, d: Derived) -> Panel:
 
 
 def _gpu_title(gpus) -> str:
-    """`GPU · <card name>`, listing each distinct model once for mixed rigs."""
     names: list[str] = []
     for g in gpus:
         name = (g.name or "").strip()
@@ -399,37 +407,57 @@ def _gpu_title(gpus) -> str:
 
 
 def _gpu_panel(gpus, pcie: dict[str, tuple[float, float]]) -> Panel:
-    """Every GPU on the box, always — independent of which models are running."""
     tbl = Table.grid(expand=True, padding=(0, 1))
     for _ in range(6):
         tbl.add_column()
     if not gpus:
         return Panel(
-            Text(t("GPU info unavailable (is nvidia-smi on PATH?)",
-                   "GPU 정보 없음 (nvidia-smi 가 PATH 에 있나요?)"), style=_DIM),
+            Text(t("No GPUs detected", "감지된 GPU 없음"), style=_DIM),
             title="GPU", title_align="left", border_style=_BORDER,
             style=_TITLE, box=box.ROUNDED, padding=(0, 1),
         )
     for g in gpus:
         try:
-            util, used, total = float(g.utilization), float(g.memory_used), float(g.memory_total)
+            util = parse_gpu_reading(g.utilization, "utilization")
         except ValueError:
-            continue
-        mem_ratio = used / total if total else 0.0
+            util = None
+        try:
+            used = parse_gpu_reading(g.memory_used, "memory used")
+        except ValueError:
+            used = None
+        try:
+            total = parse_gpu_reading(g.memory_total, "memory total")
+        except ValueError:
+            total = None
+        mem_ratio = (
+            used / total
+            if used is not None and total is not None and total > 0
+            else None
+        )
         util_cell = Text()
-        util_cell.append_text(gradient_bar(util / 100, 12))
-        util_cell.append(f" {util:3.0f}%", style="white")
+        util_cell.append_text(gradient_bar(None if util is None else util / 100, 12))
+        util_cell.append(" —" if util is None else f" {util:3.0f}%", style="white")
         mem_cell = Text()
         mem_cell.append_text(gradient_bar(mem_ratio, 12))
-        mem_cell.append(f" {used / 1024:.1f}/{total / 1024:.0f}G", style="white")
-        power = f"{g.power}W" if g.power and g.power not in ("[N/A]", "") else "—"
+        used_text = "—" if used is None else f"{used / 1024:.1f}"
+        total_text = "—" if total is None or total <= 0 else f"{total / 1024:.0f}"
+        mem_cell.append(f" {used_text}/{total_text}G", style="white")
+        try:
+            temperature = f"{parse_gpu_reading(g.temperature, 'temperature'):g}°C"
+        except ValueError:
+            temperature = "—"
+        try:
+            power_value = parse_gpu_reading(g.power, "power")
+            power = f"{power_value:g}W"
+        except ValueError:
+            power = "—"
         rx, tx = pcie.get(g.index, (None, None))
         pcie_txt = "—" if rx is None else f"rx {rx:.0f} tx {tx:.0f}"
         tbl.add_row(
             Text(f"GPU{g.index}", style="bold white"),
             util_cell,
             mem_cell,
-            Text(f"{g.temperature}°C", style="white"),
+            Text(temperature, style="white"),
             Text(power, style="white"),
             Text(pcie_txt + " MB/s", style=_DIM),
         )
@@ -455,8 +483,6 @@ def _footer(paused: bool) -> Text:
 
 @dataclass
 class ModelEntry:
-    """One running model's row plus its latest sample and rolling state."""
-
     row: object
     snap: MetricsSnapshot | None
     state: MonitorState
@@ -494,7 +520,6 @@ def _model_detail(entry: ModelEntry, width: int) -> RenderableType:
 
 
 def _model_compact(entry: ModelEntry, width: int) -> Panel:
-    """One-model summary used when several models are up at once."""
     snap, d, state = entry.snap, entry.d, entry.state
     body = Table.grid(expand=True, padding=(0, 1))
     body.add_column(ratio=1)
@@ -503,7 +528,7 @@ def _model_compact(entry: ModelEntry, width: int) -> Panel:
     line.append("  gen ", style=_TITLE)
     line.append(f"{d.gen_tps:7.1f}" if d.gen_tps is not None else "      —", style="bold #51cf66")
     line.append(" tok/s", style=_DIM)
-    line.append(f"  ▲{state.peak_gen:.0f}", style=_DIM)
+    line.append(f"  ▲{_num(state.peak_gen)}", style=_DIM)
     line.append("   ")
     line.append(_spark(state.gen, max(10, width // 3)), style="#51cf66")
     body.add_row(line)
@@ -545,11 +570,7 @@ def render_dashboard(
     lag_ms: float = 0.0,
     notices: list[str] | None = None,
 ) -> RenderableType:
-    """System view: every GPU always, plus a panel per running model.
-
-    Never gated on a container being up — with nothing running you still get the
-    GPU panel, which is the point of a monitor.
-    """
+    """Render every GPU and each running model."""
     width = width if width and width > 0 else 100
 
     header = Table.grid(expand=True)

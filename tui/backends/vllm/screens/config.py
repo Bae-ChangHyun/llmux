@@ -19,7 +19,6 @@ from tui.backends.vllm.backend import (
     Config,
     load_config,
     save_config,
-    delete_config,
     list_config_names,
     list_profile_names,
     load_profile,
@@ -28,6 +27,7 @@ from tui.backends.vllm.backend import (
     format_config_param_value,
     parse_config_param_value,
 )
+from tui.common import profile_store
 from tui.common.i18n import t
 from tui.common.widgets import TextPromptModal
 
@@ -177,6 +177,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
         self._original_name = config_name
         self._param_counter = 0
         self._initial_config: Config | None = None
+        self._initial_text: str | None = None
         self._saved_name: str | None = None
         self._known_params = set(_FALLBACK_VLLM_PARAMS)
         self._param_suggester = SuggestFromList(
@@ -185,7 +186,12 @@ class ConfigFormScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         if self._edit_mode:
-            self._initial_config = load_config(self._config_name)
+            path = CONFIG_DIR / f"{self._config_name}.yaml"
+            with profile_store.storage_transaction():
+                if not path.exists():
+                    raise ValueError(f"config not found: {path}")
+                self._initial_text = path.read_text()
+                self._initial_config = load_config(self._config_name)
         cfg = self._initial_config
 
         title = (
@@ -230,7 +236,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 with Horizontal(classes="form-row"):
                     yield Label(t("GPU Memory Utilization", "GPU 메모리 사용률"))
                     yield Input(
-                        value=cfg.gpu_memory_utilization if cfg else "",
+                        value=str(cfg.gpu_memory_utilization) if cfg else "",
                         placeholder="0.9",
                         id="gpu-mem-input",
                     )
@@ -376,13 +382,19 @@ class ConfigFormScreen(ModalScreen[str | None]):
             return
         status.update("")
 
-        gpus = await get_gpu_info()
-        gpu_total_gb = None
-        if gpus:
-            try:
+        try:
+            gpus = await get_gpu_info()
+            gpu_total_gb = None
+            if gpus:
                 gpu_total_gb = max(int(g.memory_total) / 1024 for g in gpus)
-            except (TypeError, ValueError):
-                gpu_total_gb = None
+        except (RuntimeError, TypeError, ValueError) as exc:
+            status.update(
+                t(
+                    f"[red]Could not read GPU memory: {exc}[/red]",
+                    f"[red]GPU 메모리 조회 실패: {exc}[/red]",
+                )
+            )
+            return
 
         from tui.backends.vllm.backend import get_local_latest_tag
 
@@ -472,13 +484,6 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 severity="error",
             )
             return
-        # File existence, not `in list_config_names()` — that helper filters
-        # out `example`, so a config named "example" passed the check and
-        # silently overwrote the tracked example.yaml.
-        if not self._edit_mode and (CONFIG_DIR / f"{name}.yaml").exists():
-            self.notify(t(f"Config '{name}' already exists.", f"Config '{name}' 이(가) 이미 존재합니다."),
-                        severity="error")
-            return
         if gpu_mem:
             try:
                 gpu_mem_val = float(gpu_mem)
@@ -538,18 +543,29 @@ class ConfigFormScreen(ModalScreen[str | None]):
             disabled_params=disabled_params,
         )
 
-        if (
-            self._edit_mode
-            and name != self._original_name
-            and not await self._rename_to(name)
-        ):
-            return
-
-        try:
-            save_config(cfg)
-        except (OSError, RuntimeError, ValueError) as exc:
-            self.notify(str(exc), severity="error", timeout=8)
-            return
+        renaming = self._edit_mode and name != self._original_name
+        if renaming:
+            if not await self._rename_to(name, cfg):
+                return
+        else:
+            try:
+                path = CONFIG_DIR / f"{name}.yaml"
+                with profile_store.storage_transaction():
+                    if self._edit_mode:
+                        if not path.exists():
+                            raise ValueError(f"config not found: {path}")
+                        if path.read_text() != self._initial_text:
+                            raise ValueError(
+                                f"config changed since it was opened: {path}; "
+                                "reload before saving"
+                            )
+                    elif path.exists():
+                        raise ValueError(f"config already exists: {path}")
+                    save_config(cfg)
+                    self._initial_text = path.read_text()
+            except (OSError, RuntimeError, ValueError) as exc:
+                self.notify(str(exc), severity="error", timeout=8)
+                return
         self.notify(t(f"Saved: {name}", f"저장됨: {name}"), severity="information")
         self._saved_name = name
 
@@ -561,14 +577,9 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 t(f"[b]Edit Config: {name}[/b]", f"[b]Config 편집: {name}[/b]")
             )
 
-    async def _rename_to(self, new_name: str) -> bool:
-        """Rename the config being edited. False = refused, caller must abort.
-
-        Goes through config_store so profiles referencing this config are
-        repointed in the same step, and so a referencing profile whose
-        container is still up blocks the rename.
-        """
+    async def _rename_to(self, new_name: str, config: Config) -> bool:
         from tui.common import config_store, docker as common_docker
+        from tui.backends.vllm.backend_storage import serialize_config
 
         old_name = self._original_name
         try:
@@ -594,8 +605,16 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 )
                 return False
         try:
-            config_store.rename_config("vllm", old_name, new_name)
-        except ValueError as exc:
+            with profile_store.storage_transaction():
+                config_store.rename_config(
+                    "vllm",
+                    old_name,
+                    new_name,
+                    replacement=lambda source: serialize_config(config, source),
+                    expected_text=self._initial_text,
+                )
+                self._initial_text = (CONFIG_DIR / f"{new_name}.yaml").read_text()
+        except (OSError, RuntimeError, ValueError) as exc:
             self.notify(str(exc), severity="error")
             return False
 
@@ -702,12 +721,13 @@ class ConfirmDeleteConfigScreen(ModalScreen[bool]):
 
     @on(Button.Pressed, "#confirm-yes")
     def _on_yes(self, event: Button.Pressed) -> None:
-        from tui.backends.vllm.backend import save_profile
-        for profile_name in self._referencing:
-            p = load_profile(profile_name)
-            p.config_name = ""
-            save_profile(p)
-        delete_config(self._config_name)
+        from tui.common import config_store
+
+        try:
+            config_store.delete_config("vllm", self._config_name)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.app.notify(str(exc), severity="error", timeout=8)
+            return
         self.app.notify(t(f"Deleted config: {self._config_name}", f"Config 삭제됨: {self._config_name}"))
         self.dismiss(True)
 
@@ -759,7 +779,7 @@ class ConfigListScreen(Screen):
             cfg = load_config(name)
             model_short = cfg.model.split("/")[-1] if cfg.model else ""
             param_count = str(len(cfg.extra_params) + 2)
-            table.add_row(cfg.name, model_short, cfg.gpu_memory_utilization, param_count, key=cfg.name)
+            table.add_row(cfg.name, model_short, str(cfg.gpu_memory_utilization), param_count, key=cfg.name)
 
     def _get_selected_config(self) -> str | None:
         table = self.query_one("#config-table", DataTable)
@@ -808,13 +828,21 @@ class ConfigListScreen(Screen):
                     severity="error",
                 )
                 return
-            if (CONFIG_DIR / f"{new_name}.yaml").exists():
-                self.notify(t(f"Config '{new_name}' already exists.", f"Config '{new_name}' 이(가) 이미 존재합니다."),
-                            severity="error")
+            try:
+                with profile_store.storage_transaction():
+                    source = CONFIG_DIR / f"{name}.yaml"
+                    destination = CONFIG_DIR / f"{new_name}.yaml"
+                    if not source.exists():
+                        raise ValueError(f"config not found: {source}")
+                    if destination.exists():
+                        raise ValueError(f"config already exists: {destination}")
+                    cfg = load_config(name)
+                    cfg.name = new_name
+                    cfg._source_text = None
+                    save_config(cfg)
+            except (OSError, RuntimeError, ValueError) as exc:
+                self.notify(str(exc), severity="error", timeout=8)
                 return
-            cfg = load_config(name)
-            cfg.name = new_name
-            save_config(cfg)
             self._refresh_table()
             self.notify(t(f"Cloned '{name}' → '{new_name}'", f"복제됨: '{name}' → '{new_name}'"))
 

@@ -117,9 +117,9 @@ profiles:
       <li>Scalar values → <code>--key value</code>.</li>
       <li><code>true</code> → <code>--key</code> (bare flag); <code>false</code> and <code>null</code> are skipped.</li>
       <li>List values → the flag is repeated once per item.</li>
-      <li><code>--host 0.0.0.0 --port 8080 --no-webui</code> are always prepended; the WebUI is forced off (<code>webui</code> / <code>no-webui</code> keys in the config are ignored).</li>
+      <li><code>--host 0.0.0.0 --port 8080 --no-webui --metrics</code> are always prepended; the WebUI is forced off and metrics stay enabled for llmux monitoring.</li>
       <li><code>override-tensors</code> entries are rendered as repeated <code>-ot &lt;pattern&gt;</code>.</li>
-      <li><code>extra-args</code> entries are appended verbatim at the end.</li>
+      <li><code>extra-args</code> entries are appended after validation; <code>--host</code>, <code>--port</code>, <code>--webui</code>, <code>--no-webui</code>, and <code>--metrics</code> cannot override the managed command.</li>
     </ul>
     <p>A representative config (see <code>config/llamacpp/example.yaml</code>):</p>
     <pre data-lang="yaml"><code>ctx-size: 8192
@@ -135,7 +135,7 @@ jinja: true               # Jinja chat template (recommended for recent models)
 # cont-batching: true     # continuous batching
 # flash-attn: true        # flash attention
 override-tensors: []      # MoE expert offload — see below
-extra-args: []            # verbatim args for flags the schema can't express</code></pre>
+extra-args: []            # validated args for flags the schema can't express</code></pre>
 
     <h3 id="distinctive-flags">Distinctive flags</h3>
     <table>

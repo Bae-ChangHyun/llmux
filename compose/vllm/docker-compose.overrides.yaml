@@ -6,5 +6,5 @@ services:
     environment:
       - EXTRA_PIP_PACKAGES=${EXTRA_PIP_PACKAGES:-}
     env_file:
-      - path: ${PROFILE_PATH}
-        required: false
+      - path: ${PROFILE_PATH:?PROFILE_PATH is required — the profile env was not rendered}
+        required: true

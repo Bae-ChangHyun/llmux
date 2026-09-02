@@ -1,23 +1,4 @@
-"""Startup check for a newer llmux release.
-
-Compares the local git checkout against the latest GitHub Release. On a clean
-`main` checkout it offers an interactive `git pull` update; otherwise it leaves
-the checkout alone. Every step is best-effort: a non-git install, a missing
-network, or any error leaves startup completely untouched.
-
-"Behind" is decided by commit ancestry, not version strings — the checkout is
-behind only when HEAD does not yet contain the latest release's commit. That
-stays correct even when local tags are stale (a `git pull`'d checkout often
-has the release commit without ever fetching the tag). The one shortcut is the
-opposite direction: when the release tag already matches the checkout's
-`pyproject.toml` version there is nothing to be behind of, so the second API
-call is skipped.
-
-The check runs on **every** interactive invocation — a release published an
-hour after the last run must be visible on the next one. Only a *failed*
-lookup backs off (`_FAILURE_COOLDOWN`), so an offline machine doesn't pay the
-network timeout on every command.
-"""
+"""GitHub release checks and self-update."""
 
 from __future__ import annotations
 
@@ -48,11 +29,7 @@ UNKNOWN = "unknown"
 
 @dataclass
 class UpdateStatus:
-    """Outcome of one update check.
-
-    `state` is BEHIND / CURRENT / UNKNOWN; `detail` says why it is UNKNOWN so
-    `llmux update` can print a reason instead of shrugging.
-    """
+    """Outcome of one update check."""
 
     state: str
     tag: str = ""
@@ -62,10 +39,7 @@ class UpdateStatus:
 
 
 def _git(*args: str, timeout: int = 15) -> tuple[int, str]:
-    """Run `git -C PROJECT_ROOT <args>`; return (returncode, stdout+stderr).
-
-    A missing git binary or a timeout is reported as returncode -1.
-    """
+    """Run git and return its code plus combined output."""
     try:
         proc = subprocess.run(
             ["git", "-C", str(PROJECT_ROOT), *args],
@@ -128,11 +102,7 @@ def _clear_failure() -> None:
 
 
 def _local_version() -> str:
-    """Version from the checkout's `pyproject.toml` ("" when unreadable).
-
-    Read with a regex rather than `tomllib`, which only exists on 3.11+ while
-    llmux supports 3.10.
-    """
+    """Read the checkout version without requiring Python 3.11 tomllib."""
     try:
         text = (PROJECT_ROOT / "pyproject.toml").read_text()
     except OSError:
@@ -172,21 +142,35 @@ def _release_commit(slug: str, tag: str) -> str | None:
     return str(sha) if sha else None
 
 
-def _is_behind(release_sha: str) -> bool | None:
-    """True when HEAD does not yet contain `release_sha`; None if undecidable.
+def _cat_file_proves_missing(returncode: int, output: str) -> bool:
+    if returncode == 1 and not output.strip():
+        return True
+    if returncode != 128:
+        return False
+    lowered = output.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "not a valid object name",
+            "could not get object info",
+            "bad object",
+        )
+    )
 
-    A checkout is up to date when the release commit is an ancestor of HEAD
-    (at it, or ahead of it on a later branch). If the release commit is not in
-    local history at all, the checkout is genuinely behind.
-    """
-    rc, _ = _git("cat-file", "-e", f"{release_sha}^{{commit}}")
+
+def _is_behind(release_sha: str) -> bool | None:
+    """Return whether HEAD lacks the release commit, or None if undecidable."""
+    rc, output = _git("cat-file", "-e", f"{release_sha}^{{commit}}")
     if rc != 0:
-        # The release commit is absent from local history. On a shallow clone
-        # that is expected for any older commit and proves nothing — stay
-        # undecided rather than nag. On a full clone it means the checkout
-        # genuinely predates the release.
+        if not _cat_file_proves_missing(rc, output):
+            return None
         rc_shallow, out_shallow = _git("rev-parse", "--is-shallow-repository")
-        if rc_shallow == 0 and out_shallow.strip() == "true":
+        if rc_shallow != 0:
+            return None
+        shallow = out_shallow.strip()
+        if shallow == "true":
+            return None
+        if shallow != "false":
             return None
         return True
     rc, _ = _git("merge-base", "--is-ancestor", release_sha, "HEAD")
@@ -194,12 +178,11 @@ def _is_behind(release_sha: str) -> bool | None:
         return False
     if rc == 1:
         return True
-    return None  # git error → undecidable, don't nag
+    return None
 
 
 def _local_clean_main() -> bool:
-    """True only on a `main` checkout with no modified tracked files — the one
-    state where `git pull --ff-only` is safe to run unattended."""
+    """Return whether unattended fast-forward is allowed."""
     rc, branch = _git("rev-parse", "--abbrev-ref", "HEAD")
     if rc != 0 or branch.strip() != "main":
         return False
@@ -208,11 +191,7 @@ def _local_clean_main() -> bool:
 
 
 def resolve_status(*, respect_cooldown: bool = True) -> UpdateStatus:
-    """Ask GitHub whether this checkout is behind its latest release.
-
-    `respect_cooldown=False` forces the network call even right after a failed
-    one — that is what an explicit `llmux update` wants.
-    """
+    """Resolve this checkout against the latest GitHub release."""
     local = _local_version()
     if not _is_git_checkout():
         return UpdateStatus(
@@ -259,17 +238,12 @@ def resolve_status(*, respect_cooldown: bool = True) -> UpdateStatus:
         return UpdateStatus(CURRENT, tag=tag, url=url, local_version=local)
     return UpdateStatus(
         UNKNOWN, tag=tag, url=url, local_version=local,
-        detail="commit history is incomplete (shallow clone?) — cannot compare",
+        detail="could not compare the release commit with local Git history",
     )
 
 
 def check_for_update() -> None:
-    """Best-effort startup check: notify (and on a clean `main`, optionally
-    apply) a newer llmux release. Silent when up to date or undecidable, never
-    raises — except SystemExit, raised deliberately after a successful update
-    so the user restarts on fresh code. The caller must only invoke this
-    interactively.
-    """
+    """Run the interactive startup update check."""
     try:
         status = resolve_status()
         if status.state != BEHIND:
@@ -289,13 +263,11 @@ def apply_update(tag: str) -> tuple[bool, str]:
     if rc != 0:
         return False, f"git pull failed — update manually.\n{out.strip()}"
 
-    # `llmux` is installed with `uv tool install --editable` (see install.sh);
-    # a bare `uv sync` would only update the project's .venv, not the `uv tool`
-    # environment that actually runs the command.
     refresh_cmd = "uv tool install --editable . --force"
     if not shutil.which("uv"):
-        return True, (
-            f"Updated to {tag}, but `uv` was not found — "
+        return False, (
+            f"Checkout updated to {tag}, but `uv` was not found and the installed "
+            "tool was not refreshed — "
             f"run `{refresh_cmd}` in {PROJECT_ROOT} manually."
         )
     try:
@@ -306,13 +278,17 @@ def apply_update(tag: str) -> tuple[bool, str]:
             text=True,
             timeout=300,
         )
-        refreshed = proc.returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        refreshed = False
-    if not refreshed:
-        return True, (
-            f"Updated to {tag}, but the install could not be refreshed — "
-            f"run `{refresh_cmd}` in {PROJECT_ROOT} manually."
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, (
+            f"Checkout updated to {tag}, but the installed tool refresh failed: {exc}. "
+            f"Run `{refresh_cmd}` in {PROJECT_ROOT} manually."
+        )
+    if proc.returncode != 0:
+        detail = ((proc.stderr or "") + (proc.stdout or "")).strip()
+        suffix = f" ({detail})" if detail else ""
+        return False, (
+            f"Checkout updated to {tag}, but the installed tool refresh failed{suffix}. "
+            f"Run `{refresh_cmd}` in {PROJECT_ROOT} manually."
         )
     return True, f"Updated to {tag}. Restart llmux to use the new version."
 

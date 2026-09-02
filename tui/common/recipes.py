@@ -1,15 +1,3 @@
-"""Fetch vLLM serving recipes from the official vllm-project/recipes repo.
-
-Each model has a structured YAML at
-``models/<hf_org>/<hf_repo>.yaml`` (rendered on recipes.vllm.ai). We fetch the
-raw file — no `gh` CLI or auth needed — parse the pieces that map onto an llmux
-vLLM config (base args, opt-in features, precision variants with VRAM floors),
-and let the caller build a config the user reviews before it's written.
-
-The recipe args are flat CLI fragments (``["--tool-call-parser", "hermes"]``);
-`args_to_config` folds them into the ``{flag: value}`` shape our config YAML uses.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -54,66 +42,117 @@ class Recipe:
     features: list[RecipeFeature] = field(default_factory=list)
 
 
+class RecipeSchemaError(ValueError):
+    pass
+
+
 def recipe_url(model_id: str) -> str:
-    """`org/repo` → the raw recipe URL. Extra path segments are ignored."""
     org, _, repo = model_id.strip().strip("/").partition("/")
     return f"{RECIPES_RAW_BASE}/{org}/{repo}.yaml"
 
 
+def _mapping(raw: dict, key: str, *, required: bool = False) -> dict:
+    if key not in raw:
+        if required:
+            raise RecipeSchemaError(f"{key} is required")
+        return {}
+    value = raw[key]
+    if not isinstance(value, dict):
+        raise RecipeSchemaError(f"{key} must be a mapping")
+    return value
+
+
+def _text(raw: dict, key: str, path: str, *, required: bool = False) -> str:
+    if key not in raw:
+        if required:
+            raise RecipeSchemaError(f"{path}.{key} is required")
+        return ""
+    value = raw[key]
+    if not isinstance(value, str) or (required and not value.strip()):
+        suffix = "a non-empty string" if required else "a string"
+        raise RecipeSchemaError(f"{path}.{key} must be {suffix}")
+    return value
+
+
+def _args(raw: dict, key: str, path: str) -> list[str]:
+    value = raw.get(key, [])
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise RecipeSchemaError(f"{path}.{key} must be a list of strings")
+    return list(value)
+
+
 def _parse(raw: dict, model_id: str) -> Recipe:
-    model = raw.get("model") or {}
-    meta = raw.get("meta") or {}
+    if not isinstance(raw, dict):
+        raise RecipeSchemaError("recipe root must be a mapping")
+    model = _mapping(raw, "model", required=True)
+    meta = _mapping(raw, "meta")
+    variants_raw = _mapping(raw, "variants")
+    features_raw = _mapping(raw, "features")
 
     variants: list[RecipeVariant] = []
-    for name, v in (raw.get("variants") or {}).items():
-        v = v or {}
+    for name, v in variants_raw.items():
+        if not isinstance(name, str) or not name:
+            raise RecipeSchemaError("variants keys must be non-empty strings")
+        if not isinstance(v, dict):
+            raise RecipeSchemaError(f"variants.{name} must be a mapping")
         vram = v.get("vram_minimum_gb")
+        if vram is not None and (
+            isinstance(vram, bool)
+            or not isinstance(vram, (int, float))
+            or vram <= 0
+        ):
+            raise RecipeSchemaError(
+                f"variants.{name}.vram_minimum_gb must be a positive number"
+            )
         variants.append(
             RecipeVariant(
-                name=str(name),
-                precision=str(v.get("precision", "")),
-                vram_minimum_gb=float(vram) if isinstance(vram, (int, float)) else None,
-                model_id=str(v.get("model_id", "")),
-                extra_args=[str(a) for a in (v.get("extra_args") or [])],
-                description=str(v.get("description", "")),
+                name=name,
+                precision=_text(v, "precision", f"variants.{name}"),
+                vram_minimum_gb=float(vram) if vram is not None else None,
+                model_id=_text(v, "model_id", f"variants.{name}"),
+                extra_args=_args(v, "extra_args", f"variants.{name}"),
+                description=_text(v, "description", f"variants.{name}"),
             )
         )
 
     features: list[RecipeFeature] = []
-    for name, f in (raw.get("features") or {}).items():
-        f = f or {}
+    for name, f in features_raw.items():
+        if not isinstance(name, str) or not name:
+            raise RecipeSchemaError("features keys must be non-empty strings")
+        if not isinstance(f, dict):
+            raise RecipeSchemaError(f"features.{name} must be a mapping")
+        if "modes" in f:
+            raise RecipeSchemaError(f"features.{name}.modes is not supported by llmux")
         features.append(
             RecipeFeature(
-                name=str(name),
-                description=str(f.get("description", "")),
-                args=[str(a) for a in (f.get("args") or [])],
+                name=name,
+                description=_text(f, "description", f"features.{name}"),
+                args=_args(f, "args", f"features.{name}"),
             )
         )
 
     ctx = model.get("context_length")
+    if "context_length" in model and (
+        isinstance(ctx, bool) or not isinstance(ctx, int) or ctx <= 0
+    ):
+        raise RecipeSchemaError("model.context_length must be a positive integer")
     return Recipe(
-        model_id=str(model.get("model_id", model_id)),
-        title=str(meta.get("title", "")),
-        description=str(meta.get("description", "")),
-        min_vllm_version=str(model.get("min_vllm_version", "")),
-        context_length=int(ctx) if isinstance(ctx, int) else None,
-        base_args=[str(a) for a in (model.get("base_args") or [])],
+        model_id=_text(model, "model_id", "model", required=True),
+        title=_text(meta, "title", "meta"),
+        description=_text(meta, "description", "meta"),
+        min_vllm_version=_text(model, "min_vllm_version", "model"),
+        context_length=ctx,
+        base_args=_args(model, "base_args", "model"),
         variants=variants,
         features=features,
     )
 
 
 class RecipeUnavailable(RuntimeError):
-    """The recipe could not be fetched — distinct from "there is no recipe"."""
+    pass
 
 
 async def fetch_recipe(model_id: str, timeout: int = 15) -> Recipe | None:
-    """Fetch + parse the recipe for `model_id`.
-
-    Returns None only when upstream has no recipe (404). A network failure or a
-    malformed file raises RecipeUnavailable, so callers never tell the user
-    "no recipe found" for a model whose recipe they simply couldn't reach.
-    """
     if not model_id or "/" not in model_id:
         return None
     url = recipe_url(model_id)
@@ -132,18 +171,15 @@ async def fetch_recipe(model_id: str, timeout: int = 15) -> Recipe | None:
             raise RecipeUnavailable(f"{url} → {exc}") from exc
         if not isinstance(raw, dict):
             raise RecipeUnavailable(f"{url} → malformed recipe file")
-        return _parse(raw, model_id)
+        try:
+            return _parse(raw, model_id)
+        except RecipeSchemaError as exc:
+            raise RecipeUnavailable(f"{url} → invalid recipe schema: {exc}") from exc
 
     return await loop.run_in_executor(None, _do)
 
 
 def args_to_config(args: list[str]) -> dict[str, Any]:
-    """Fold a flat CLI arg list into the ``{flag: value}`` config shape.
-
-    ``--foo bar`` → ``{"foo": "bar"}``; a bare ``--flag`` (next token is another
-    flag or the list ends) → ``{"flag": True}``. Values are YAML-typed so
-    ``--x 8192`` stores an int. Leading ``--`` is stripped to match config keys.
-    """
     out: dict[str, Any] = {}
     i = 0
     n = len(args)
@@ -166,17 +202,24 @@ def args_to_config(args: list[str]) -> dict[str, Any]:
     return out
 
 
+def validate_feature_names(recipe: Recipe, feature_names: list[str]) -> None:
+    if isinstance(feature_names, str):
+        raise ValueError("recipe feature names must be a list of strings")
+    available = {feature.name for feature in recipe.features}
+    unknown = set(feature_names) - available
+    if unknown:
+        choices = ", ".join(sorted(available)) or "none"
+        raise ValueError(
+            f"unknown recipe feature(s): {', '.join(sorted(unknown))}; available: {choices}"
+        )
+
+
 def build_config(
     recipe: Recipe,
     variant: RecipeVariant | None,
     feature_names: list[str],
 ) -> tuple[str, dict[str, Any]]:
-    """Return ``(model_id, config_params)`` for the chosen variant + features.
-
-    A variant may swap the model (an FP8/AWQ checkpoint) and add quantization
-    args; enabled features append their args. ``max-model-len`` is seeded from
-    the recipe's context length so the user sees a concrete starting value.
-    """
+    validate_feature_names(recipe, feature_names)
     model_id = (variant.model_id if variant and variant.model_id else recipe.model_id)
     args = list(recipe.base_args)
     if variant:

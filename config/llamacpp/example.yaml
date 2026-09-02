@@ -48,8 +48,8 @@ jinja: true
 #                            # `on`/`off`/`auto` 문자열도 사용 가능 (modern llama-server)
 # parallel: 4                # 병렬 요청 슬롯
 # cont-batching: true        # continuous batching
-# metrics: true              # /metrics 엔드포인트 활성화
+# /metrics 는 llmux 모니터링을 위해 항상 활성화됨.
 
-# ═══ render-override.py 가 verbatim 으로 붙이는 인자 ═══
+# ═══ 추가 인자 (llmux 관리 옵션 제외) ═══
 # llama-server 최신 플래그 중 위 스키마로 표현 못 하는 것.
 extra-args: []

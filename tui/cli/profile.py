@@ -13,6 +13,14 @@ from typing import Optional
 
 import typer
 
+from tui.backends.llamacpp.defaults import (
+    QUICK_SETUP_CACHE_TYPE_K,
+    QUICK_SETUP_CACHE_TYPE_V,
+    QUICK_SETUP_CTX_SIZE,
+    QUICK_SETUP_FLASH_ATTN,
+    QUICK_SETUP_JINJA,
+    QUICK_SETUP_N_GPU_LAYERS,
+)
 from tui.cli._runtime import (
     BACKENDS,
     detect_backend,
@@ -72,6 +80,15 @@ def show_profile(
     bk = detect_backend(name, override=backend)
     sp = profile_store.load_profile(name, bk)
     data = asdict(sp)
+    data["container_name"] = sp.container_name or sp.name
+    data["env_vars"] = {
+        key: (
+            {"set": True, "length": len(value)}
+            if profile_store.sensitive_env_key(key)
+            else value
+        )
+        for key, value in data["env_vars"].items()
+    }
     if json_out:
         emit_json(data)
         return
@@ -117,12 +134,14 @@ def _validate_tensor_parallel(size: int, *, param_hint: str = "--tensor-parallel
         )
 
 
-def _validate_gpu_mem(gpu_mem: str, *, param_hint: str = "--gpu-mem") -> None:
-    """Same 0.0 < x <= 1.0 rule the TUI config/quick-setup forms enforce.
+def _validate_lora_limit(size: int, *, param_hint: str) -> None:
+    if size < 1:
+        raise typer.BadParameter(
+            f"value must be a positive integer, got {size}", param_hint=param_hint
+        )
 
-    Imported by `tui.cli.config` too — an unvalidated value reaches the config
-    YAML verbatim and only fails much later inside vLLM.
-    """
+
+def _validate_gpu_mem(gpu_mem: str, *, param_hint: str = "--gpu-mem") -> None:
     try:
         value = float(gpu_mem)
     except ValueError:
@@ -143,11 +162,6 @@ def _reject_cross_backend_options(
     vllm_only: dict[str, bool],
     llamacpp_only: dict[str, bool],
 ) -> None:
-    """Refuse options the target backend has no field for.
-
-    `_profile_to_entry` persists only the fields belonging to the profile's own
-    backend, so an option from the other backend would be dropped on write.
-    """
     if backend == "llamacpp":
         offenders = [flag for flag, given in vllm_only.items() if given]
         owner = "vLLM"
@@ -167,11 +181,6 @@ def _reject_cross_backend_options(
 def _require_config_exists(
     backend: str, name: str, *, param_hint: str = "--copy-from"
 ) -> None:
-    """Fail loudly when an option names a config that isn't there.
-
-    Both backends' `load_config()` return an empty Config for a missing file,
-    so a typo would otherwise produce a config with none of the copied params.
-    """
     if backend == "vllm":
         from tui.backends.vllm.backend_common import CONFIG_DIR
     else:
@@ -185,11 +194,6 @@ def _require_config_exists(
 
 
 def _reject_example_config(config_name: str, *, from_profile_name: bool) -> None:
-    """`example.yaml` is the tracked template — a profile linked to it writes
-    its params into a git-tracked file. The TUI filters `example` out of every
-    config picker; this is the CLI's equivalent, including the case where the
-    profile is simply *named* `example` and picks up the default link.
-    """
     if config_name != "example":
         return
     if from_profile_name:
@@ -207,11 +211,6 @@ def _reject_example_config(config_name: str, *, from_profile_name: bool) -> None
 
 
 def _require_linked_config_exists(backend: str, profile_name: str, config_name: str) -> None:
-    """Reject `--config` naming a config file that doesn't exist.
-
-    Exception: a config named after the profile is allowed even when absent —
-    start-up auto-creates that one, which is the documented default path.
-    """
     if config_name == profile_name:
         return
     if backend == "vllm":
@@ -229,12 +228,6 @@ def _require_linked_config_exists(backend: str, profile_name: str, config_name: 
 
 
 def _validate_profile_name(name: str, backend: str, *, param_hint: str = "NAME") -> None:
-    """Reject names a backend's own runtime would reject at start time.
-
-    Applied to both `new` and `edit` so an invalid name can't sneak in via
-    a direct profiles.yaml edit and then get round-tripped through `edit`
-    unchecked.
-    """
     if not _PROFILE_NAME_RE.match(name):
         raise typer.BadParameter(
             f"Profile names must match {_PROFILE_NAME_RE.pattern} "
@@ -246,21 +239,11 @@ def _validate_profile_name(name: str, backend: str, *, param_hint: str = "NAME")
 
 
 def _parse_set_kv(items: list[str], *, backend: str = "") -> dict[str, str]:
-    """Parse repeated --set KEY=VALUE pairs into a dict.
-
-    Validates KEY against the same regex profile_store uses for env-line
-    rendering, so a bad name fails up-front with a clean usage error instead
-    of a deep traceback at save_profile time. When `backend` is supplied, also
-    rejects keys that profile_store treats as reserved (GPU_ID, VLLM_PORT,
-    CONTAINER_NAME, …) — otherwise the conflict checker and the rendered .env
-    would silently disagree about which value is in effect.
-    """
-    reserved = profile_store.reserved_env_keys(backend) if backend else frozenset()
     out: dict[str, str] = {}
     for raw in items:
         if "=" not in raw:
             raise typer.BadParameter(
-                f"--set value must be KEY=VALUE, got {raw!r}", param_hint="--set"
+                "--set value must be KEY=VALUE", param_hint="--set"
             )
         key, _, value = raw.partition("=")
         key = key.strip()
@@ -272,19 +255,17 @@ def _parse_set_kv(items: list[str], *, backend: str = "") -> dict[str, str]:
                 "(env-var rules: leading letter or underscore, then alphanumerics/underscores)",
                 param_hint="--set",
             )
-        if key in reserved:
+        if backend and profile_store.is_protected_profile_env_key(key, backend):
             raise typer.BadParameter(
                 f"--set KEY {key!r} is reserved by the {backend} backend; "
                 f"use the dedicated profile field (e.g. --port, --gpu-id) instead.",
                 param_hint="--set",
             )
-        # Same rule _env_line enforces, applied here so the failure is a clean
-        # usage error rather than a ValueError traceback out of save_profile.
         reason = profile_store.env_value_rejection(value)
         if reason:
             raise typer.BadParameter(
                 f"--set value for {key!r} contains a {reason}, which docker "
-                f"compose's .env parser cannot read: {value!r}",
+                "compose's .env parser cannot read",
                 param_hint="--set",
             )
         out[key] = value
@@ -311,6 +292,15 @@ def new_profile(
         "", "--container", help="Container name (defaults to profile name)."
     ),
     enable_lora: bool = typer.Option(False, "--lora/--no-lora", help="vLLM only: enable LoRA."),
+    max_loras: int = typer.Option(
+        0, "--max-loras", help="vLLM only: maximum simultaneously loaded LoRAs."
+    ),
+    max_lora_rank: int = typer.Option(
+        0, "--max-lora-rank", help="vLLM only: maximum supported LoRA rank."
+    ),
+    lora_modules: str = typer.Option(
+        "", "--lora-modules", help="vLLM only: comma-separated name=path adapters."
+    ),
     extra_pip: str = typer.Option(
         "", "--extra-pip", help="vLLM only: extra pip packages installed before serve."
     ),
@@ -334,6 +324,9 @@ def new_profile(
             "--model": bool(model),
             "--extra-pip": bool(extra_pip),
             "--lora": enable_lora,
+            "--max-loras": bool(max_loras),
+            "--max-lora-rank": bool(max_lora_rank),
+            "--lora-modules": bool(lora_modules),
             "--tensor-parallel": bool(tensor_parallel),
         },
         llamacpp_only={
@@ -354,6 +347,10 @@ def new_profile(
         _validate_gpu_id(gpu_id)
     if tensor_parallel:
         _validate_tensor_parallel(tensor_parallel)
+    if max_loras:
+        _validate_lora_limit(max_loras, param_hint="--max-loras")
+    if max_lora_rank:
+        _validate_lora_limit(max_lora_rank, param_hint="--max-lora-rank")
     owner = profile_store.find_name_owner(name)
     if owner is not None:
         raise typer.BadParameter(
@@ -376,13 +373,16 @@ def new_profile(
         tensor_parallel_size=tensor_parallel or (len(gpu_id.split(",")) if gpu_id else 1),
         model_id=model,
         enable_lora=enable_lora,
+        max_loras=max_loras or None,
+        max_lora_rank=max_lora_rank or None,
+        lora_modules=lora_modules,
         extra_pip_packages=extra_pip,
         env_vars=_parse_set_kv(set_env, backend=backend),
         model_file=model_file,
         hf_repo=hf_repo,
         hf_file=hf_file,
     )
-    profile_store.save_profile(sp)
+    profile_store.create_profile(sp)
     print(f"Created profile '{name}' (backend={backend})")
 
 
@@ -402,6 +402,15 @@ def edit_profile(
     config_name: Optional[str] = typer.Option(None, "--config", "-c"),
     container_name: Optional[str] = typer.Option(None, "--container"),
     enable_lora: Optional[bool] = typer.Option(None, "--lora/--no-lora"),
+    max_loras: Optional[int] = typer.Option(
+        None, "--max-loras", help="vLLM only: positive integer; 0 clears it."
+    ),
+    max_lora_rank: Optional[int] = typer.Option(
+        None, "--max-lora-rank", help="vLLM only: positive integer; 0 clears it."
+    ),
+    lora_modules: Optional[str] = typer.Option(
+        None, "--lora-modules", help="vLLM only: comma-separated name=path adapters."
+    ),
     extra_pip: Optional[str] = typer.Option(None, "--extra-pip"),
     set_env: list[str] = typer.Option(
         [], "--set", help="Repeatable: KEY=VALUE entries to add/override in env_vars."
@@ -420,22 +429,15 @@ def edit_profile(
     """Edit fields of an existing profile (only specified options change)."""
     bk = detect_backend(name, override=backend)
     _validate_profile_name(name, bk)
-    # Global name uniqueness (see profile_store.find_name_owner). `edit` can't
-    # rename, so this only fires when a hand edit created the same name in the
-    # other backend — surface that conflict loudly instead of editing into it.
-    owner = profile_store.find_name_owner(name, exclude=(bk, name))
-    if owner is not None:
-        raise typer.BadParameter(
-            f"profile '{name}' also exists in backend '{owner}'. Profile names "
-            "must be unique across both backends — remove the duplicate first.",
-            param_hint="NAME",
-        )
     _reject_cross_backend_options(
         bk,
         vllm_only={
             "--model": model is not None,
             "--extra-pip": extra_pip is not None,
             "--lora/--no-lora": enable_lora is not None,
+            "--max-loras": max_loras is not None,
+            "--max-lora-rank": max_lora_rank is not None,
+            "--lora-modules": lora_modules is not None,
             "--tensor-parallel": tensor_parallel is not None,
         },
         llamacpp_only={
@@ -444,83 +446,80 @@ def edit_profile(
             "--hf-file": hf_file is not None,
         },
     )
-    sp = profile_store.load_profile(name, bk)
-
-    if port is not None:
-        # 0 is the same "use the backend default" sentinel `new` accepts, and
-        # is resolved eagerly the same way — leaving port=0 on the profile
-        # would render a literal `PORT=0` into the runtime .env.
-        if port:
-            _validate_port(port)
-            sp.port = port
-        else:
-            sp.port = int(profile_store.effective_defaults(bk)["port"])
-    if gpu_id is not None:
-        _validate_gpu_id(gpu_id)
-        sp.gpu_id = gpu_id
-        # TP is a vLLM-only concept: llama.cpp never persists the field, and
-        # --tensor-parallel is rejected for that backend — so re-deriving it
-        # (let alone announcing it) on a llama.cpp profile would be a lie.
-        if bk == "vllm":
-            derived = len(gpu_id.split(",")) if gpu_id else 1
-            # --gpu-id still re-derives TP (a 2-GPU profile left at TP=1 would
-            # idle the second card), but it used to do so silently — say it out
-            # loud.
-            if tensor_parallel is None and derived != sp.tensor_parallel_size:
-                print(
-                    f"tensor_parallel_size adjusted to {derived} to match --gpu-id "
-                    "(pass --tensor-parallel to override)"
-                )
-            sp.tensor_parallel_size = derived
-    if tensor_parallel is not None:
-        _validate_tensor_parallel(tensor_parallel)
-        sp.tensor_parallel_size = tensor_parallel
-    if model is not None:
-        sp.model_id = model
-    if config_name is not None:
-        # An empty --config clears the link, which resolves back to the profile
-        # name at start time — so the "example" check has to look at the
-        # resolved value, not the raw flag.
-        _reject_example_config(config_name or name, from_profile_name=not config_name)
-        if config_name:
-            _require_linked_config_exists(bk, name, config_name)
-        sp.config_name = config_name
-    if container_name is not None:
-        if container_name:
-            _validate_profile_name(container_name, bk, param_hint="--container")
-        sp.container_name = container_name
-    if enable_lora is not None:
-        sp.enable_lora = enable_lora
-    if extra_pip is not None:
-        sp.extra_pip_packages = extra_pip
-    if model_file is not None:
-        sp.model_file = model_file
-    if hf_repo is not None:
-        sp.hf_repo = hf_repo
-    if hf_file is not None:
-        sp.hf_file = hf_file
+    env_updates = _parse_set_kv(set_env, backend=bk)
     if image_tag is not None:
         from tui.common.dev_build import image_tag_error
 
         err = image_tag_error(image_tag)
         if err:
             raise typer.BadParameter(err, param_hint="--image-tag")
-        sp.image_tag = image_tag
-    for k, v in _parse_set_kv(set_env, backend=bk).items():
-        sp.env_vars[k] = v
-    for k in unset_env:
-        sp.env_vars.pop(k, None)
+    if max_loras is not None and max_loras < 0:
+        _validate_lora_limit(max_loras, param_hint="--max-loras")
+    if max_lora_rank is not None and max_lora_rank < 0:
+        _validate_lora_limit(max_lora_rank, param_hint="--max-lora-rank")
 
-    profile_store.save_profile(sp)
+    def apply_updates(sp: profile_store.StoredProfile) -> None:
+        if port is not None:
+            if port:
+                _validate_port(port)
+                sp.port = port
+            else:
+                sp.port = int(profile_store.effective_defaults(bk)["port"])
+        if gpu_id is not None:
+            _validate_gpu_id(gpu_id)
+            sp.gpu_id = gpu_id
+            if bk == "vllm":
+                derived = len(gpu_id.split(",")) if gpu_id else 1
+                if tensor_parallel is None and derived != sp.tensor_parallel_size:
+                    print(
+                        f"tensor_parallel_size adjusted to {derived} to match --gpu-id "
+                        "(pass --tensor-parallel to override)"
+                    )
+                sp.tensor_parallel_size = derived
+        if tensor_parallel is not None:
+            _validate_tensor_parallel(tensor_parallel)
+            sp.tensor_parallel_size = tensor_parallel
+        if model is not None:
+            sp.model_id = model
+        if config_name is not None:
+            _reject_example_config(
+                config_name or name,
+                from_profile_name=not config_name,
+            )
+            if config_name:
+                _require_linked_config_exists(bk, name, config_name)
+            sp.config_name = config_name
+        if container_name is not None:
+            if container_name:
+                _validate_profile_name(container_name, bk, param_hint="--container")
+            sp.container_name = container_name
+        if enable_lora is not None:
+            sp.enable_lora = enable_lora
+        if max_loras is not None:
+            sp.max_loras = max_loras or None
+        if max_lora_rank is not None:
+            sp.max_lora_rank = max_lora_rank or None
+        if lora_modules is not None:
+            sp.lora_modules = lora_modules
+        if extra_pip is not None:
+            sp.extra_pip_packages = extra_pip
+        if model_file is not None:
+            sp.model_file = model_file
+        if hf_repo is not None:
+            sp.hf_repo = hf_repo
+        if hf_file is not None:
+            sp.hf_file = hf_file
+        if image_tag is not None:
+            sp.image_tag = image_tag
+        sp.env_vars.update(env_updates)
+        for key in unset_env:
+            sp.env_vars.pop(key, None)
+
+    profile_store.update_profile(name, bk, apply_updates)
     print(f"Updated profile '{name}' (backend={bk})")
 
 
 def _require_stopped(sp: profile_store.StoredProfile, *, action: str) -> None:
-    """Refuse a rename while the profile's container is up.
-
-    The container is named `container_name or name`; renaming out from under a
-    running one leaves a container no llmux path can find again.
-    """
     from tui.common import docker as common_docker
 
     container = sp.container_name or sp.name
@@ -692,30 +691,35 @@ def quick_setup(
         help="llama.cpp only: GGUF filename inside the repo (validated against HF API when reachable).",
     ),
     ctx_size: str = typer.Option(
-        "32768", "--ctx-size",
+        QUICK_SETUP_CTX_SIZE, "--ctx-size",
         help="llama.cpp only: --ctx-size (token context). Empty = backend default.",
     ),
     n_gpu_layers: str = typer.Option(
-        "99", "--n-gpu-layers",
-        help="llama.cpp only: --n-gpu-layers (99 = all). Empty = backend default.",
+        QUICK_SETUP_N_GPU_LAYERS, "--n-gpu-layers",
+        help=(
+            f"llama.cpp only: --n-gpu-layers ({QUICK_SETUP_N_GPU_LAYERS} = all). "
+            "Empty = backend default."
+        ),
     ),
     batch_size: str = typer.Option(
         "", "--batch-size",
         help="llama.cpp only: --batch-size. Empty = backend default.",
     ),
     cache_type_k: str = typer.Option(
-        "bf16", "--cache-type-k",
+        QUICK_SETUP_CACHE_TYPE_K, "--cache-type-k",
         help="llama.cpp only: --cache-type-k (f16/bf16/q8_0/q4_0). Empty = backend default.",
     ),
     cache_type_v: str = typer.Option(
-        "bf16", "--cache-type-v",
+        QUICK_SETUP_CACHE_TYPE_V, "--cache-type-v",
         help="llama.cpp only: --cache-type-v (f16/bf16/q8_0/q4_0). Empty = backend default.",
     ),
     flash_attn: bool = typer.Option(
-        True, "--flash-attn/--no-flash-attn", help="llama.cpp only: --flash-attn."
+        QUICK_SETUP_FLASH_ATTN,
+        "--flash-attn/--no-flash-attn",
+        help="llama.cpp only: --flash-attn.",
     ),
     jinja: bool = typer.Option(
-        True, "--jinja/--no-jinja",
+        QUICK_SETUP_JINJA, "--jinja/--no-jinja",
         help="llama.cpp only: --jinja (required for /v1/chat/completions).",
     ),
     override_tensors: str = typer.Option(
@@ -747,13 +751,13 @@ def quick_setup(
         llamacpp_only={
             "--hf-repo": bool(hf_repo),
             "--hf-file": bool(hf_file),
-            "--ctx-size": ctx_size != "32768",
-            "--n-gpu-layers": n_gpu_layers != "99",
+            "--ctx-size": ctx_size != QUICK_SETUP_CTX_SIZE,
+            "--n-gpu-layers": n_gpu_layers != QUICK_SETUP_N_GPU_LAYERS,
             "--batch-size": bool(batch_size),
-            "--cache-type-k": cache_type_k != "bf16",
-            "--cache-type-v": cache_type_v != "bf16",
-            "--no-flash-attn": not flash_attn,
-            "--no-jinja": not jinja,
+            "--cache-type-k": cache_type_k != QUICK_SETUP_CACHE_TYPE_K,
+            "--cache-type-v": cache_type_v != QUICK_SETUP_CACHE_TYPE_V,
+            "--no-flash-attn": flash_attn != QUICK_SETUP_FLASH_ATTN,
+            "--no-jinja": jinja != QUICK_SETUP_JINJA,
             "--override-tensors": bool(override_tensors),
         },
     )
@@ -851,26 +855,10 @@ def _quick_setup_vllm(
         raise typer.BadParameter("derived name has invalid characters; pass --name explicitly")
 
     from tui.backends.vllm.backend_storage import (
-        list_config_names as v_clist,
         load_config,
         save_config,
     )
-    from tui.backends.vllm.backend_common import Config
-
-    # Profile names must be globally unique across both backends, so the
-    # collision set spans both — the suffix loop resolves to a name free in
-    # either. `example` is added explicitly — v_clist() filters it out, so
-    # without it a profile named "example" would overwrite the tracked
-    # example.yaml.
-    existing_profiles = set(profile_store.list_profile_names("vllm")) | set(
-        profile_store.list_profile_names("llamacpp")
-    )
-    existing_configs = set(v_clist()) | {"example"}
-    final_name = name
-    suffix = 0
-    while final_name in existing_profiles or final_name in existing_configs:
-        suffix += 1
-        final_name = f"{name}-{suffix}"
+    from tui.backends.vllm.backend_common import CONFIG_DIR, Config
 
     if use_recipe and copy_config_from:
         raise typer.BadParameter(
@@ -912,16 +900,16 @@ def _quick_setup_vllm(
         extra_params = dict(src.extra_params)
         disabled_params = dict(src.disabled_params)
 
-    config = Config(
-        name=final_name,
-        model=model,
-        gpu_memory_utilization=gpu_memory_utilization,
-        extra_params=extra_params,
-        disabled_params=disabled_params,
-    )
-    save_config(config)
-    try:
-        profile_store.save_profile(
+    with profile_store.quick_setup_transaction(name, "vllm", CONFIG_DIR) as final_name:
+        config = Config(
+            name=final_name,
+            model=model,
+            gpu_memory_utilization=gpu_memory_utilization,
+            extra_params=extra_params,
+            disabled_params=disabled_params,
+        )
+        save_config(config)
+        profile_store.create_profile(
             profile_store.StoredProfile(
                 name=final_name,
                 backend="vllm",
@@ -934,14 +922,6 @@ def _quick_setup_vllm(
                 enable_lora=enable_lora,
             )
         )
-    except (OSError, RuntimeError, ValueError) as exc:
-        try:
-            config.path.unlink(missing_ok=True)
-        except OSError as rollback_exc:
-            raise RuntimeError(
-                f"profile creation failed ({exc}); config rollback failed: {rollback_exc}"
-            ) from exc
-        raise
     print(f"Created profile + config: {final_name}")
 
 
@@ -977,11 +957,10 @@ def _quick_setup_llamacpp(
     _validate_gpu_id(gpu_id)
 
     from tui.backends.llamacpp.backend import (
+        CONFIG_DIR as llamacpp_config_dir,
         Config as LcppConfig,
-        list_config_names as l_clist,
         HfListingUnavailable,
         list_hf_repo_files,
-        list_profile_names as l_list,
         load_config as l_load_config,
         save_config as l_save_config,
         validate_name as l_validate_name,
@@ -1036,22 +1015,6 @@ def _quick_setup_llamacpp(
             param_hint="--name",
         )
 
-    # Profile names must be globally unique across both backends — include the
-    # vLLM profile names too so the suffix loop resolves to a globally-free
-    # name. `example` is added explicitly — l_clist() filters it out, so without
-    # it a profile named "example" would overwrite the tracked example.yaml.
-    existing = (
-        set(l_list())
-        | set(profile_store.list_profile_names("vllm"))
-        | set(l_clist())
-        | {"example"}
-    )
-    final_name = name
-    suffix = 0
-    while final_name in existing:
-        suffix += 1
-        final_name = f"{name}-{suffix}"
-
     params: dict = {}
     disabled_params: dict = {}
     if copy_config_from:
@@ -1061,7 +1024,6 @@ def _quick_setup_llamacpp(
         params.update(src.params)
         disabled_params = dict(src.disabled_params)
     params["model-file"] = hf_file
-    params.setdefault("alias", final_name)
 
     def _set_int(key: str, raw: str, *, param_hint: str) -> None:
         if not raw:
@@ -1103,14 +1065,19 @@ def _quick_setup_llamacpp(
     else:
         params.pop("override-tensors", None)
 
-    config = LcppConfig(
-        name=final_name,
-        params=params,
-        disabled_params=disabled_params,
-    )
-    l_save_config(config)
-    try:
-        profile_store.save_profile(
+    with profile_store.quick_setup_transaction(
+        name,
+        "llamacpp",
+        llamacpp_config_dir,
+    ) as final_name:
+        params.setdefault("alias", final_name)
+        config = LcppConfig(
+            name=final_name,
+            params=params,
+            disabled_params=disabled_params,
+        )
+        l_save_config(config)
+        profile_store.create_profile(
             profile_store.StoredProfile(
                 name=final_name,
                 backend="llamacpp",
@@ -1123,12 +1090,4 @@ def _quick_setup_llamacpp(
                 hf_file=hf_file,
             )
         )
-    except (OSError, RuntimeError, ValueError) as exc:
-        try:
-            config.path.unlink(missing_ok=True)
-        except OSError as rollback_exc:
-            raise RuntimeError(
-                f"profile creation failed ({exc}); config rollback failed: {rollback_exc}"
-            ) from exc
-        raise
     print(f"Created profile + config: {final_name}")

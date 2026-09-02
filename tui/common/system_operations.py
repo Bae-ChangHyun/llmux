@@ -75,7 +75,9 @@ def render_backend_envs(backend: str) -> tuple[list[Path], list[str]]:
     failures: list[str] = []
     for profile in profile_store.list_profiles(backend):
         try:
-            rendered.append(profile_store.render_env(profile))
+            rendered.append(
+                profile_store.render_env_for_profile(profile.name, profile.backend)
+            )
         except (OSError, RuntimeError, ValueError) as exc:
             failures.append(f"{profile.name}: {exc}")
     return rendered, failures

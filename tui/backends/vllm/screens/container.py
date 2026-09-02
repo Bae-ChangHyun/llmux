@@ -169,6 +169,7 @@ class ContainerUpScreen(Screen):
         self._local_tag: str = ""
         self._release_version: str = ""
         self._version_retries: int = 0
+        self._gpu_error_notified = False
         self._dev_repo_url, self._dev_branch = get_dev_build_defaults()
 
     def compose(self) -> ComposeResult:
@@ -346,7 +347,19 @@ class ContainerUpScreen(Screen):
 
     @work(exclusive=False)
     async def _fetch_gpu_info(self) -> None:
-        gpus = await get_gpu_info()
+        try:
+            gpus = await get_gpu_info()
+        except RuntimeError as exc:
+            message = t(f"GPU lookup failed: {exc}", f"GPU 조회 실패: {exc}")
+            try:
+                self.query_one("#gpu-bar", Static).update(f"[red]{message}[/red]")
+            except Exception:
+                pass
+            if not self._gpu_error_notified:
+                self.notify(message, severity="error", timeout=8)
+                self._gpu_error_notified = True
+            return
+        self._gpu_error_notified = False
         try:
             self.query_one("#gpu-bar", Static).update(format_gpu_bar(gpus))
         except Exception:
@@ -501,7 +514,15 @@ class ContainerUpScreen(Screen):
                 return
 
         # Always keep the runtime bind check enabled right before compose up.
-        conflict = await check_port_conflict(self._profile)
+        try:
+            conflict = await check_port_conflict(self._profile)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.app.notify(
+                t(f"Port conflict probe failed: {exc}", f"포트 충돌 조회 실패: {exc}"),
+                severity="error",
+                timeout=8,
+            )
+            return
         if conflict:
             self.app.notify(
                 t(

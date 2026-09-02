@@ -18,11 +18,15 @@ import contextlib
 import os
 import re
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from tui.common.env import host_expand, parse_env_file
+from tui.common.env import (
+    host_expand,
+    parse_env_file,
+    required_image_reference_error,
+)
 from tui.common.i18n import t
-from tui.common.profile_store import PROJECT_ROOT
+from tui.common.profile_store import PROJECT_ROOT, hf_repo_error
 
 COMMON_ENV = PROJECT_ROOT / ".env.common"
 
@@ -64,18 +68,44 @@ _SPLIT_SHARD_RE = re.compile(
 )
 
 
+def hf_file_error(hf_file: str) -> str:
+    if not hf_file:
+        return "HF file must be a non-empty relative POSIX path"
+    if any(ord(character) < 32 or ord(character) == 127 for character in hf_file):
+        return "HF file cannot include control characters"
+    path = PurePosixPath(hf_file)
+    if path.is_absolute() or ".." in path.parts:
+        return "HF file must be a normalized relative POSIX path"
+    if path.as_posix() != hf_file or "." in path.parts:
+        return "HF file must be a normalized relative POSIX path"
+    return ""
+
+
 def gguf_shard_names(hf_file: str) -> list[str]:
     """Every shard of a split GGUF, or just the file when it is not split.
 
     Shards are far from equal — unsloth's first one can be 10MB against a 50GB
     sibling — so a profile's `hf_file` is only ever the entry point.
     """
+    error = hf_file_error(hf_file)
+    if error:
+        raise ValueError(error)
     directory, _, name = hf_file.rpartition("/")
     match = _SPLIT_SHARD_RE.match(name)
     if match is None:
         return [hf_file]
     prefix = f"{directory}/" if directory else ""
-    stem, total = match.group("stem"), int(match.group("total"))
+    stem = match.group("stem")
+    index = int(match.group("index"))
+    total = int(match.group("total"))
+    if total < 1:
+        raise ValueError(
+            f"invalid split GGUF shard {hf_file!r}: total must be at least 1"
+        )
+    if index < 1 or index > total:
+        raise ValueError(
+            f"invalid split GGUF shard {hf_file!r}: index {index} is outside 1..{total}"
+        )
     return [f"{prefix}{stem}-{i:05d}-of-{total:05d}.gguf" for i in range(1, total + 1)]
 
 
@@ -142,6 +172,20 @@ async def _run(*args: str, timeout: float = 30) -> tuple[int, str]:
         return -1, "Command timed out"
     rc = proc.returncode if proc.returncode is not None else -1
     return rc, (out or b"").decode(errors="replace")
+
+
+async def _remove_prepare_container(container_name: str) -> tuple[int, str]:
+    try:
+        rc, output = await _run("docker", "rm", "-f", container_name, timeout=30)
+    except OSError as exc:
+        return 1, f"docker rm -f could not start: {exc}"
+    if rc == 0:
+        return 0, ""
+    lowered = output.lower()
+    if "no such container" in lowered or "no such object" in lowered:
+        return 0, ""
+    detail = output.strip() or f"docker rm -f exited with status {rc}"
+    return rc if rc > 0 else 1, detail
 
 
 async def stream_lines(args: list[str], *, env: dict[str, str] | None = None):
@@ -226,7 +270,11 @@ async def stream_vllm_download(
     max_workers: int | None = None,
 ):
     """Download a HF snapshot with the image's own huggingface_hub."""
-    await _run("docker", "rm", "-f", container_name, timeout=30)
+    cleanup_rc, cleanup_error = await _remove_prepare_container(container_name)
+    if cleanup_rc != 0:
+        yield ("log", f"Error: prepare cleanup failed: {cleanup_error}")
+        yield ("rc", cleanup_rc)
+        return
     args = [
         "docker", "run", "--rm",
         "--name", container_name,
@@ -246,14 +294,73 @@ async def stream_vllm_download(
         stream = stream_lines(args, env=process_env) if process_env else stream_lines(args)
         async for event in stream:
             yield event
-    except asyncio.CancelledError:
-        await _run("docker", "rm", "-f", container_name, timeout=30)
+    except asyncio.CancelledError as exc:
+        cleanup_rc, cleanup_error = await _remove_prepare_container(container_name)
+        if cleanup_rc != 0:
+            raise RuntimeError(
+                f"prepare cancelled and container cleanup failed: {cleanup_error}"
+            ) from exc
         raise
 
 
-def _repo_cache_dir(cache_path: str, hf_repo: str) -> Path:
+def hf_repo_cache_dir(cache_path: str | Path, hf_repo: str) -> Path:
+    error = hf_repo_error(hf_repo)
+    if error:
+        raise ValueError(error)
     org, _, name = hf_repo.partition("/")
-    return Path(cache_path) / "hub" / f"models--{org}--{name}"
+    cache_root = Path(cache_path)
+    repo_dir = cache_root / "hub" / f"models--{org}--{name}"
+    if not repo_dir.resolve().is_relative_to(cache_root.resolve()):
+        raise RuntimeError(
+            "Hugging Face repository cache resolves outside the configured cache root"
+        )
+    return repo_dir
+
+
+def current_hf_snapshot(repo_dir: Path) -> tuple[str, Path] | None:
+    snapshots = repo_dir / "snapshots"
+    if not snapshots.is_dir():
+        return None
+    ref = repo_dir / "refs" / "main"
+    if ref.exists():
+        if not ref.resolve(strict=True).is_relative_to(repo_dir.resolve(strict=True)):
+            raise RuntimeError("Hugging Face refs/main resolves outside its repository cache root")
+        revision = ref.read_text().strip()
+        if (
+            not revision
+            or any(ord(character) < 32 or ord(character) == 127 for character in revision)
+            or PurePosixPath(revision).name != revision
+        ):
+            raise RuntimeError("invalid Hugging Face refs/main revision")
+        snapshot = snapshots / revision
+        if not snapshot.is_dir():
+            return None
+        resolved = snapshot.resolve(strict=True)
+        if not resolved.is_relative_to(repo_dir.resolve(strict=True)):
+            raise RuntimeError("Hugging Face refs/main resolves outside its repository cache root")
+        return revision, snapshot
+
+    candidates = sorted(path for path in snapshots.iterdir() if path.is_dir())
+    if not candidates:
+        return None
+    if len(candidates) > 1:
+        raise RuntimeError(
+            "Hugging Face cache has multiple revisions but no refs/main"
+        )
+    snapshot = candidates[0]
+    resolved = snapshot.resolve(strict=True)
+    if not resolved.is_relative_to(repo_dir.resolve(strict=True)):
+        raise RuntimeError("Hugging Face snapshot resolves outside its repository cache root")
+    return snapshot.name, snapshot
+
+
+def resolve_cache_entry(path: Path, repo_dir: Path) -> Path | None:
+    if not path.exists():
+        return None
+    resolved = path.resolve(strict=True)
+    if not resolved.is_relative_to(repo_dir.resolve(strict=True)):
+        raise RuntimeError("cached GGUF resolves outside its repository cache root")
+    return resolved
 
 
 def gguf_in_cache(cache_path: str, hf_repo: str, hf_file: str) -> Path | None:
@@ -264,16 +371,16 @@ def gguf_in_cache(cache_path: str, hf_repo: str, hf_file: str) -> Path | None:
     snapshot_download links a snapshot entry only once its blob is complete, so
     a full set of links means the model is whole.
     """
-    repo_dir = _repo_cache_dir(cache_path, hf_repo)
-    snapshots = repo_dir / "snapshots"
-    if not snapshots.is_dir():
-        return None
+    repo_dir = hf_repo_cache_dir(cache_path, hf_repo)
     shards = gguf_shard_names(hf_file)
-    for snapshot in sorted(snapshots.iterdir()):
-        paths = [snapshot / shard for shard in shards]
-        if all(path.exists() for path in paths):
-            return paths[0]
-    return None
+    selected = current_hf_snapshot(repo_dir)
+    if selected is None:
+        return None
+    _, snapshot = selected
+    paths = [snapshot / shard for shard in shards]
+    if any(resolve_cache_entry(path, repo_dir) is None for path in paths):
+        return None
+    return paths[0]
 
 
 async def stream_llamacpp_download(
@@ -292,6 +399,22 @@ async def stream_llamacpp_download(
     reach a GPU. HF caps a single connection at a few MB/s, so `max_workers` is
     the knob for how much of the line the download is allowed to take.
     """
+    try:
+        shards = gguf_shard_names(hf_file)
+    except ValueError as exc:
+        yield ("log", f"Error: {exc}")
+        yield ("rc", 1)
+        return
+
+    image_ref = downloader_image()
+    image_error = required_image_reference_error(
+        "PREPARE_DOWNLOADER_IMAGE", image_ref
+    )
+    if image_error:
+        yield ("log", image_error)
+        yield ("rc", 1)
+        return
+
     cached = gguf_in_cache(cache_path, hf_repo, hf_file)
     if cached is not None:
         yield ("log", t(f"▸ Already in the HF cache: {cached}",
@@ -299,14 +422,6 @@ async def stream_llamacpp_download(
         yield ("rc", 0)
         return
 
-    image_ref = downloader_image()
-    if not image_ref:
-        yield ("log", t(
-            "✗ PREPARE_DOWNLOADER_IMAGE is unset in .env.common — no image to download with",
-            "✗ .env.common 의 PREPARE_DOWNLOADER_IMAGE 가 비어 있습니다 — GGUF 를 받을 이미지가 없습니다.",
-        ))
-        yield ("rc", 1)
-        return
     try:
         present = await image_present(image_ref)
     except RuntimeError as exc:
@@ -324,13 +439,17 @@ async def stream_llamacpp_download(
             else:
                 yield event
 
-    await _run("docker", "rm", "-f", container_name, timeout=30)
+    cleanup_rc, cleanup_error = await _remove_prepare_container(container_name)
+    if cleanup_rc != 0:
+        yield ("log", f"Error: prepare cleanup failed: {cleanup_error}")
+        yield ("rc", cleanup_rc)
+        return
     args = [
         "docker", "run", "--rm",
         "--name", container_name,
         "-v", f"{cache_path}:/root/.cache/huggingface",
         "-e", f"LLMUX_PREPARE_MODEL={hf_repo}",
-        "-e", f"LLMUX_PREPARE_ALLOW={','.join(gguf_shard_names(hf_file))}",
+        "-e", f"LLMUX_PREPARE_ALLOW={','.join(shards)}",
     ]
     args += workers_env(max_workers)
     process_env = None
@@ -349,8 +468,12 @@ async def stream_llamacpp_download(
                 rc = int(event[1])
             else:
                 yield event
-    except asyncio.CancelledError:
-        await _run("docker", "rm", "-f", container_name, timeout=30)
+    except asyncio.CancelledError as exc:
+        cleanup_rc, cleanup_error = await _remove_prepare_container(container_name)
+        if cleanup_rc != 0:
+            raise RuntimeError(
+                f"prepare cancelled and container cleanup failed: {cleanup_error}"
+            ) from exc
         raise
 
     if rc != 0:

@@ -1,10 +1,10 @@
 services:
   vllm:
     image: ${VLLM_IMAGE:-vllm/vllm-openai:${VLLM_VERSION:-latest}}
-    container_name: ${CONTAINER_NAME}
+    container_name: ${CONTAINER_NAME:?CONTAINER_NAME is required — the profile env was not rendered}
     runtime: nvidia
     volumes:
-      - ${HF_CACHE_PATH}:/root/.cache/huggingface
+      - ${HF_CACHE_PATH:?HF_CACHE_PATH is required in .env.common}:/root/.cache/huggingface
       - ./config/vllm:/config/:ro
     ports:
       - "127.0.0.1:${VLLM_PORT:?VLLM_PORT is required — the profile env was not rendered}:8000"
@@ -17,12 +17,8 @@ services:
       - VLLM_DISABLE_COMPILE_CACHE=1
       - VLLM_USE_V2_MODEL_RUNNER=${VLLM_USE_V2_MODEL_RUNNER:-1}
     shm_size: "16g"
-    command: --config /config/${CONFIG_NAME}.yaml --tensor-parallel-size=${TENSOR_PARALLEL_SIZE} ${LORA_OPTIONS:-}
+    command: --config /config/${CONFIG_NAME:?CONFIG_NAME is required — the profile env was not rendered}.yaml --tensor-parallel-size=${TENSOR_PARALLEL_SIZE:?TENSOR_PARALLEL_SIZE is required — the profile env was not rendered} ${LORA_OPTIONS:-}
     restart: unless-stopped
-    # NOTE: GPU 노출은 `runtime: nvidia` + `NVIDIA_VISIBLE_DEVICES` 조합을 쓴다.
-    # `deploy.resources.reservations.devices` 포맷은 comma-separated GPU_ID
-    # (예: `0,1`) 를 list 로 풀 수 없어 multi-GPU 구성이 깨지기 때문. 같은 이유로
-    # llama.cpp compose 도 동일 포맷으로 정렬돼 있다.
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

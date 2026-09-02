@@ -9,13 +9,12 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Select, Static, TextArea
+from textual.widgets import Button, Input, Label, Select, Static, Switch, TextArea
 
 from tui.backends.llamacpp.backend import (
     Profile,
     delete_profile,
     list_config_names,
-    list_profile_names,
     load_profile,
     save_profile,
     validate_name,
@@ -237,6 +236,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
             env_vars = profile_store.parse_env_vars_text(
                 self.query_one("#env-vars-input", TextArea).text,
                 "llamacpp",
+                existing=self._profile.env_vars if self._profile is not None else None,
             )
         except ValueError as exc:
             self.notify(str(exc), severity="error")
@@ -313,35 +313,27 @@ class ProfileFormScreen(ModalScreen[str | None]):
         # doesn't have to repeat the filename.
         effective_model_file = model_file or hf_file
 
-        if renaming and not await self._rename_to(name):
+        if renaming and not await self._rename_allowed():
             return
 
-        if self._edit_mode and self._profile is not None:
-            p = self._profile
-            p.container_name = container or name
-            p.port = port_int
-            p.gpu_id = gpu_id or "0"
-            p.config_name = config_name or name
-            p.image_tag = image_tag
-            p.hf_repo = hf_repo
-            p.hf_file = hf_file
-            p.model_file = effective_model_file
-            p.env_vars = env_vars
-        else:
-            p = Profile(
-                name=name,
-                container_name=container or name,
-                port=port_int,
-                gpu_id=gpu_id or "0",
-                config_name=config_name or name,
-                image_tag=image_tag,
-                hf_repo=hf_repo,
-                hf_file=hf_file,
-                model_file=effective_model_file,
-                env_vars=env_vars,
-            )
+        p = Profile(
+            name=name,
+            container_name=container or name,
+            port=port_int,
+            gpu_id=gpu_id or "0",
+            config_name=config_name or name,
+            image_tag=image_tag,
+            hf_repo=hf_repo,
+            hf_file=hf_file,
+            model_file=effective_model_file,
+            env_vars=env_vars,
+        )
 
         try:
+            if self._profile is not None and hasattr(
+                self._profile, "_stored_snapshot"
+            ):
+                p._stored_snapshot = self._profile._stored_snapshot
             save_profile(p)
         except (OSError, RuntimeError, ValueError) as exc:
             self.notify(str(exc), severity="error", timeout=8)
@@ -364,21 +356,16 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 severity="warning",
             )
         self._saved_name = name
+        self._profile = p
+        self._original_name = name
+        self.query_one("#form-title", Static).update(
+            t(f"[b]Edit Profile: {name}[/b]", f"[b]프로필 편집: {name}[/b]")
+        )
 
         if not self._edit_mode:
             self._edit_mode = True
-            self._profile = p
-            self._original_name = name
-            self.query_one("#form-title", Static).update(
-                t(f"[b]Edit Profile: {name}[/b]", f"[b]프로필 편집: {name}[/b]")
-            )
 
-    async def _rename_to(self, new_name: str) -> bool:
-        """Rename the profile being edited. False = refused, caller must abort.
-
-        The container is named after the profile, so renaming under a running
-        one would orphan it — same rule the dashboard's `R` key enforces.
-        """
+    async def _rename_allowed(self) -> bool:
         from tui.common import docker as common_docker
 
         old_name = self._original_name
@@ -403,17 +390,6 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 severity="error",
             )
             return False
-        try:
-            profile_store.rename_profile(old_name, new_name, "llamacpp")
-        except ValueError as exc:
-            self.notify(str(exc), severity="error")
-            return False
-
-        self._original_name = new_name
-        self._profile.name = new_name
-        self.query_one("#form-title", Static).update(
-            t(f"[b]Edit Profile: {new_name}[/b]", f"[b]프로필 편집: {new_name}[/b]")
-        )
         return True
 
     @on(Button.Pressed, "#cancel-btn")
@@ -469,6 +445,7 @@ class ProfileDeleteScreen(ModalScreen[bool]):
         super().__init__()
         self._profile_name = profile_name
         self._profile = load_profile(profile_name)
+        self._config_name = self._profile.config_name or profile_name
 
     def compose(self) -> ComposeResult:
         cfg = self._profile.config_name
@@ -478,9 +455,9 @@ class ProfileDeleteScreen(ModalScreen[bool]):
                 yield Static(
                     t(
                         f"Delete [b]{self._profile_name}[/b]?\n"
-                        f"[dim](profile only; linked config '{cfg}' is kept)[/dim]",
+                        f"[dim](linked config: '{cfg}')[/dim]",
                         f"[b]{self._profile_name}[/b] 삭제?\n"
-                        f"[dim](프로필만 삭제; 연결된 config '{cfg}' 유지)[/dim]",
+                        f"[dim](연결된 config: '{cfg}')[/dim]",
                     ),
                     id="delete-message",
                 )
@@ -489,6 +466,14 @@ class ProfileDeleteScreen(ModalScreen[bool]):
                     t(f"Delete [b]{self._profile_name}[/b]?", f"[b]{self._profile_name}[/b] 삭제?"),
                     id="delete-message",
                 )
+            with Horizontal(classes="form-row"):
+                yield Label(
+                    t(
+                        f"Also delete linked config if unused: {self._config_name}",
+                        f"사용 중이 아니면 연결 config도 삭제: {self._config_name}",
+                    )
+                )
+                yield Switch(value=False, id="delete-config-switch")
             with Horizontal(classes="form-buttons"):
                 yield Button(t("Delete", "삭제"), id="delete-btn", variant="error")
                 yield Button(t("Cancel", "취소"), id="cancel-btn", variant="default")
@@ -518,9 +503,16 @@ class ProfileDeleteScreen(ModalScreen[bool]):
                 severity="error",
             )
             return
-        cfg = self._profile.config_name
-        delete_profile(self._profile_name, delete_config_too=False)
-        suffix = t(f"; config '{cfg}' kept", f"; config '{cfg}' 유지") if cfg else ""
+        delete_config = self.query_one("#delete-config-switch", Switch).value
+        delete_profile(self._profile_name, delete_config_too=delete_config)
+        suffix = (
+            t(
+                f"; config '{self._config_name}' kept",
+                f"; config '{self._config_name}' 유지",
+            )
+            if not delete_config
+            else ""
+        )
         self.app.notify(
             t(f"Deleted: {self._profile_name}", f"삭제: {self._profile_name}") + suffix
         )

@@ -211,6 +211,7 @@
       <li><strong>vLLM</strong>: <code>CONTAINER_NAME</code>, <code>VLLM_PORT</code>, <code>GPU_ID</code>, <code>TENSOR_PARALLEL_SIZE</code>, <code>CONFIG_NAME</code>, <code>MODEL_ID</code>, <code>ENABLE_LORA</code>, plus optional <code>MAX_LORAS</code>, <code>MAX_LORA_RANK</code>, <code>LORA_MODULES</code>, <code>EXTRA_PIP_PACKAGES</code>, and any <code>env_vars</code>.</li>
       <li><strong>llama.cpp</strong>: <code>CONTAINER_NAME</code>, <code>LLAMA_PORT</code>, <code>GPU_ID</code>, <code>CONFIG_NAME</code>, plus optional <code>MODEL_FILE</code>, <code>HF_REPO</code>, <code>HF_FILE</code>, and <code>LLAMACPP_DEV_TAG</code> (derived from a profile's <code>image_tag</code>).</li>
     </ul>
+    <p><code>profiles.yaml</code>, rendered runtime env files, and llama.cpp's generated override are kept at owner-only mode <code>0600</code>. Profile <code>env_vars</code> reject <code>HF_TOKEN</code>, <code>HF_ENDPOINT</code>, <code>DOCKER_*</code>, and <code>COMPOSE_*</code>; arbitrary container settings outside that control-plane set remain supported.</p>
     <p>Re-render at any time with <a href="cli.html#container-render-env"><code>llmux render-env</code></a>.</p>
 
     <h3 id="step-3-render-the-engine-command">Step 3 — render the engine command</h3>
@@ -251,7 +252,7 @@
     </div>
 
     <h2 id="cross-backend-conflict-detection">Cross-backend conflict detection</h2>
-    <p>Before a profile starts, llmux checks for <strong>port and GPU conflicts across both backends</strong> — including containers it doesn't manage. <code>tui/common/conflicts.py</code> compares the target <code>DashboardRow</code> against all known rows (<code>port_conflicts</code>, <code>gpu_conflicts</code>) and against raw <code>docker ps</code> port mappings (<code>external_port_conflicts</code>). GPU-id parsing in <code>tui/common/docker.py</code> normalizes <code>all</code> / <code>-1</code> to a wildcard so an "all GPUs" profile is treated as overlapping everything. In the TUI this surfaces as a confirmation modal; the CLI's backends run the same checks inline.</p>
+    <p>Before a profile starts, llmux checks for <strong>port and GPU conflicts across both backends</strong> — including containers it doesn't manage. <code>tui/common/conflicts.py</code> compares the target <code>DashboardRow</code> against all known rows (<code>port_conflicts</code>, <code>gpu_conflicts</code>) and against raw <code>docker ps</code> port mappings (<code>external_port_conflicts</code>). GPU-id parsing in <code>tui/common/docker.py</code> normalizes <code>all</code> / <code>-1</code> to a wildcard so an "all GPUs" profile is treated as overlapping everything. Port conflicts and port-probe failures block startup; only a confirmed GPU overlap offers a TUI confirmation to start anyway. The CLI's backends run the same checks inline.</p>
 
     <h2 id="dev-build-pipeline">Dev-build pipeline</h2>
     <p>Building an engine from source is identical in shape for both backends, so the mechanics live once in <code>tui/common/dev_build.py</code>. Each backend supplies a frozen <code>DevBuildSpec</code>:</p>

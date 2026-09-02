@@ -98,10 +98,11 @@
     <ul>
       <li>If the container is <code>restarting</code> / <code>exited</code> / <code>dead</code> or becomes <code>unhealthy</code>, startup is reported as <strong>failed</strong> and the last log lines are printed (this catches e.g. a GPU OOM during engine init).</li>
       <li>Otherwise llmux waits for <code>/v1/models</code> to return a served model id on either backend. A stalled model or an absolute timeout is reported as a startup failure.</li>
+      <li>If a cache-size or Docker-log progress probe itself fails, startup stops with that probe error instead of treating it as a quiet loading interval.</li>
     </ul>
 
     <h2 id="the-lifecycle-commands">The lifecycle commands</h2>
-    <p>All commands auto-detect the backend from the profile name; pass <code>--backend</code> / <code>-b</code> to disambiguate when a name exists in both. These are top-level CLI aliases — <code>llmux up</code> is shorthand for <code>llmux container up</code>.</p>
+    <p>Profile names are globally unique, so all commands auto-detect the backend from the name; pass <code>--backend</code> / <code>-b</code> to require one explicitly. These are top-level CLI aliases — <code>llmux up</code> is shorthand for <code>llmux container up</code>.</p>
 
     <h3 id="up-start-a-profile"><code>up</code> — start a profile</h3>
     <pre data-lang="bash"><code>llmux up qwen3-0-6b
@@ -132,6 +133,7 @@ llmux up gemma-3-4b --tag llamacpp-dev:master</code></pre>
     <pre data-lang="bash"><code>llmux prepare qwen3-0-6b
 llmux prepare gemma-3-4b --backend llamacpp</code></pre>
     <p>The download runs inside a throwaway container: vLLM uses the resolved serving image and <code>huggingface_hub.snapshot_download</code>; llama.cpp uses <code>PREPARE_DOWNLOADER_IMAGE</code> because its server image has no Python/Hugging Face client. There is no host-side <code>hf</code> CLI involved. In the TUI the same action is <strong>⬇ Prepare (download only)</strong> in a stopped profile's action menu, or the <code>p</code> key on the dashboard.</p>
+    <p>Before starting and again on cancellation, llmux removes any stale downloader container. Cleanup failure is reported immediately with a non-zero exit instead of leaving a hidden name collision for the next run.</p>
 
     <div class="admonition warning">
       <p class="admonition-title">vLLM rejects <code>:latest</code></p>
@@ -140,7 +142,7 @@ llmux prepare gemma-3-4b --backend llamacpp</code></pre>
 
     <h3 id="down-stop-a-profile"><code>down</code> — stop a profile</h3>
     <pre data-lang="bash"><code>llmux down qwen3-0-6b</code></pre>
-    <p>llmux prefers <code>docker compose down</code> for a clean network teardown. If the container is orphaned (no override file, or compose down fails), it falls back to <code>docker stop</code> + <code>docker rm</code> (<code>docker rm -f</code> for llama.cpp). Stopping an already-stopped profile is a no-op that exits 0.</p>
+    <p>llmux prefers <code>docker compose down</code> for a clean network teardown. If the runtime env/override cannot be prepared, the container is orphaned, or compose down fails, it still attempts <code>docker stop</code> + <code>docker rm</code> (<code>docker rm -f</code> for llama.cpp). A failed fallback exits non-zero and reports both the original and cleanup causes. Stopping an already-stopped profile is a no-op that exits 0.</p>
 
     <h3 id="logs-stream-container-logs"><code>logs</code> — stream container logs</h3>
     <pre data-lang="bash"><code>llmux logs qwen3-0-6b              # follow (default), last 200 lines first
@@ -163,7 +165,7 @@ llmux logs qwen3-0-6b --tail 500   # change the initial backlog</code></pre>
 llmux ps --backend vllm     # one backend only
 llmux ps --running          # only running containers
 llmux ps --json             # machine-readable output</code></pre>
-    <p>Output columns: <code>backend</code>, <code>profile</code>, <code>status</code>, <code>port</code>, <code>gpu</code>, <code>container</code>, <code>model</code>. Status is derived from <code>docker ps</code> health state — <code>healthy</code>, <code>unhealthy</code>, <code>starting</code>, <code>running</code>, <code>exited</code>, or <code>stopped</code>.</p>
+    <p>Output columns: <code>backend</code>, <code>profile</code>, <code>status</code>, <code>port</code>, <code>gpu</code>, <code>container</code>, <code>model</code>. Status preserves Docker lifecycle and health rather than collapsing them: <code>healthy</code>, <code>unhealthy</code>, <code>starting</code>, <code>running</code>, <code>paused</code>, <code>restarting</code>, <code>removing</code>, <code>created</code>, <code>exited</code>, <code>dead</code>, <code>unknown</code>, or <code>stopped</code>. The model column resolves the vLLM config's <code>model</code> (then profile <code>model_id</code>) or the llama.cpp config's <code>alias</code> (then <code>hf_repo</code>, then <code>model_file</code>).</p>
 
     <div class="admonition note">
       <p class="admonition-title">Local API binding</p>

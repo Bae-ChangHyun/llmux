@@ -17,7 +17,6 @@ from tui.backends.vllm.backend import (
     save_profile,
     delete_profile,
     list_config_names,
-    list_profile_names,
     validate_name as _validate_name,
 )
 from tui.common import profile_store
@@ -115,6 +114,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
         self._profile = profile
         self._edit_mode = profile is not None
         self._saved_name: str | None = None
+        self._tp_edited = False
         # In edit mode the name field stays editable: a changed name means a
         # rename, and the original is what tells the two apart at save time.
         self._original_name = profile.name if profile is not None else ""
@@ -213,6 +213,30 @@ class ProfileFormScreen(ModalScreen[str | None]):
                     )
 
                 with Horizontal(classes="form-row"):
+                    yield Label("Max LoRAs")
+                    yield Input(
+                        value=p.max_loras if p else "",
+                        placeholder=t("optional positive integer", "선택 양의 정수"),
+                        id="max-loras-input",
+                    )
+
+                with Horizontal(classes="form-row"):
+                    yield Label("Max LoRA Rank")
+                    yield Input(
+                        value=p.max_lora_rank if p else "",
+                        placeholder=t("optional positive integer", "선택 양의 정수"),
+                        id="max-lora-rank-input",
+                    )
+
+                with Horizontal(classes="form-row"):
+                    yield Label("LoRA Modules")
+                    yield Input(
+                        value=p.lora_modules if p else "",
+                        placeholder="adapter=/app/lora/adapter",
+                        id="lora-modules-input",
+                    )
+
+                with Horizontal(classes="form-row"):
                     yield Label(t("Extra Pip Packages", "추가 Pip 패키지"))
                     yield Input(
                         value=(p.extra_pip_packages if p else ""),
@@ -244,6 +268,12 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 yield Button(t("Save", "저장"), id="save-btn", variant="primary")
                 yield Button(t("Close", "닫기"), id="cancel-btn", variant="default")
 
+    def on_mount(self) -> None:
+        self.call_after_refresh(self._reset_tp_edit)
+
+    def _reset_tp_edit(self) -> None:
+        self._tp_edited = False
+
     @on(Button.Pressed, "#save-btn")
     async def _on_save(self, event: Button.Pressed) -> None:
         name = self.query_one("#name-input", Input).value.strip()
@@ -255,7 +285,11 @@ class ProfileFormScreen(ModalScreen[str | None]):
 
         original_gpu = self._profile.gpu_id if self._profile is not None else "0"
         original_tp = self._profile.tensor_parallel if self._profile is not None else "1"
-        if (gpu_id or "0") != original_gpu and (tp or "1") == original_tp:
+        if (
+            (gpu_id or "0") != original_gpu
+            and not self._tp_edited
+            and (tp or "1") == original_tp
+        ):
             tp = str(len((gpu_id or "0").split(",")))
 
         config_select = self.query_one("#config-select", Select)
@@ -338,12 +372,34 @@ class ProfileFormScreen(ModalScreen[str | None]):
                             severity="error")
                 return
 
+        max_loras = self.query_one("#max-loras-input", Input).value.strip()
+        max_lora_rank = self.query_one("#max-lora-rank-input", Input).value.strip()
+        lora_modules = self.query_one("#lora-modules-input", Input).value.strip()
+        for label, raw in (
+            ("Max LoRAs", max_loras),
+            ("Max LoRA Rank", max_lora_rank),
+        ):
+            if raw:
+                try:
+                    if int(raw) < 1:
+                        raise ValueError
+                except ValueError:
+                    self.notify(
+                        t(
+                            f"{label} must be a positive integer.",
+                            f"{label} 값은 양의 정수여야 합니다.",
+                        ),
+                        severity="error",
+                    )
+                    return
+
         extra_pip = self.query_one("#extra-pip-input", Input).value.strip()
         image_tag = self.query_one("#image-tag-input", Input).value.strip()
         try:
             env_vars = profile_store.parse_env_vars_text(
                 self.query_one("#env-vars-input", TextArea).text,
                 "vllm",
+                existing=self._profile.env_vars if self._profile is not None else None,
             )
         except ValueError as exc:
             self.notify(str(exc), severity="error")
@@ -355,58 +411,53 @@ class ProfileFormScreen(ModalScreen[str | None]):
             self.notify(tag_err, severity="error")
             return
 
-        if renaming and not await self._rename_to(name):
+        if renaming and not await self._rename_allowed():
             return
 
-        if self._edit_mode and self._profile is not None:
-            profile = self._profile
-            profile.container_name = container or name
-            profile.port = port or _default_port()
-            profile.gpu_id = gpu_id or "0"
-            profile.tensor_parallel = tp or "1"
-            profile.config_name = config_name
-            profile.model_id = model_id
-            profile.enable_lora = "true" if lora else "false"
-            profile.extra_pip_packages = extra_pip
-            profile.image_tag = image_tag
-            profile.env_vars = env_vars
-        else:
-            profile = Profile(
-                name=name,
-                container_name=container or name,
-                port=port or _default_port(),
-                gpu_id=gpu_id or "0",
-                tensor_parallel=tp or "1",
-                config_name=config_name,
-                model_id=model_id,
-                enable_lora="true" if lora else "false",
-                extra_pip_packages=extra_pip,
-                image_tag=image_tag,
-                env_vars=env_vars,
-            )
+        profile = Profile(
+            name=name,
+            container_name=container or name,
+            port=port or _default_port(),
+            gpu_id=gpu_id or "0",
+            tensor_parallel=tp or "1",
+            config_name=config_name,
+            model_id=model_id,
+            enable_lora="true" if lora else "false",
+            max_loras=max_loras,
+            max_lora_rank=max_lora_rank,
+            lora_modules=lora_modules,
+            extra_pip_packages=extra_pip,
+            image_tag=image_tag,
+            env_vars=env_vars,
+        )
 
         try:
+            if self._profile is not None and hasattr(
+                self._profile, "_stored_snapshot"
+            ):
+                profile._stored_snapshot = self._profile._stored_snapshot
             save_profile(profile)
         except (OSError, RuntimeError, ValueError) as exc:
             self.notify(str(exc), severity="error", timeout=8)
             return
         self.notify(t(f"Saved: {name}", f"저장됨: {name}"), severity="information")
         self._saved_name = name
+        self._profile = profile
+        self._original_name = name
+        self._tp_edited = False
+        self.query_one("#form-title", Static).update(
+            t(f"[b]Edit Profile: {name}[/b]", f"[b]프로필 편집: {name}[/b]")
+        )
 
         if not self._edit_mode:
             self._edit_mode = True
-            self._profile = profile
-            self._original_name = name
-            self.query_one("#form-title", Static).update(
-                t(f"[b]Edit Profile: {name}[/b]", f"[b]프로필 편집: {name}[/b]")
-            )
 
-    async def _rename_to(self, new_name: str) -> bool:
-        """Rename the profile being edited. False = refused, caller must abort.
+    @on(Input.Changed, "#tp-input")
+    def _on_tp_changed(self, event: Input.Changed) -> None:
+        if self.is_mounted:
+            self._tp_edited = True
 
-        The container is named after the profile, so renaming under a running
-        one would orphan it — same rule the dashboard's `R` key enforces.
-        """
+    async def _rename_allowed(self) -> bool:
         from tui.common import docker as common_docker
 
         old_name = self._original_name
@@ -431,17 +482,6 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 severity="error",
             )
             return False
-        try:
-            profile_store.rename_profile(old_name, new_name, "vllm")
-        except ValueError as exc:
-            self.notify(str(exc), severity="error")
-            return False
-
-        self._original_name = new_name
-        self._profile.name = new_name
-        self.query_one("#form-title", Static).update(
-            t(f"[b]Edit Profile: {new_name}[/b]", f"[b]프로필 편집: {new_name}[/b]")
-        )
         return True
 
     @on(Button.Pressed, "#cancel-btn")
@@ -498,13 +538,14 @@ class ProfileDeleteScreen(ModalScreen[bool]):
         super().__init__()
         self._profile_name = profile_name
         self._profile = load_profile(profile_name)
+        self._config_name = self._profile.config_name or profile_name
 
     def compose(self) -> ComposeResult:
         with Vertical():
             if self._profile.config_name:
                 detail = t(
-                    f"(profile only; linked config kept: {self._profile.config_name})",
-                    f"(프로필만 삭제; 연결된 config 유지: {self._profile.config_name})",
+                    f"(linked config: {self._profile.config_name})",
+                    f"(연결된 config: {self._profile.config_name})",
                 )
                 yield Static(
                     t(
@@ -521,6 +562,14 @@ class ProfileDeleteScreen(ModalScreen[bool]):
                     ),
                     id="delete-message",
                 )
+            with Horizontal(classes="form-row"):
+                yield Label(
+                    t(
+                        f"Also delete linked config if unused: {self._config_name}",
+                        f"사용 중이 아니면 연결 config도 삭제: {self._config_name}",
+                    )
+                )
+                yield Switch(value=False, id="delete-config-switch")
             with Horizontal(classes="form-buttons"):
                 yield Button(t("Delete", "삭제"), id="delete-btn", variant="error")
                 yield Button(t("Cancel", "취소"), id="cancel-btn", variant="default")
@@ -550,13 +599,14 @@ class ProfileDeleteScreen(ModalScreen[bool]):
                 severity="error",
             )
             return
-        delete_profile(self._profile_name, delete_config=False)
+        delete_config = self.query_one("#delete-config-switch", Switch).value
+        delete_profile(self._profile_name, delete_config=delete_config)
         suffix = (
             t(
-                f"; linked config kept: {self._profile.config_name}",
-                f"; 연결된 config 유지: {self._profile.config_name}",
+                f"; linked config kept: {self._config_name}",
+                f"; 연결된 config 유지: {self._config_name}",
             )
-            if self._profile.config_name
+            if not delete_config
             else ""
         )
         self.app.notify(

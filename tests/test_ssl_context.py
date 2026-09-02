@@ -11,7 +11,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from tui.common import recipes

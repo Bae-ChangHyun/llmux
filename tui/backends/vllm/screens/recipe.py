@@ -1,12 +1,3 @@
-"""Recipe review modal — shown after a vLLM recipe is fetched, before it's applied.
-
-The recipe carries several precision variants (bf16 / fp8 / awq …) with different
-VRAM floors, and the user's GPU may not match the one the recipe was verified on
-— so we don't silently pick one. This screen lays out every variant against the
-detected GPU, lets the user toggle opt-in features, previews the exact flags that
-will be written, and only then creates the profile + config.
-"""
-
 from __future__ import annotations
 
 from textual import on
@@ -21,12 +12,6 @@ from tui.common.recipes import Recipe, RecipeVariant, build_config
 
 
 class RecipeReviewScreen(ModalScreen[dict | None]):
-    """Review a fetched recipe and pick a GPU-appropriate variant.
-
-    Dismisses with ``{"model_id", "params", "variant", "features"}`` on Create,
-    or ``None`` on cancel.
-    """
-
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=False),
         Binding("pageup", "scroll_form('up')", "Scroll up", show=False),
@@ -78,8 +63,6 @@ class RecipeReviewScreen(ModalScreen[dict | None]):
         self._recipe = recipe
         self._gpu_total_gb = gpu_total_gb
         self._local_vllm_version = local_vllm_version
-        # Set when the recipe was fetched for a different model than the one
-        # being configured: the recipe's flags are borrowed, its model id is not.
         self._target_model = target_model.strip()
 
 
@@ -89,9 +72,6 @@ class RecipeReviewScreen(ModalScreen[dict | None]):
         return v.vram_minimum_gb <= self._gpu_total_gb
 
     def _default_variant_index(self) -> int:
-        """First variant (recipe order = quality-descending) that fits the GPU;
-        if none fit, the smallest-VRAM one so the user at least sees a runnable
-        option."""
         variants = self._recipe.variants
         for i, v in enumerate(variants):
             if self._fits(v):
@@ -181,7 +161,6 @@ class RecipeReviewScreen(ModalScreen[dict | None]):
         self._refresh_preview()
 
     def _version_warning(self) -> str:
-        # Purely informational — recipe min-version vs the newest local image.
         rv, lv = self._recipe.min_vllm_version, self._local_vllm_version
         if not rv or not lv:
             return t(f"[dim]Recipe needs vLLM ≥ {rv}[/dim]",

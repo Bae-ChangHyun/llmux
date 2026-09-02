@@ -162,6 +162,16 @@ class QuickSetupScreen(ModalScreen[str]):
     @on(Button.Pressed, "#fetch-recipe-btn")
     def _on_fetch_recipe(self, event: Button.Pressed) -> None:
         event.stop()
+        copy_from = self.query_one("#copy-config-select", Select).value
+        if copy_from not in (None, Select.NULL, Select.BLANK):
+            self.notify(
+                t(
+                    "A recipe cannot be combined with Copy config",
+                    "레시피와 설정 복사를 함께 사용할 수 없습니다",
+                ),
+                severity="error",
+            )
+            return
         model = self.query_one("#model-input", Input).value.strip()
         source = self.query_one("#recipe-model-input", Input).value.strip() or model
         if not model or "/" not in model:
@@ -204,13 +214,28 @@ class QuickSetupScreen(ModalScreen[str]):
             return
         status.update("")
 
-        gpus = await get_gpu_info()
+        try:
+            gpus = await get_gpu_info()
+        except Exception as exc:
+            status.update(
+                t(
+                    f"[red]Could not query GPUs: {exc}[/red]",
+                    f"[red]GPU 조회 실패: {exc}[/red]",
+                )
+            )
+            return
         gpu_total_gb = None
         if gpus:
             try:
                 gpu_total_gb = max(int(g.memory_total) / 1024 for g in gpus)
-            except (TypeError, ValueError):
-                gpu_total_gb = None
+            except (AttributeError, TypeError, ValueError) as exc:
+                status.update(
+                    t(
+                        f"[red]Invalid GPU query result: {exc}[/red]",
+                        f"[red]잘못된 GPU 조회 결과: {exc}[/red]",
+                    )
+                )
+                return
 
         from tui.backends.vllm.backend import get_local_latest_tag
         local_tag = await get_local_latest_tag()
@@ -259,23 +284,20 @@ class QuickSetupScreen(ModalScreen[str]):
         if not model:
             self.notify(t("Model name is required", "모델 이름은 필수입니다"), severity="error")
             return
-        # Manual path: extra params come from the "Copy params from" select.
-        from tui.backends.vllm.backend import load_config
-
-        extra_params: dict[str, Any] = {}
-        disabled_params: dict[str, Any] = {}
         copy_select = self.query_one("#copy-config-select", Select)
-        if copy_select.value and copy_select.value != Select.BLANK:
-            src = load_config(str(copy_select.value))
-            extra_params = dict(src.extra_params)
-            disabled_params = dict(src.disabled_params)
-        self._persist(model, extra_params, disabled_params)
+        copy_from = (
+            str(copy_select.value)
+            if copy_select.value not in (Select.NULL, Select.BLANK, None)
+            else ""
+        )
+        self._persist(model, {}, copy_from=copy_from)
 
     def _persist(
         self,
         model: str,
         extra_params: dict[str, Any],
         disabled_params: dict[str, Any] | None = None,
+        copy_from: str = "",
     ) -> None:
         """Validate the form fields and create profile + config for `model`,
         seeding the config with `extra_params` (copy-from config, or a fetched
@@ -336,63 +358,49 @@ class QuickSetupScreen(ModalScreen[str]):
         gpu_count = len(gpu.split(","))
 
         from tui.backends.vllm.backend import (
-            Profile, Config, save_profile, save_config,
-            list_profile_names, list_config_names,
-        )
-
-        # Auto-resolve name collision by appending suffix. Profile names must be
-        # globally unique across both backends, so include llama.cpp names too.
-        # `example` is added explicitly because list_config_names() filters it
-        # out — without it a model named "example" would overwrite the tracked
-        # example.yaml.
-        existing_profiles = set(list_profile_names()) | set(
-            profile_store.list_profile_names("llamacpp")
-        )
-        existing_configs = set(list_config_names()) | {"example"}
-        original_name = safe_name
-        suffix = 0
-        while safe_name in existing_profiles or safe_name in existing_configs:
-            suffix += 1
-            safe_name = f"{original_name}-{suffix}"
-
-        config = Config(
-            name=safe_name,
-            model=model,
-            gpu_memory_utilization=gpu_mem or "0.9",
-            extra_params=extra_params,
-            disabled_params=dict(disabled_params or {}),
-        )
-        profile = Profile(
-            name=safe_name,
-            container_name=safe_name,
-            port=port,
-            gpu_id=gpu,
-            tensor_parallel=str(gpu_count),
-            config_name=safe_name,
-            model_id=model,
-            enable_lora="true" if lora else "false",
+            CONFIG_DIR, Profile, Config, load_config, save_profile, save_config,
         )
         try:
-            save_config(config)
-            save_profile(profile)
-        except (OSError, RuntimeError, ValueError) as exc:
-            try:
-                config.path.unlink(missing_ok=True)
-            except OSError as rollback_exc:
-                self.notify(
-                    f"{exc}; config rollback failed: {rollback_exc}",
-                    severity="error",
-                    timeout=10,
+            with profile_store.quick_setup_transaction(
+                safe_name,
+                "vllm",
+                CONFIG_DIR,
+            ) as final_name:
+                if copy_from:
+                    source = CONFIG_DIR / f"{copy_from}.yaml"
+                    if not source.exists():
+                        raise ValueError(f"config not found: {source}")
+                    copied = load_config(copy_from)
+                    extra_params = dict(copied.extra_params)
+                    disabled_params = dict(copied.disabled_params)
+                config = Config(
+                    name=final_name,
+                    model=model,
+                    gpu_memory_utilization=gpu_mem or "0.9",
+                    extra_params=extra_params,
+                    disabled_params=dict(disabled_params or {}),
                 )
-                return
+                profile = Profile(
+                    name=final_name,
+                    container_name=final_name,
+                    port=port,
+                    gpu_id=gpu,
+                    tensor_parallel=str(gpu_count),
+                    config_name=final_name,
+                    model_id=model,
+                    enable_lora="true" if lora else "false",
+                )
+                save_config(config)
+                save_profile(profile)
+        except (OSError, RuntimeError, ValueError) as exc:
             self.notify(str(exc), severity="error", timeout=8)
             return
 
         self.notify(
             t(
-                f"✓ Created: {safe_name}  (next: press 'u' to start)",
-                f"✓ 생성: {safe_name}  (다음: 'u' 로 시작)",
+                f"✓ Created: {final_name}  (next: press 'u' to start)",
+                f"✓ 생성: {final_name}  (다음: 'u' 로 시작)",
             ),
             severity="information",
         )
-        self.dismiss(safe_name)
+        self.dismiss(final_name)

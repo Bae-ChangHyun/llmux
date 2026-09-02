@@ -9,6 +9,7 @@ import yaml
 from tui.common import profile_store
 from tui.common.config_markers import (
     dump_active_config,
+    load_yaml_mapping,
     parse_disabled_markers,
     render_disabled_markers,
 )
@@ -37,8 +38,6 @@ def _to_profile(stored: profile_store.StoredProfile) -> Profile:
 
 
 def _to_stored(profile: Profile) -> profile_store.StoredProfile:
-    # profile_store's reserved-key denylist rejects an env_vars entry named
-    # EXTRA_PIP_PACKAGES, so this stays a straight 1:1 mapping.
     return profile_store.StoredProfile(
         name=profile.name,
         backend="vllm",
@@ -62,31 +61,30 @@ def load_profile(name: str) -> Profile:
     stored = profile_store.load_profile(name, "vllm")
     if stored is None:
         return Profile(name=name)
-    return _to_profile(stored)
+    profile = _to_profile(stored)
+    profile._stored_snapshot = stored
+    return profile
 
 
 def save_profile(profile: Profile) -> None:
-    profile_store.save_profile(_to_stored(profile))
+    stored = _to_stored(profile)
+    expected = getattr(profile, "_stored_snapshot", None)
+    if expected is None:
+        profile_store.create_profile(stored)
+    else:
+        stored = profile_store.replace_profile(
+            expected.name,
+            stored,
+            expected=expected,
+        )
+    profile.container_name = stored.container_name or stored.name
+    profile._stored_snapshot = stored
 
 
 def delete_profile(name: str, delete_config: bool = False) -> None:
     if delete_config:
-        stored = profile_store.load_profile(name, "vllm")
-        config_name = stored.config_name if stored else ""
-        # example.yaml is the tracked template — a cascade delete would remove
-        # it from the working tree. The profile itself still goes.
-        if config_name == "example":
-            config_name = ""
-        if config_name:
-            other_refs = [
-                n for n in profile_store.list_profile_names("vllm")
-                if n != name and (profile_store.load_profile(n, "vllm") or None)
-                and profile_store.load_profile(n, "vllm").config_name == config_name  # type: ignore[union-attr]
-            ]
-            if not other_refs:
-                config_path = CONFIG_DIR / f"{config_name}.yaml"
-                if config_path.exists():
-                    config_path.unlink()
+        profile_store.delete_profile_with_config(name, "vllm", CONFIG_DIR)
+        return
     profile_store.delete_profile(name, "vllm")
 
 
@@ -100,57 +98,93 @@ def load_config(name: str) -> Config:
         return Config(name=name)
 
     text = path.read_text()
-    raw_data = yaml.safe_load(text)
-    if raw_data is None:
-        data: dict[str, Any] = {}
-    elif isinstance(raw_data, dict):
-        data = dict(raw_data)
+    data = load_yaml_mapping(text, path)
+    model = data.pop("model", "")
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError(f"{path}: model must be a non-empty string")
+    gpu_mem = data.pop("gpu-memory-utilization", 0.9)
+    if isinstance(gpu_mem, str):
+        try:
+            parsed_gpu_mem = float(gpu_mem)
+        except ValueError as exc:
+            raise ValueError(
+                f"{path}: gpu-memory-utilization must be a number"
+            ) from exc
+    elif isinstance(gpu_mem, bool) or not isinstance(gpu_mem, (int, float)):
+        raise ValueError(f"{path}: gpu-memory-utilization must be a number")
     else:
+        parsed_gpu_mem = float(gpu_mem)
+    if not 0 < parsed_gpu_mem <= 1:
         raise ValueError(
-            f"{path} must contain a YAML mapping, got {type(raw_data).__name__}"
+            f"{path}: gpu-memory-utilization must be greater than 0 and at most 1"
         )
-
-    model = str(data.pop("model", ""))
-    gpu_mem = str(data.pop("gpu-memory-utilization", "0.9"))
     extra = {str(key): value for key, value in data.items()}
     # A disabled marker whose key is also an active key is ignored — active wins.
     disabled = {
         k: v for k, v in parse_disabled_markers(text).items() if k not in extra
     }
-    return Config(
+    config = Config(
         name=name,
         model=model,
-        gpu_memory_utilization=gpu_mem,
+        gpu_memory_utilization=str(gpu_mem),
         extra_params=extra,
         disabled_params=disabled,
     )
+    config._source_text = text
+    return config
 
 
-def save_config(config: Config) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+def serialize_config(config: Config, existing: str | None = None) -> str:
+    gpu_mem: Any = config.gpu_memory_utilization
+    if existing:
+        existing_data = load_yaml_mapping(existing, config.path)
+        existing_gpu_mem = existing_data.get("gpu-memory-utilization")
+        if str(existing_gpu_mem) == str(gpu_mem):
+            gpu_mem = existing_gpu_mem
     data: dict[str, Any] = {
         "model": config.model,
-        "gpu-memory-utilization": config.gpu_memory_utilization,
+        "gpu-memory-utilization": gpu_mem,
     }
     for key, value in config.extra_params.items():
         data[key] = True if value == "" else value
-    existing = config.path.read_text() if config.path.exists() else None
     text = dump_active_config(existing, data)
-    profile_store._atomic_write(
-        config.path,
-        text + render_disabled_markers(config.disabled_params),
-    )
+    return text + render_disabled_markers(config.disabled_params)
+
+
+def save_config(config: Config) -> None:
+    if not isinstance(config.model, str) or not config.model.strip():
+        raise ValueError("model must be a non-empty string")
+    gpu_mem = config.gpu_memory_utilization
+    try:
+        parsed_gpu_mem = float(gpu_mem)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("gpu-memory-utilization must be a number") from exc
+    if isinstance(gpu_mem, bool) or not 0 < parsed_gpu_mem <= 1:
+        raise ValueError(
+            "gpu-memory-utilization must be greater than 0 and at most 1"
+        )
+    with profile_store.storage_transaction():
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        existing = config.path.read_text() if config.path.exists() else None
+        source_text = getattr(config, "_source_text", None)
+        if source_text is not None and existing != source_text:
+            raise ValueError(
+                f"config {config.name!r} changed since it was loaded; reopen it and retry"
+            )
+        profile_store._atomic_write(
+            config.path,
+            serialize_config(config, existing),
+        )
+        config._source_text = config.path.read_text()
 
 
 def parse_config_param_value(raw_value: str) -> Any:
     if raw_value == "":
         return True
-    # A value that isn't valid YAML (e.g. an unbalanced `{`) is kept as the raw
-    # string rather than raising — parity with the llama.cpp parser.
     try:
         return yaml.safe_load(raw_value)
-    except yaml.YAMLError:
-        return raw_value
+    except yaml.YAMLError as exc:
+        raise ValueError(f"invalid YAML value: {exc}") from exc
 
 
 def format_config_param_value(value: Any) -> str:
@@ -171,9 +205,10 @@ def format_config_param_value(value: Any) -> str:
 
 
 def delete_config(name: str) -> None:
-    path = CONFIG_DIR / f"{name}.yaml"
-    if path.exists():
-        path.unlink()
+    with profile_store.storage_transaction():
+        path = CONFIG_DIR / f"{name}.yaml"
+        if path.exists():
+            path.unlink()
 
 
 def list_config_names() -> list[str]:

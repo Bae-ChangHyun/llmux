@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -166,7 +165,11 @@ class LlamacppDownloadTests(unittest.IsolatedAsyncioTestCase):
             async def fail(*args, **kwargs):
                 raise AssertionError("docker must not run for a cached model")
 
-            with patch.object(prepare, "_run", fail):
+            with patch.object(prepare, "_run", fail), patch.object(
+                prepare,
+                "downloader_image",
+                return_value="vllm/vllm-openai:v0.27.1",
+            ):
                 logs, rc = await _drain(
                     prepare.stream_llamacpp_download(
                         hf_repo="o/r", hf_file="m.gguf",
@@ -291,7 +294,13 @@ class PrepareRuntimeGuardTests(unittest.IsolatedAsyncioTestCase):
         profile = lrt.Profile(
             name="p", container_name="p", port=8080, config_name="p"
         )
-        with patch.object(lrt, "validate_common_env", lambda _p: (True, [])), \
+
+        def validate_common_env(path, *, require_downloader_image=False):
+            self.assertEqual(path, lrt.COMMON_ENV)
+            self.assertTrue(require_downloader_image)
+            return True, []
+
+        with patch.object(lrt, "validate_common_env", validate_common_env), \
              patch.object(lrt.profile_store, "load_profile", lambda *a, **k: stored), \
              patch.object(lrt, "load_profile", lambda _n: profile), \
              patch.object(lrt, "_ensure_profile_config", lambda *_a: (True, [])):
@@ -332,15 +341,25 @@ class LlamacppPrepareHappyPathTests(unittest.IsolatedAsyncioTestCase):
             async def no_docker(*args, **kwargs):
                 raise AssertionError("no container may run for a cached model")
 
-            with patch.object(lrt, "validate_common_env", lambda _p: (True, [])), \
+            def validate_common_env(path, *, require_downloader_image=False):
+                self.assertEqual(path, lrt.COMMON_ENV)
+                self.assertTrue(require_downloader_image)
+                return True, []
+
+            def render_env_for_profile(name, backend):
+                self.assertEqual((name, backend), ("p", "llamacpp"))
+                return Path("p.env")
+
+            with patch.object(lrt, "validate_common_env", validate_common_env), \
                  patch.object(lrt.profile_store, "load_profile", lambda *a, **k: stored), \
-                 patch.object(lrt.profile_store, "render_env", lambda _s: Path("p.env")), \
+                 patch.object(lrt.profile_store, "render_env_for_profile", render_env_for_profile), \
                  patch.object(lrt, "load_profile", lambda _n: profile), \
                  patch.object(lrt, "_ensure_profile_config", lambda *_a: (True, [])), \
                  patch.object(lrt, "_render_override", render_ok), \
                  patch.object(lrt.prepare, "image_present", image_present), \
                  patch.object(lrt.prepare, "hf_cache_path", lambda: str(tmp)), \
                  patch.object(lrt.prepare, "hf_token", lambda: ""), \
+                 patch.object(lrt.prepare, "downloader_image", lambda: "vllm/vllm-openai:v0.27.1"), \
                  patch.object(prepare, "_run", no_docker):
                 logs, rc = await _drain(lrt.stream_container_prepare("p"))
 

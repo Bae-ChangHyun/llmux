@@ -1,15 +1,8 @@
-"""Cross-backend config-file operations shared by the CLI and the TUI.
-
-Per-backend config YAML lives in `config/<backend>/<name>.yaml`. Reading and
-writing a config's *contents* stays with each backend (they serialize different
-shapes); only whole-file operations that must also repair `profiles.yaml`
-references live here, so CLI and TUI can't drift apart on them.
-"""
-
 from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Callable
 
 from tui.common import profile_store
 
@@ -33,24 +26,22 @@ def config_path(backend: str, name: str) -> Path:
 
 
 def referencing_profiles(backend: str, config_name: str) -> list[profile_store.StoredProfile]:
-    """Profiles whose config resolves to `config_name`.
-
-    An unset `config_name` resolves to the profile's own name, and
-    `profile_store` fills that fallback in on load — so comparing the loaded
-    field alone already covers both the explicit and the implicit case.
-    """
-    return [
-        p for p in profile_store.list_profiles(backend)
-        if (p.config_name or p.name) == config_name
-    ]
+    with profile_store.storage_transaction():
+        return [
+            p for p in profile_store.list_profiles(backend)
+            if profile_store.effective_config_name(p) == config_name
+        ]
 
 
-def rename_config(backend: str, old: str, new: str) -> list[str]:
-    """Rename a config file and repoint every profile that referenced it.
-
-    Returns the names of the profiles whose `config_name` was updated. Raises
-    ValueError on any condition that would leave a dangling reference.
-    """
+def rename_config(
+    backend: str,
+    old: str,
+    new: str,
+    *,
+    replacement_text: str | None = None,
+    replacement: Callable[[str], str] | None = None,
+    expected_text: str | None = None,
+) -> list[str]:
     if old == new:
         raise ValueError(f"config is already named {new!r}")
     if not NAME_RE.match(new):
@@ -60,40 +51,40 @@ def rename_config(backend: str, old: str, new: str) -> list[str]:
         )
     if "example" in (old, new):
         raise ValueError("'example' is the tracked template config and may not be renamed")
+    if replacement_text is not None and replacement is not None:
+        raise ValueError("config rename accepts only one replacement source")
 
-    src = config_path(backend, old)
-    dst = config_path(backend, new)
-    if not src.exists():
-        raise ValueError(f"config not found: {src}")
-    if dst.exists():
-        raise ValueError(f"config already exists: {dst}")
+    with profile_store.storage_transaction():
+        src = config_path(backend, old)
+        dst = config_path(backend, new)
+        if not src.exists():
+            raise ValueError(f"config not found: {src}")
+        if dst.exists():
+            raise ValueError(f"config already exists: {dst}")
+        source_text = src.read_text()
+        if expected_text is not None and source_text != expected_text:
+            raise ValueError(
+                f"config changed since it was opened: {src}; reload before saving"
+            )
+        if replacement is not None:
+            replacement_text = replacement(source_text)
+        move = (src, dst) if replacement_text is None else (src, dst, replacement_text)
+        return profile_store.repoint_config_references(
+            backend,
+            old,
+            new,
+            moves=(move,),
+        )
 
-    referencing = referencing_profiles(backend, old)
-    src.rename(dst)
-    updated: list[str] = []
-    changed: list[profile_store.StoredProfile] = []
-    try:
-        for p in referencing:
-            p.config_name = new
-            profile_store.save_profile(p)
-            changed.append(p)
-            updated.append(p.name)
-    except (OSError, RuntimeError) as exc:
-        rollback_errors: list[str] = []
-        for p in reversed(changed):
-            p.config_name = old
-            try:
-                profile_store.save_profile(p)
-            except (OSError, RuntimeError) as rollback_exc:
-                rollback_errors.append(f"profile {p.name}: {rollback_exc}")
-        try:
-            dst.rename(src)
-        except OSError as rollback_exc:
-            rollback_errors.append(f"config file: {rollback_exc}")
-        if rollback_errors:
-            raise RuntimeError(
-                f"config rename failed ({exc}); rollback failed: "
-                + "; ".join(rollback_errors)
-            ) from exc
-        raise
-    return updated
+
+def delete_config(backend: str, name: str) -> list[str]:
+    with profile_store.storage_transaction():
+        path = config_path(backend, name)
+        if not path.exists():
+            raise ValueError(f"config not found: {path}")
+        return profile_store.repoint_config_references(
+            backend,
+            name,
+            "",
+            deletes=(path,),
+        )

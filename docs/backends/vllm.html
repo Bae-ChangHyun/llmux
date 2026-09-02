@@ -76,7 +76,7 @@
     runtime: nvidia
     volumes:
       - ${HF_CACHE_PATH}:/root/.cache/huggingface
-      - ./config/vllm:/config/
+      - ./config/vllm:/config/:ro
     ports:
       - "127.0.0.1:${VLLM_PORT}:8000"
     environment:

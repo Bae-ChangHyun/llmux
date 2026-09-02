@@ -572,8 +572,10 @@ class CliSmokeTests(unittest.TestCase):
         env_common.write_text(
             "HF_TOKEN=\n"
             f"HF_CACHE_PATH={self.tmp}/hfcache\n"
+            "PREPARE_DOWNLOADER_IMAGE=vllm/vllm-openai:v0.27.1\n"
             "TZ=Asia/Seoul\n"
         )
+        env_common.chmod(0o600)
         try:
             r = _run_cli(self.tmp, "env-check")
             self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
@@ -591,6 +593,7 @@ class CliSmokeTests(unittest.TestCase):
     def test_env_check_still_fails_on_relative_hf_cache_path(self):
         env_common = self.tmp / ".env.common"
         env_common.write_text("HF_TOKEN=\nHF_CACHE_PATH=relative/path\n")
+        env_common.chmod(0o600)
         try:
             r = _run_cli(self.tmp, "env-check")
             self.assertNotEqual(r.returncode, 0)
@@ -600,7 +603,12 @@ class CliSmokeTests(unittest.TestCase):
 
     def test_env_check_accepts_home_expansion_from_shipped_template(self):
         env_common = self.tmp / ".env.common"
-        env_common.write_text("HF_TOKEN=\nHF_CACHE_PATH=$HOME/.cache/huggingface\n")
+        env_common.write_text(
+            "HF_TOKEN=\n"
+            "HF_CACHE_PATH=$HOME/.cache/huggingface\n"
+            "PREPARE_DOWNLOADER_IMAGE=vllm/vllm-openai:v0.27.1\n"
+        )
+        env_common.chmod(0o600)
         try:
             result = _run_cli(self.tmp, "env-check")
             self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
@@ -612,6 +620,7 @@ class CliSmokeTests(unittest.TestCase):
         env_common.write_text(
             f"HF_CACHE_PATH={self.tmp}/hfcache\nPREPARE_MAX_WORKERS=many\n"
         )
+        env_common.chmod(0o600)
         try:
             result = _run_cli(self.tmp, "env-check")
             self.assertEqual(result.returncode, 1)
@@ -624,8 +633,11 @@ class CliSmokeTests(unittest.TestCase):
             with self.subTest(key=key):
                 env_common = self.tmp / ".env.common"
                 env_common.write_text(
-                    f"HF_CACHE_PATH={self.tmp}/hfcache\n{key}=registry.example/image:latest\n"
+                    f"HF_CACHE_PATH={self.tmp}/hfcache\n"
+                    "PREPARE_DOWNLOADER_IMAGE=vllm/vllm-openai:v0.27.1\n"
+                    f"{key}=registry.example/image:latest\n"
                 )
+                env_common.chmod(0o600)
                 try:
                     result = _run_cli(self.tmp, "env-check")
                     self.assertEqual(result.returncode, 1)
@@ -637,8 +649,11 @@ class CliSmokeTests(unittest.TestCase):
         env_common = self.tmp / ".env.common"
         secret = "hf_secret_value"
         env_common.write_text(
-            f"HF_TOKEN={secret}\nHF_CACHE_PATH={self.tmp}/hfcache\n"
+            f"HF_TOKEN={secret}\n"
+            f"HF_CACHE_PATH={self.tmp}/hfcache\n"
+            "PREPARE_DOWNLOADER_IMAGE=vllm/vllm-openai:v0.27.1\n"
         )
+        env_common.chmod(0o600)
         try:
             r = _run_cli(self.tmp, "env-check", "--json")
             self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
@@ -1248,9 +1263,16 @@ class CliSmokeTests(unittest.TestCase):
             self.assertTrue((self.tmp / ".runtime" / "vllm" / f"{n}.env").exists())
 
 
-    def test_gpu_runs_without_crashing(self):
-        r = _run_cli(self.tmp, "gpu")
-        self.assertEqual(r.returncode, 0, r.stderr or r.stdout)
+    def test_gpu_reports_missing_nvidia_smi(self):
+        empty_path = self.tmp / "empty-path"
+        empty_path.mkdir()
+        r = _run_cli_with_env(
+            self.tmp,
+            ["gpu"],
+            {"PATH": str(empty_path)},
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("nvidia-smi", (r.stdout + r.stderr).lower())
 
     def test_env_check_missing_env_common(self):
         r = _run_cli(self.tmp, "env-check")

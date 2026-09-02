@@ -51,7 +51,7 @@
       </p>
       <pre data-lang="text"><code>llmux                      # launch the interactive TUI (default)
 llmux tui                  # launch the TUI explicitly
-llmux top &lt;profile&gt;        # btop-style monitor in a plain terminal (no TUI)
+llmux top [PROFILE]        # btop-style monitor in a plain terminal (no TUI)
 llmux &lt;group&gt; &lt;command&gt;    # headless control
 llmux &lt;alias&gt;              # top-level shortcut (see below)
 llmux --version            # print the installed version and exit</code></pre>
@@ -100,7 +100,7 @@ llmux --version            # print the installed version and exit</code></pre>
         </tr>
         <tr>
           <td><em>(top-level)</em></td>
-          <td><code>tui</code> · <code>top</code> · <code>gpu</code> · <code>env-check</code> · <code>up</code> · <code>down</code> · <code>logs</code> · <code>ps</code> · <code>bench</code> · <code>stats</code> · <code>render-env</code></td>
+          <td><code>tui</code> · <code>top</code> · <code>update</code> · <code>gpu</code> · <code>env-check</code> · <code>up</code> · <code>prepare</code> · <code>down</code> · <code>logs</code> · <code>ps</code> · <code>bench</code> · <code>stats</code> · <code>render-env</code></td>
           <td><code>tui/cli/__init__.py</code></td>
         </tr>
       </tbody>
@@ -110,13 +110,13 @@ llmux --version            # print the installed version and exit</code></pre>
 
     <h3 id="top"><code>top</code></h3>
     <p>The btop-style <em>system</em> monitor, rendered in a plain terminal without the Textual TUI. Good for low-bandwidth SSH or dumb terminals. Every GPU is shown always — util, memory, temperature, power, PCIe rx/tx — whether or not anything is running, plus a panel per running model (throughput and KV-cache braille graphs, cache-hit, requests, latency percentiles: TTFT/E2E p50/p95/p99 and phases). With no argument it shows every running model; pass a profile name to narrow it to that one. Press <kbd>q</kbd> or Ctrl+C to exit. The same monitor is reachable inside the TUI with the <kbd>t</kbd> key.</p>
-    <pre data-lang="text"><code>llmux top &lt;profile&gt;</code></pre>
+    <pre data-lang="text"><code>llmux top [PROFILE]</code></pre>
 
     <h3 id="backend-detection">Backend detection</h3>
-    <p>Most commands take a <strong>profile name</strong> and resolve its backend (<code>vllm</code> or <code>llamacpp</code>) automatically by scanning <code>profiles.yaml</code>:</p>
+    <p>Profile names are globally unique across both backends. Most commands resolve the matching backend (<code>vllm</code> or <code>llamacpp</code>) automatically by scanning <code>profiles.yaml</code>:</p>
     <ul>
-      <li>If the name exists in exactly one backend, that backend is used.</li>
-      <li>If it exists in <strong>both</strong>, you must disambiguate with <code>--backend</code> / <code>-b</code>.</li>
+      <li>If the name exists, its backend is used.</li>
+      <li>Pass <code>--backend</code> / <code>-b</code> to require a specific backend explicitly.</li>
       <li>If it exists in <strong>neither</strong>, the command fails with a clear usage error.</li>
     </ul>
     <p><code>--backend</code> always wins when supplied.</p>
@@ -133,15 +133,20 @@ llmux --version            # print the installed version and exit</code></pre>
       </thead>
       <tbody>
         <tr><td><code>container ps</code></td><td>status table</td><td>list of rows</td></tr>
+        <tr><td><code>container benchmark</code></td><td>benchmark report</td><td>one result object</td></tr>
+        <tr><td><code>container stats</code></td><td>live throughput lines</td><td>one compact JSON record per tick (NDJSON)</td></tr>
         <tr><td><code>profile list</code></td><td>profile table</td><td>list of rows</td></tr>
         <tr><td><code>profile show</code></td><td><code>key: value</code> text</td><td>object</td></tr>
         <tr><td><code>config list</code></td><td>config table</td><td>list of rows</td></tr>
         <tr><td><code>config show</code></td><td>YAML dump</td><td>object</td></tr>
         <tr><td><code>config flags</code></td><td>supported flag table</td><td>object with backend, image, and flags</td></tr>
+        <tr><td><code>config from-recipe</code></td><td>write the selected recipe config</td><td>preview object without writing</td></tr>
         <tr><td><code>image list</code></td><td>image table</td><td>list of rows</td></tr>
         <tr><td><code>system gpu</code></td><td>GPU table</td><td>list of rows</td></tr>
+        <tr><td><code>system mem-estimate</code></td><td>estimate and per-GPU fit report</td><td>estimate and per-GPU fit object</td></tr>
         <tr><td><code>system disk</code></td><td>backend storage report</td><td>backend-tagged storage object</td></tr>
         <tr><td><code>system env-check</code></td><td>report text</td><td>findings object</td></tr>
+        <tr><td><code>update</code></td><td>status or confirmation flow</td><td>status/result object; use with <code>--check</code> or <code>--yes</code></td></tr>
       </tbody>
     </table>
 
@@ -149,8 +154,8 @@ llmux --version            # print the installed version and exit</code></pre>
     <p>Lifecycle commands propagate the underlying <code>docker</code> / <code>docker compose</code> exit code. <code>Ctrl-C</code> while streaming (<code>up</code>, <code>logs</code>, <code>build-dev</code>) exits with <code>130</code>. <code>system env-check</code> exits <code>1</code> when <code>.env.common</code> is missing or has issues.</p>
 
     <h2 id="container-container-lifecycle"><code>container</code> — container lifecycle</h2>
-    <pre data-lang="text"><code>llmux container up|prepare|down|logs|ps|render-env …</code></pre>
-    <p>Start, stop, inspect, and re-render profile containers. <code>up</code>, <code>prepare</code>, <code>down</code>, <code>logs</code>, <code>ps</code>, and <code>render-env</code> are also exposed as <a href="#top-level-aliases">top-level aliases</a>.</p>
+    <pre data-lang="text"><code>llmux container up|prepare|down|logs|ps|benchmark|stats|render-env …</code></pre>
+    <p>Start, stop, inspect, benchmark, monitor, and re-render profile containers. Every container command except the grouped namespace itself is also exposed through the corresponding <a href="#top-level-aliases">top-level alias</a>.</p>
 
     <h3 id="container-up"><code>container up</code></h3>
     <p>Start a profile's container. Streams <code>docker compose</code> output to stdout.</p>
@@ -185,7 +190,7 @@ uv run llmux container up qwen3-0-6b --dev --tag main-20260515
 # One-off: ignore a stale pinned image_tag and use the compose default
 uv run llmux up qwen3-0-6b --default-image
 
-# Start a llama.cpp profile, disambiguating an ambiguous name
+# Start a llama.cpp profile with an explicit backend
 uv run llmux up gemma-3-4b --backend llamacpp
 
 # llama.cpp dev image from a personal fork
@@ -207,13 +212,14 @@ uv run llmux up gemma-3-4b --dev \
       <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
       <tbody>
         <tr><td><code>--backend</code>, <code>-b</code></td><td><em>auto-detect</em></td><td>Force backend; auto-detect if omitted.</td></tr>
+        <tr><td><code>--max-workers</code>, <code>-w</code></td><td><em>from <code>PREPARE_MAX_WORKERS</code></em></td><td>Positive parallel download connection count for this run. Omit it to use <code>.env.common</code>; an empty shared setting leaves the downloader library default unchanged.</td></tr>
       </tbody>
     </table>
     <pre data-lang="bash"><code>uv run llmux prepare qwen3-0-6b
 uv run llmux prepare gemma-3-4b --backend llamacpp</code></pre>
     <div class="admonition note">
       <p class="admonition-title">How the download runs</p>
-      <p>Inside a throwaway container of the same image the profile would serve from — vLLM calls <code>huggingface_hub.snapshot_download</code>; llama.cpp uses llama-server's own <code>-hf</code> download path and is stopped as soon as the GGUF is complete in the host cache. llmux never needs an <code>hf</code> CLI on the host. The image resolves the same way <code>up</code> resolves it: a pinned <code>image_tag</code> wins, then the newest local versioned image; only when there is none does <code>prepare</code> pull one.</p>
+      <p>vLLM runs <code>huggingface_hub.snapshot_download</code> inside the resolved serving image. llama.cpp instead runs the same library inside <code>PREPARE_DOWNLOADER_IMAGE</code>, which is required only for llama.cpp <code>prepare</code>. Both are throwaway downloader containers and llmux never needs an <code>hf</code> CLI on the host.</p>
     </div>
 
     <h3 id="container-down"><code>container down</code></h3>
@@ -264,6 +270,7 @@ uv run llmux container logs qwen3-0-6b -n 50 --no-follow</code></pre>
       </tbody>
     </table>
     <p>Table columns: <code>backend</code>, <code>profile</code>, <code>status</code>, <code>port</code>, <code>gpu</code>, <code>container</code>, <code>model</code>. JSON rows additionally include a boolean <code>running</code> field.</p>
+    <p>Status preserves Docker lifecycle and health: <code>healthy</code>, <code>unhealthy</code>, <code>starting</code>, <code>running</code>, <code>paused</code>, <code>restarting</code>, <code>removing</code>, <code>created</code>, <code>exited</code>, <code>dead</code>, <code>unknown</code>, or <code>stopped</code>. Model labels come from the vLLM config's <code>model</code> (then profile <code>model_id</code>) or the llama.cpp config's <code>alias</code> (then <code>hf_repo</code>, then <code>model_file</code>).</p>
     <pre data-lang="bash"><code>uv run llmux ps
 uv run llmux ps --running --json
 uv run llmux container ps -b vllm</code></pre>
@@ -305,7 +312,7 @@ uv run llmux container render-env --backend llamacpp</code></pre>
 uv run llmux bench qwen3-0-6b --json</code></pre>
 
     <h3 id="container-stats"><code>container stats</code> · <code>stats</code></h3>
-    <p>Live token throughput (tok/s) for every running container, polled from its Prometheus <code>/metrics</code> endpoint. Rates are deltas between successive samples, so the first line appears one interval in. A server that's down or was started without metrics exposed shows <code>n/a</code> and keeps being polled.</p>
+    <p>Live token throughput (tok/s) for every running container, polled from its Prometheus <code>/metrics</code> endpoint. Rates are deltas between successive samples, so the first line appears one interval in. An unavailable metric reads <code>n/a</code>; an HTTP request failure is reported as an error rather than displayed as normal missing data.</p>
     <pre data-lang="text"><code>llmux stats [OPTIONS]</code></pre>
     <table>
       <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
@@ -342,7 +349,7 @@ uv run llmux stats --once --json   # one machine-readable sample</code></pre>
 uv run llmux profile list -b vllm --json</code></pre>
 
     <h3 id="profile-show"><code>profile show</code></h3>
-    <p>Show a profile's full record.</p>
+    <p>Show a profile's full record. Environment keys containing <code>TOKEN</code>, <code>SECRET</code>, <code>PASSWORD</code>, <code>PASSWD</code>, <code>API_KEY</code>, <code>PRIVATE_KEY</code>, <code>CREDENTIAL</code>, or <code>AUTH</code> keep their names but replace their values with <code>set</code> and <code>length</code> metadata in both text and JSON output. Other environment values remain visible for automation compatibility.</p>
     <pre data-lang="text"><code>llmux profile show NAME [OPTIONS]</code></pre>
     <table>
       <thead><tr><th>Argument</th><th>Description</th></tr></thead>
@@ -358,7 +365,7 @@ uv run llmux profile list -b vllm --json</code></pre>
     <pre data-lang="bash"><code>uv run llmux profile show qwen3-0-6b --json</code></pre>
 
     <h3 id="profile-new"><code>profile new</code></h3>
-    <p>Create a new profile entry in <code>profiles.yaml</code>. The name must match <code>^[a-z0-9][a-z0-9_-]*$</code> — <strong>lowercase only</strong>, because docker compose project names are lowercase-only and a cross-backend profile must validate on both sides. Creation fails if the name already exists in the chosen backend.</p>
+    <p>Create a new profile entry in <code>profiles.yaml</code>. The name must match <code>^[a-z0-9][a-z0-9_-]*$</code> — <strong>lowercase only</strong>, because docker compose project names are lowercase-only and a cross-backend profile must validate on both sides. Creation fails if the name already exists in either backend.</p>
     <pre data-lang="text"><code>llmux profile new NAME [OPTIONS]</code></pre>
     <table>
       <thead><tr><th>Argument</th><th>Description</th></tr></thead>
@@ -372,12 +379,16 @@ uv run llmux profile list -b vllm --json</code></pre>
         <tr><td><code>--backend</code>, <code>-b</code></td><td><code>vllm</code></td><td>both</td><td>Backend (<code>vllm</code>, <code>llamacpp</code>).</td></tr>
         <tr><td><code>--port</code>, <code>-p</code></td><td><code>0</code></td><td>both</td><td>Host port (<code>0</code> = backend default: 8000 vLLM / 8080 llama.cpp).</td></tr>
         <tr><td><code>--gpu-id</code>, <code>-g</code></td><td><code>"0"</code></td><td>both</td><td>GPU id(s), comma-separated. (vLLM: <code>tensor_parallel_size</code> is derived from the count.)</td></tr>
+        <tr><td><code>--tensor-parallel</code></td><td><code>0</code></td><td>vLLM</td><td>Explicit tensor-parallel degree. <code>0</code> derives it from the <code>--gpu-id</code> count.</td></tr>
         <tr><td><code>--model</code>, <code>-m</code></td><td><code>""</code></td><td>vLLM</td><td>Hugging Face model id.</td></tr>
         <tr><td><code>--config</code>, <code>-c</code></td><td><em>profile name</em></td><td>both</td><td>Linked config name.</td></tr>
         <tr><td><code>--container</code></td><td><em>profile name</em></td><td>both</td><td>Container name.</td></tr>
         <tr><td><code>--lora / --no-lora</code></td><td><code>--no-lora</code></td><td>vLLM</td><td>Enable LoRA.</td></tr>
+        <tr><td><code>--max-loras</code></td><td><code>0</code></td><td>vLLM</td><td>Maximum simultaneously loaded LoRAs. <code>0</code> leaves the field unset.</td></tr>
+        <tr><td><code>--max-lora-rank</code></td><td><code>0</code></td><td>vLLM</td><td>Maximum supported LoRA rank. <code>0</code> leaves the field unset.</td></tr>
+        <tr><td><code>--lora-modules</code></td><td><code>""</code></td><td>vLLM</td><td>Comma-separated <code>name=path</code> adapter mappings.</td></tr>
         <tr><td><code>--extra-pip</code></td><td><code>""</code></td><td>vLLM</td><td>Extra pip packages installed before serve. (First-class profile field — <strong>do not</strong> pass via <code>--set EXTRA_PIP_PACKAGES=…</code>.)</td></tr>
-        <tr><td><code>--set</code></td><td><em>(none)</em></td><td>both</td><td>Repeatable: <code>KEY=VALUE</code> entries appended to <code>env_vars</code>. Key must be a valid env-var name and <strong>cannot</strong> shadow a reserved profile field (<code>GPU_ID</code>, <code>VLLM_PORT</code>, <code>LLAMA_PORT</code>, <code>CONFIG_NAME</code>, <code>CONTAINER_NAME</code>, <code>EXTRA_PIP_PACKAGES</code>, …). Use the dedicated profile option instead.</td></tr>
+        <tr><td><code>--set</code></td><td><em>(none)</em></td><td>both</td><td>Repeatable: <code>KEY=VALUE</code> entries appended to <code>env_vars</code>. Key must be a valid env-var name and <strong>cannot</strong> shadow a reserved profile field or protected Hugging Face/Docker/Compose control key. Use the dedicated profile option instead.</td></tr>
         <tr><td><code>--model-file</code></td><td><code>""</code></td><td>llama.cpp</td><td>GGUF filename.</td></tr>
         <tr><td><code>--hf-repo</code></td><td><code>""</code></td><td>llama.cpp</td><td>Hugging Face repo for download.</td></tr>
         <tr><td><code>--hf-file</code></td><td><code>""</code></td><td>llama.cpp</td><td>HF file for download.</td></tr>
@@ -404,14 +415,18 @@ uv run llmux profile new gemma-3-4b --backend llamacpp --port 8080 \
       <tbody>
         <tr><td><code>--backend</code>, <code>-b</code></td><td>both</td><td>Force backend; auto-detect if omitted.</td></tr>
         <tr><td><code>--port</code>, <code>-p</code></td><td>both</td><td>New host port.</td></tr>
-        <tr><td><code>--gpu-id</code>, <code>-g</code></td><td>both</td><td>New GPU id(s); also re-derives <code>tensor_parallel_size</code>.</td></tr>
+        <tr><td><code>--gpu-id</code>, <code>-g</code></td><td>both</td><td>New GPU id(s); re-derives <code>tensor_parallel_size</code> unless <code>--tensor-parallel</code> is also passed.</td></tr>
+        <tr><td><code>--tensor-parallel</code></td><td>vLLM</td><td>Explicit tensor-parallel degree; overrides the value derived from <code>--gpu-id</code>.</td></tr>
         <tr><td><code>--model</code>, <code>-m</code></td><td>vLLM</td><td>New Hugging Face model id.</td></tr>
         <tr><td><code>--config</code>, <code>-c</code></td><td>both</td><td>New linked config name.</td></tr>
         <tr><td><code>--container</code></td><td>both</td><td>New container name.</td></tr>
         <tr><td><code>--lora / --no-lora</code></td><td>vLLM</td><td>Toggle LoRA.</td></tr>
+        <tr><td><code>--max-loras</code></td><td>vLLM</td><td>Set a positive simultaneous LoRA limit; pass <code>0</code> to clear it.</td></tr>
+        <tr><td><code>--max-lora-rank</code></td><td>vLLM</td><td>Set a positive maximum LoRA rank; pass <code>0</code> to clear it.</td></tr>
+        <tr><td><code>--lora-modules</code></td><td>vLLM</td><td>Set comma-separated <code>name=path</code> adapters; pass an empty string to clear them.</td></tr>
         <tr><td><code>--extra-pip</code></td><td>vLLM</td><td>Extra pip packages.</td></tr>
-        <tr><td><code>--set</code></td><td>vLLM</td><td>Repeatable: <code>KEY=VALUE</code> to add/override in <code>env_vars</code>.</td></tr>
-        <tr><td><code>--unset</code></td><td>vLLM</td><td>Repeatable: <code>KEY</code> to remove from <code>env_vars</code>.</td></tr>
+        <tr><td><code>--set</code></td><td>both</td><td>Repeatable: <code>KEY=VALUE</code> to add/override in <code>env_vars</code>. Protected Hugging Face/Docker/Compose control keys are rejected.</td></tr>
+        <tr><td><code>--unset</code></td><td>both</td><td>Repeatable: <code>KEY</code> to remove from <code>env_vars</code>.</td></tr>
         <tr><td><code>--model-file</code></td><td>llama.cpp</td><td>New GGUF filename.</td></tr>
         <tr><td><code>--hf-repo</code></td><td>llama.cpp</td><td>New HF download repo.</td></tr>
         <tr><td><code>--hf-file</code></td><td>llama.cpp</td><td>New HF download file.</td></tr>
@@ -522,7 +537,7 @@ uv run llmux profile edit qwen3-8b --set VLLM_ATTENTION_BACKEND=FLASHINFER --uns
       <li><strong>vLLM</strong> — <code>config/vllm/&lt;name&gt;.yaml</code>: <code>model:</code> + <code>gpu-memory-utilization:</code> plus arbitrary <code>vllm serve</code> flags.</li>
       <li><strong>llama.cpp</strong> — <code>config/llamacpp/&lt;name&gt;.yaml</code>: a flat dict of <code>llama-server</code> flags.</li>
     </ul>
-    <p>Config names are validated against <code>^[a-zA-Z0-9][a-zA-Z0-9._-]*$</code> to prevent path traversal. For <code>show</code> / <code>edit</code> / <code>delete</code>, if the same name exists in both backends you must disambiguate with <code>--backend</code>.</p>
+    <p>New config names (<code>new</code>, clone destination, rename destination, and recipe <code>--name</code>) must match <code>^[a-z0-9][a-z0-9_-]*$</code>. Read/edit/delete and clone-source lookups also accept legacy on-disk names matching <code>^[a-zA-Z0-9][a-zA-Z0-9._-]*$</code>, so an older or hand-written file can still be inspected and removed. If the same name exists in both backends, disambiguate with <code>--backend</code>.</p>
 
     <h3 id="config-list"><code>config list</code></h3>
     <p>List config files.</p>
@@ -780,6 +795,10 @@ uv run llmux image build-dev --backend vllm --branch my-feature \
 
 # llama.cpp dev image, pinned to a single GPU arch for a fast build
 uv run llmux image build-dev --backend llamacpp --branch master --cuda-arch 89</code></pre>
+    <div class="admonition warning">
+      <p class="admonition-title">Keep credentials out of refs and command lines</p>
+      <p><code>--repo-url</code> rejects an HTTP(S) URL containing userinfo, a query, or a fragment; use a credential helper or a credential-free SSH URL instead. A username-only SSH authority such as <code>ssh://git@host/path</code> is allowed. Docker image inputs reject URL schemes, userinfo, query strings, fragments, and whitespace before invoking Docker.</p>
+    </div>
     <p>See <a href="../guide/dev-build.html">Dev Builds</a> for the full workflow, and <a href="architecture.html#dev-build-pipeline">Architecture</a> for how the pipeline works.</p>
 
     <h2 id="system-system-info-env-validation"><code>system</code> — system info &amp; env validation</h2>
@@ -800,16 +819,23 @@ uv run llmux system gpu --json</code></pre>
 
     <h3 id="system-mem-estimate"><code>system mem-estimate</code></h3>
     <p>Estimate a Hugging Face model's VRAM footprint via <a href="https://pypi.org/project/hf-mem/" target="_blank"><code>hf-mem</code></a> — the same engine the TUI's memory estimator uses. Reads <code>HF_TOKEN</code> from <code>.env.common</code> (or the environment) for gated models.</p>
-    <pre data-lang="text"><code>llmux system mem-estimate MODEL_ID</code></pre>
+    <pre data-lang="text"><code>llmux system mem-estimate MODEL_ID [OPTIONS]</code></pre>
     <table>
       <thead><tr><th>Argument</th><th>Description</th></tr></thead>
       <tbody><tr><td><code>MODEL_ID</code></td><td>Hugging Face model id, e.g. <code>Qwen/Qwen3-8B</code>. Required.</td></tr></tbody>
     </table>
+    <table>
+      <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit the parsed estimate and per-GPU fit rows as one JSON object.</td></tr>
+      </tbody>
+    </table>
     <pre data-lang="bash"><code>uv run llmux system mem-estimate Qwen/Qwen3-8B
 # → ~17.2GB (model: 15.3GB + KV: 1.9GB)</code></pre>
+    <p>JSON output sets <code>status</code> to <code>ok</code>, <code>over</code>, or <code>error</code>. A malformed, non-finite, or non-positive GPU memory reading produces an <code>error</code> row with <code>total_gb</code>, <code>ratio</code>, and <code>over</code> set to <code>null</code>. Unless another known GPU is over capacity, aggregate <code>any_over</code> is also <code>null</code>. Text output labels the row <code>UNKNOWN</code>; either format exits 1 when any GPU memory reading is unknown.</p>
 
     <h3 id="system-disk"><code>system disk</code></h3>
-    <p>Show backend storage and <code>df -h</code> usage. vLLM reports its host Hugging Face cache; llama.cpp reports its model directory, GGUF inventory, and HF GGUF cache. The JSON success and failure payloads both identify the selected backend.</p>
+    <p>Show backend storage and <code>df -h</code> usage. vLLM reports its configured host Hugging Face cache; if the cache has not been created yet, the command measures the nearest existing ancestor and still succeeds. Its JSON output distinguishes this with <code>hf_cache_exists: false</code> and identifies the measured path as <code>df_target</code>. llama.cpp reports its model directory, GGUF inventory, and HF GGUF cache. The JSON success and failure payloads both identify the selected backend.</p>
     <pre data-lang="text"><code>llmux system disk [OPTIONS]</code></pre>
     <table>
       <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
@@ -826,7 +852,7 @@ uv run llmux system gpu --json</code></pre>
 uv run llmux system disk --backend vllm --json</code></pre>
 
     <h3 id="system-env-check"><code>system env-check</code></h3>
-    <p>Validate <code>.env.common</code> and report key paths. Checks that the file exists and that required paths such as <code>HF_CACHE_PATH</code> are set and absolute. <code>HF_TOKEN</code> is optional, and the runtime injects the selected vLLM version at start time. Also available as <code>llmux env-check</code>.</p>
+    <p>Validate <code>.env.common</code> and report key paths. Checks that the file exists, is owner-only rather than group/world-accessible, and that required paths such as <code>HF_CACHE_PATH</code> are set and absolute. <code>HF_TOKEN</code> is optional, and the runtime injects the selected vLLM version at start time. Also available as <code>llmux env-check</code>.</p>
     <pre data-lang="text"><code>llmux system env-check [OPTIONS]</code></pre>
     <table>
       <thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead>
@@ -834,7 +860,7 @@ uv run llmux system disk --backend vllm --json</code></pre>
         <tr><td><code>--json</code></td><td><code>False</code></td><td>Emit JSON findings instead of a text report.</td></tr>
       </tbody>
     </table>
-    <p>Exits <code>0</code> when everything checks out, <code>1</code> when <code>.env.common</code> is missing or any issue is found. Text output masks <code>HF_TOKEN</code>; JSON exposes only <code>set</code> and <code>length</code>, never the token value.</p>
+    <p>Exits <code>0</code> when everything checks out, including when only non-fatal warnings are present, and exits <code>1</code> when <code>.env.common</code> is missing or any issue is found. Human output prints non-fatal messages under <code>Warnings:</code> before <code>Status: OK</code>. JSON preserves them in <code>warnings</code>, keeps <code>issues</code> empty, and reports <code>status: ok</code>. Text output masks <code>HF_TOKEN</code>; JSON exposes only <code>set</code> and <code>length</code>, never the token value.</p>
     <pre data-lang="bash"><code>uv run llmux env-check
 uv run llmux system env-check --json</code></pre>
     <p>See <a href="env-common.html"><code>.env.common</code> Reference</a> for every variable this command validates.</p>
@@ -854,6 +880,7 @@ uv run llmux system env-check --json</code></pre>
 llmux update --check --json   # machine-readable status
 llmux update -y               # pull + refresh the installed tool, no prompt</code></pre>
     <p>Exit codes: <code>0</code> when the state is known (up to date, or reported/applied), <code>1</code> when the check could not be completed (offline, rate-limited, not a git checkout, shallow clone) or the update failed. An update is refused — with the reason — when the checkout is not on a clean <code>main</code>; pull it yourself there.</p>
+    <p>If the Git fast-forward succeeds but refreshing the installed <code>uv tool</code> fails, the checkout has already advanced but the update still exits <code>1</code>. The error prints the manual refresh command; the TUI reports the same partial failure and stays open.</p>
     <p>The TUI has the same action on <kbd>U</kbd>.</p>
 
     <h2 id="top-level-aliases">Top-level aliases</h2>
@@ -869,6 +896,8 @@ llmux update -y               # pull + refresh the installed tool, no prompt</co
         <tr><td><code>llmux down</code></td><td><code>llmux container down</code></td></tr>
         <tr><td><code>llmux logs</code></td><td><code>llmux container logs</code></td></tr>
         <tr><td><code>llmux ps</code></td><td><code>llmux container ps</code></td></tr>
+        <tr><td><code>llmux bench</code></td><td><code>llmux container benchmark</code></td></tr>
+        <tr><td><code>llmux stats</code></td><td><code>llmux container stats</code></td></tr>
         <tr><td><code>llmux render-env</code></td><td><code>llmux container render-env</code></td></tr>
       </tbody>
     </table>

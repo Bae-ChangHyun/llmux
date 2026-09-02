@@ -1,6 +1,6 @@
-"""System 정보 화면 — GPU / Docker 이미지 / 디스크."""
-
 from __future__ import annotations
+
+from pathlib import Path
 
 from textual import work
 from textual.app import ComposeResult
@@ -23,7 +23,6 @@ from tui.backends.llamacpp.backend import (
     GpuInfo,
     ROOT,
     _get_hf_cache_dir,
-    hf_cache_setting,
     _get_model_dir,
     get_disk_usage,
     get_docker_images,
@@ -31,7 +30,6 @@ from tui.backends.llamacpp.backend import (
     list_cached_gguf,
     list_profile_names,
     load_profile,
-    run_command,
 )
 from tui.backends.llamacpp.backend_runtime import (
     LLAMACPP_DEV_SPEC,
@@ -39,15 +37,20 @@ from tui.backends.llamacpp.backend_runtime import (
 )
 from tui.common import profile_store, system_operations
 from tui.backends.llamacpp.backend import LLAMACPP_OFFICIAL_REPO
-from tui.common.dev_build import list_local_dev_images
+from tui.common.dev_build import image_tag_error, list_local_dev_images
+from tui.common.docker import (
+    GpuReadingLevel,
+    container_snapshots,
+    gpu_temperature_level,
+    gpu_utilization_level,
+    parse_gpu_reading,
+)
 from tui.common.env import parse_env_file
 from tui.common.i18n import t
 from tui.common.widgets import ConfirmModal, DevBuildPromptModal, TextPromptModal
 
 
 class SystemScreen(Screen):
-    """탭: GPU / Docker Images / Containers / Disk."""
-
     BINDINGS = [
         Binding("escape,backspace,s", "go_back", t("Back", "뒤로"), show=True),
         Binding("q", "go_back", "Back", show=False),
@@ -147,49 +150,67 @@ class SystemScreen(Screen):
 
     @work(exclusive=True, group="sys-gpu")
     async def _refresh_gpu(self) -> None:
-        gpus = await get_gpu_info()
+        try:
+            gpus = await get_gpu_info()
+        except RuntimeError as exc:
+            self._update_gpu_error(exc)
+            return
         self._update_gpu_table(gpus)
+
+    def _update_gpu_error(self, exc: RuntimeError) -> None:
+        table = self.query_one("#gpu-table", DataTable)
+        table.clear()
+        table.add_row("--", t("GPU query failed", "GPU 조회 실패"), "--", "--", "--", "--")
+        self.notify(
+            t(f"GPU query failed: {exc}", f"GPU 조회 실패: {exc}"),
+            severity="error",
+            timeout=8,
+        )
 
     def _update_gpu_table(self, gpus: list[GpuInfo]) -> None:
         table = self.query_one("#gpu-table", DataTable)
         table.clear()
         if not gpus:
-            table.add_row("--", "nvidia-smi 미감지", "--", "--", "--", "--")
+            table.add_row("--", "감지된 GPU 없음", "--", "--", "--", "--")
             return
         for g in gpus:
             try:
-                u = int(g.utilization)
+                util_level = gpu_utilization_level(g.utilization)
+                util_color = {
+                    GpuReadingLevel.NORMAL: "green",
+                    GpuReadingLevel.WARNING: "yellow",
+                    GpuReadingLevel.CRITICAL: "red",
+                }[util_level]
+                util = f"[{util_color}]{g.utilization}%[/]"
             except ValueError:
-                u = 0
-            util = (
-                f"[red]{g.utilization}%[/]" if u > 80
-                else f"[yellow]{g.utilization}%[/]" if u > 50
-                else f"[green]{g.utilization}%[/]"
-            )
+                util = "--"
             try:
-                temp_c = int(g.temperature)
+                temp_level = gpu_temperature_level(g.temperature)
+                temp_color = {
+                    GpuReadingLevel.NORMAL: "green",
+                    GpuReadingLevel.WARNING: "yellow",
+                    GpuReadingLevel.CRITICAL: "red",
+                }[temp_level]
+                temp = f"[{temp_color}]{g.temperature}°C[/]"
             except ValueError:
-                temp_c = 0
-            temp = (
-                f"[red]{g.temperature}°C[/]" if temp_c > 80
-                else f"[yellow]{g.temperature}°C[/]" if temp_c > 60
-                else f"[green]{g.temperature}°C[/]"
-            )
+                temp = "--"
             try:
-                used_gb = int(g.memory_used) / 1024
-                total_gb = int(g.memory_total) / 1024
+                used_gb = parse_gpu_reading(g.memory_used, "memory used") / 1024
                 mem_used = f"{used_gb:.1f} GB"
+            except ValueError:
+                mem_used = "--"
+            try:
+                total_gb = parse_gpu_reading(g.memory_total, "memory total") / 1024
+                if total_gb <= 0:
+                    raise ValueError
                 mem_total = f"{total_gb:.1f} GB"
             except ValueError:
-                mem_used = f"{g.memory_used} MiB"
-                mem_total = f"{g.memory_total} MiB"
+                mem_total = "--"
             table.add_row(g.index, g.name, mem_used, mem_total, util, temp)
 
 
     @work(exclusive=True, group="sys-images")
     async def _refresh_images(self) -> None:
-        # `DevImage` from tui.common.dev_build has matching .tag/.size/.created
-        # attributes, so the same fill helper works for both tables.
         for table_id, fetch in (
             ("#llama-images",
              lambda: get_docker_images(LLAMACPP_OFFICIAL_REPO)),
@@ -220,74 +241,79 @@ class SystemScreen(Screen):
 
     @work(exclusive=True, group="sys-containers")
     async def _refresh_containers(self) -> None:
-        """Show every llmux-managed container, across BOTH backends. Mirrors
-        the vLLM System screen."""
-        known = {load_profile(n).container_name for n in list_profile_names()}
-        for stored in profile_store.list_profiles("vllm"):
-            known.add(stored.container_name or stored.name)
-        rc, out = await run_command(
-            "docker", "ps", "-a",
-            "--format", "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}",
-            timeout=10,
-        )
         log = self.query_one("#container-info", RichLog)
         log.clear()
-        if rc != 0:
+        try:
+            known = {load_profile(n).container_name for n in list_profile_names()}
+            for stored in profile_store.list_profiles("vllm"):
+                known.add(stored.container_name or stored.name)
+            snapshots = await container_snapshots(include_stopped=True)
+        except (OSError, RuntimeError, ValueError) as exc:
             log.write(t("[red]docker ps failed[/]", "[red]docker ps 실패[/]"))
-            if out.strip():
-                log.write(out)
+            log.write(str(exc))
+            self.notify(
+                t(
+                    f"Container inventory failed: {exc}",
+                    f"컨테이너 목록 조회 실패: {exc}",
+                ),
+                severity="error",
+                timeout=8,
+            )
             return
-        lines = out.strip().splitlines()
-        if len(lines) < 2:
-            log.write(t("[dim]No containers[/]", "[dim]컨테이너 없음[/]"))
+        selected = [snapshots[name] for name in sorted(known & snapshots.keys())]
+        if not selected:
+            log.write(t("[dim]No profile containers[/]", "[dim]프로필 컨테이너 없음[/]"))
             return
-        header = lines[0]
-        rows = [line for line in lines[1:] if line.split()[0] in known]
-        log.write(header)
-        if rows:
-            for line in rows:
-                log.write(line)
-        else:
-            log.write(t("[dim](no profile containers for this project)[/]", "[dim](이 프로젝트의 프로필 컨테이너 없음)[/]"))
+        log.write("NAME\tSTATE\tHEALTH\tSTATUS")
+        for snapshot in selected:
+            health = snapshot.health.value if snapshot.health.value != "none" else "--"
+            log.write(
+                f"{snapshot.name}\t{snapshot.raw_state}\t{health}\t{snapshot.raw_status}"
+            )
 
 
     @work(exclusive=True, group="sys-disk")
     async def _refresh_disk(self) -> None:
-        model_dir = _get_model_dir()
         log = self.query_one("#disk-info", RichLog)
         log.clear()
+        try:
+            model_dir = _get_model_dir()
+            model_dir_exists = model_dir.exists()
+            files: list[tuple[Path, int]] = []
+            if model_dir_exists:
+                for path in model_dir.glob("*.gguf"):
+                    files.append((path, path.stat().st_size))
+                files.sort(key=lambda item: item[1], reverse=True)
+            hf_cache_dir = _get_hf_cache_dir()
+            cached = list_cached_gguf()
+            probe_path = model_dir if model_dir_exists else ROOT
+            used, avail, pct = await get_disk_usage(str(probe_path))
+        except Exception as exc:
+            log.write(f"[red]{exc}[/]")
+            self.notify(
+                t(f"Disk inventory failed: {exc}", f"디스크 조회 실패: {exc}"),
+                severity="error",
+                timeout=8,
+            )
+            return
+
         log.write(f"[b]Project root:[/b] {ROOT}")
         log.write(f"[b]Model dir:[/b] {model_dir}")
         log.write("")
 
-        if model_dir.exists():
-            files = sorted(
-                (f for f in model_dir.glob("*.gguf")),
-                key=lambda f: f.stat().st_size,
-                reverse=True,
-            )
+        if model_dir_exists:
             log.write(t(f"[b]GGUF files ({len(files)})[/b]", f"[b]GGUF 파일 ({len(files)} 개)[/b]"))
             total = 0
-            for f in files:
-                sz = f.stat().st_size
+            for path, sz in files:
                 total += sz
-                log.write(f"  {f.name}  [dim]{sz / 1024**3:.1f} GB[/dim]")
+                log.write(f"  {path.name}  [dim]{sz / 1024**3:.1f} GB[/dim]")
             log.write(t(f"  [dim]Total: {total / 1024**3:.1f} GB[/dim]", f"  [dim]합계: {total / 1024**3:.1f} GB[/dim]"))
             log.write("")
         else:
             log.write(t(f"[yellow]Model directory does not exist: {model_dir}[/]", f"[yellow]모델 디렉토리 존재하지 않음: {model_dir}[/]"))
             log.write("")
 
-        # HF hub 캐시 — llama-server 가 `-hf` 로 받는 실제 저장 위치
-        if not hf_cache_setting():
-            log.write(t(
-                "[yellow]HF_CACHE_PATH is not set in .env.common — showing the "
-                "default location, which may not be where models were downloaded.[/]",
-                "[yellow].env.common 에 HF_CACHE_PATH 가 없습니다 — 기본 경로를 "
-                "표시하며, 실제 다운로드 위치와 다를 수 있습니다.[/]",
-            ))
-        cached = list_cached_gguf()
-        log.write(t(f"[b]HF cache GGUF ({len(cached)})[/b]  [dim]{_get_hf_cache_dir()}[/dim]", f"[b]HF cache GGUF ({len(cached)} 개)[/b]  [dim]{_get_hf_cache_dir()}[/dim]"))
+        log.write(t(f"[b]HF cache GGUF ({len(cached)})[/b]  [dim]{hf_cache_dir}[/dim]", f"[b]HF cache GGUF ({len(cached)} 개)[/b]  [dim]{hf_cache_dir}[/dim]"))
         if cached:
             for c in cached:
                 log.write(
@@ -299,12 +325,6 @@ class SystemScreen(Screen):
             log.write(t("  [dim](no GGUF downloaded in HF cache)[/dim]", "  [dim](HF 캐시에 받아둔 GGUF 없음)[/dim]"))
         log.write("")
 
-        probe_path = model_dir if model_dir.exists() else ROOT
-        try:
-            used, avail, pct = await get_disk_usage(str(probe_path))
-        except RuntimeError as exc:
-            log.write(f"[red]{exc}[/]")
-            return
         log.write(t("[b]Disk usage[/b]", "[b]디스크 사용량[/b]"))
         log.write(t(f"  Used: {used}  Free: {avail}  ({pct})", f"  사용: {used}  남음: {avail}  ({pct})"))
 
@@ -380,6 +400,11 @@ class SystemScreen(Screen):
     async def _pull_image(self, image_ref: str) -> None:
         log = self.query_one("#image-action-log", RichLog)
         log.clear()
+        error = image_tag_error(image_ref)
+        if error:
+            log.write(f"[red]{error}[/]")
+            self.notify(error, severity="error", timeout=8)
+            return
         log.write(t(f"Pulling {image_ref}", f"{image_ref} 받는 중"))
         try:
             rc, lines = await system_operations.pull_image(image_ref)

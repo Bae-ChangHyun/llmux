@@ -1,18 +1,3 @@
-"""Container start screen for llama.cpp — mirrors vllm's ContainerUpScreen.
-
-Three startup modes (vs vllm's five — llama.cpp has a single official
-ghcr.io tag so "Local Latest / Official / Nightly" collapses into one):
-
-  - Default Image      the official ghcr image (LLAMACPP_IMAGE overrides it)
-  - Dev Build          llamacpp-dev:<branch> — builds on demand from
-                       LLAMACPP_REPO_URL @ LLAMACPP_BRANCH (.env.common
-                       defaults, editable here)
-  - Custom Tag         arbitrary <repo>:<tag> the user types in
-
-`Start` then drives backend_runtime.stream_container_up() with the
-matching keyword args — same shape as the vllm screen.
-"""
-
 from __future__ import annotations
 
 from textual import on, work
@@ -39,7 +24,6 @@ from tui.backends.llamacpp.backend_runtime import (
     get_dev_build_defaults,
     stream_container_up,
 )
-from tui.backends.llamacpp.backend import LLAMACPP_OFFICIAL_IMAGE
 from tui.common.dev_build import list_local_dev_images
 from tui.common.i18n import t
 
@@ -51,15 +35,10 @@ VER_CUSTOM = "custom_tag"
 
 
 class ContainerUpScreen(Screen):
-    """Full-screen llama.cpp startup picker + log viewer."""
-
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=False),
         Binding("q", "cancel", "Quit", show=False),
         Binding("f", "toggle_follow", t("Follow on/off", "자동 스크롤")),
-        # Enter picks the highlighted version and starts, so you don't have to
-        # tab to the Start button. Priority so it fires even while the RadioSet
-        # (which would otherwise consume Enter to just toggle) is focused.
         Binding("enter", "confirm_start", t("Start", "시작"), priority=True),
     ]
 
@@ -97,9 +76,7 @@ class ContainerUpScreen(Screen):
     }
 
     ContainerUpScreen #version-scroll {
-        /* See vLLM container.py — VerticalScroll needs an explicit
-           height so the version options + dev-build inputs become
-           scrollable on short terminals. */
+        /* VerticalScroll requires an explicit height to scroll on short terminals. */
         height: 1fr;
         min-height: 8;
     }
@@ -170,6 +147,7 @@ class ContainerUpScreen(Screen):
         self._dev_repo_url, self._dev_branch = get_dev_build_defaults()
         self._has_local_dev: bool = False
         self._gpu_timer = None
+        self._gpu_probe_error = ""
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal-dialog"):
@@ -183,7 +161,6 @@ class ContainerUpScreen(Screen):
                     )
                 )
 
-            # Surface ANY pinned image, not just `llamacpp-dev:` ones.
             pinned = self._profile.image_tag
             if pinned:
                 yield Static(
@@ -270,12 +247,23 @@ class ContainerUpScreen(Screen):
             self.query_one("#version-radio", RadioSet).focus()
         except Exception:
             pass
-        # Live GPU bar — refreshed every 3 seconds, matching vllm's screen.
         self._gpu_timer = self.set_interval(3, self._fetch_gpu_info)
 
     @work(exclusive=False)
     async def _fetch_gpu_info(self) -> None:
-        gpus = await get_gpu_info()
+        try:
+            gpus = await get_gpu_info()
+        except RuntimeError as exc:
+            message = t(f"GPU probe failed: {exc}", f"GPU 조회 실패: {exc}")
+            try:
+                self.query_one("#gpu-bar", Static).update(f"[red]{message}[/red]")
+            except Exception:
+                pass
+            if message != self._gpu_probe_error:
+                self.notify(message, severity="error", timeout=8)
+            self._gpu_probe_error = message
+            return
+        self._gpu_probe_error = ""
         try:
             self.query_one("#gpu-bar", Static).update(format_gpu_bar(gpus))
         except Exception:
@@ -283,8 +271,6 @@ class ContainerUpScreen(Screen):
 
     @work(exclusive=False)
     async def _refresh_dev_label(self) -> None:
-        """Show how many local llamacpp-dev tags exist so the user knows
-        whether picking Dev Build will rebuild or reuse."""
         try:
             radio_set = self.query_one("#version-radio", RadioSet)
             btn = radio_set.query_one(f"#{VER_DEV}", RadioButton)
@@ -337,7 +323,6 @@ class ContainerUpScreen(Screen):
         self.app.pop_screen()
 
     def action_confirm_start(self) -> None:
-        """Enter: commit the highlighted version and start (see the vLLM screen)."""
         try:
             if str(self.query_one("#version-scroll").styles.display) == "none":
                 return
@@ -390,10 +375,7 @@ class ContainerUpScreen(Screen):
         repo_url = ""
         branch = ""
 
-        if selected_id == VER_PINNED:
-            # All-zero → the runtime honors profile.image_tag.
-            pass
-        elif selected_id == VER_DEV:
+        if selected_id == VER_DEV:
             use_dev = True
             repo_url = self.query_one("#dev-repo-input", Input).value.strip()
             branch = self.query_one("#dev-branch-input", Input).value.strip()
@@ -408,16 +390,18 @@ class ContainerUpScreen(Screen):
             if not tag:
                 self.app.notify(t("Please enter a custom tag.", "커스텀 태그를 입력하세요."), severity="error")
                 return
-        else:
-            # VER_DEFAULT: explicitly clear any pinned image_tag so the
-            # backend falls back to the compose default image instead of
-            # silently re-using whatever the profile pins.
+        elif selected_id != VER_PINNED:
             use_default_image = True
 
-        # Runtime port-conflict pre-flight — same UX as vllm's screen, mirrors
-        # the check the backend will perform anyway so the user sees an
-        # actionable error before we switch into the log view.
-        conflict = await check_port_conflict(self._profile)
+        try:
+            conflict = await check_port_conflict(self._profile)
+        except RuntimeError as exc:
+            self.app.notify(
+                t(f"Port probe failed: {exc}", f"포트 조회 실패: {exc}"),
+                severity="error",
+                timeout=8,
+            )
+            return
         if conflict:
             self.app.notify(
                 t(

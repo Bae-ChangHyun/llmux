@@ -11,6 +11,11 @@ from tui.backends.llamacpp.backend import LLAMACPP_OFFICIAL_REPO
 from tui.backends.vllm.backend_inspect import VLLM_OFFICIAL_REPO
 from tui.cli._runtime import emit_json, emit_table, run_async, stream_async
 from tui.common import system_operations
+from tui.common.dev_build import (
+    image_reference_credential_error,
+    image_tag_error,
+    repo_url_error,
+)
 
 app = typer.Typer(help="Docker image inventory + dev image build.", no_args_is_help=True)
 
@@ -49,6 +54,9 @@ def list_images(
             param_hint="--remote",
         )
     repo = repo or _PULL_DEFAULTS[backend][0]
+    credential_error = image_reference_credential_error(repo)
+    if credential_error:
+        raise typer.BadParameter(credential_error, param_hint="--repo")
     rows: list[dict] = []
     failures: list[str] = []
 
@@ -74,9 +82,6 @@ def list_images(
         if remote:
             release = await get_dockerhub_release_version()
             nightly = await get_dockerhub_nightly_date()
-            # "unknown" means the registry lookup failed. Emitting it as a tag
-            # would hand `docker pull vllm/vllm-openai:unknown` to any script
-            # that reads this output.
             if release == "unknown":
                 failures.append("DockerHub stable-release lookup failed")
             else:
@@ -109,9 +114,6 @@ def list_images(
 
 
 _PULL_DEFAULTS = {
-    # (default repo, default tag). vLLM has no canonical "current" tag — users
-    # almost always pin a version — so we don't default a tag there. llama.cpp
-    # ships a single official server image tagged `server-cuda`.
     "vllm": (VLLM_OFFICIAL_REPO, ""),
     "llamacpp": (LLAMACPP_OFFICIAL_REPO, "server-cuda"),
 }
@@ -150,6 +152,9 @@ def pull_image(
         )
 
     full = f"{repo}:{tag}"
+    error = image_tag_error(full)
+    if error:
+        raise typer.BadParameter(error, param_hint="TAG")
     rc, lines = run_async(system_operations.pull_image(full))
     for line in lines:
         typer.echo(line)
@@ -171,6 +176,9 @@ def remove_image(
     ),
 ) -> None:
     """`docker rmi <ref>` — drop a local image without leaving the CLI."""
+    credential_error = image_reference_credential_error(ref)
+    if credential_error:
+        raise typer.BadParameter(credential_error, param_hint="REF")
     rc, output = run_async(system_operations.remove_image(ref, force=force))
     if output:
         typer.echo(output)
@@ -205,14 +213,13 @@ def build_dev(
         help="llamacpp only: disable GPU auto-detection and build for all archs (portable, slow).",
     ),
 ) -> None:
-    """Build a `<backend>-dev:<tag>` image from source, streaming docker output.
-
-    vllm:     vllm-dev:<tag>     (target=vllm-openai, docker/Dockerfile)
-    llamacpp: llamacpp-dev:<tag> (target=server, .devops/cuda.Dockerfile)
-    """
+    """Build a backend development image from source."""
     if backend not in ("vllm", "llamacpp"):
         typer.echo(f"Error: unknown --backend {backend!r}. Use vllm or llamacpp.", err=True)
         raise typer.Exit(code=2)
+    error = repo_url_error(repo_url)
+    if error:
+        raise typer.BadParameter(error, param_hint="--repo-url")
 
     if backend == "vllm":
         from tui.backends.vllm.backend_runtime import (
@@ -223,6 +230,9 @@ def build_dev(
         default_repo, default_branch = get_dev_build_defaults()
         branch = branch or default_branch
         repo_url = repo_url or default_repo
+        error = repo_url_error(repo_url)
+        if error:
+            raise typer.BadParameter(error, param_hint="--repo-url")
         if cuda_arch or multi_arch:
             typer.echo("Warning: --cuda-arch/--multi-arch are llamacpp-only and ignored for vllm", err=True)
         rc = stream_async(
@@ -242,6 +252,9 @@ def build_dev(
         default_repo, default_branch = get_dev_build_defaults()
         branch = branch or default_branch
         repo_url = repo_url or default_repo
+        error = repo_url_error(repo_url)
+        if error:
+            raise typer.BadParameter(error, param_hint="--repo-url")
         if official:
             typer.echo("Warning: --official is vllm-only and ignored for llamacpp", err=True)
         rc = stream_async(
