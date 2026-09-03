@@ -87,7 +87,7 @@ llmux는 이 둘을 Docker Compose 위의 Textual 대시보드 하나로 묶습�
 - **벤치마크** &mdash; `llmux bench`가 warmup + 중앙값으로 돌려, 같은 하드웨어에서 quant A와 B를 비교합니다.
 - **btop 스타일 라이브 모니터** &mdash; TUI에서 `v`, 또는 TUI 없이 `llmux top`. GPU는 항상 전부 보이고(util·mem·temp·power·PCIe heat bar), 실행 중인 모델마다 패널이 붙어 처리량·KV braille 그래프, 캐시 적중, 요청, TTFT·E2E percentile(p50/p95/p99)과 prefill/decode 구간을 보여줍니다. 엔진이 노출하지 않는 지표는 지어내지 않고 `—`로 둡니다.
 - **소스에서 dev 빌드** &mdash; 임의의 fork/branch에서 `vllm-dev:` / `llamacpp-dev:` 이미지를 빌드하고(GPU arch 자동 감지) `image_tag`로 프로필에 고정합니다.
-- **전부 스크립트로도** &mdash; TUI의 모든 동작은 `--json`을 지원하는 headless `llmux` 서브커맨드로도 됩니다. 스크립트, 에이전트, CI에 그대로 붙습니다.
+- **전부 스크립트로도** &mdash; TUI의 모든 동작은 headless `llmux` 서브커맨드로도 제공됩니다. 구조화 출력은 `--json`을 명시한 명령에서만 지원합니다. 라이프사이클·변경 명령은 문서화된 텍스트 또는 스트림 출력과 종료 코드를 사용합니다.
 
 <br/>
 

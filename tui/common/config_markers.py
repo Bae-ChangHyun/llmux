@@ -1,15 +1,3 @@
-"""Serialize/parse for llmux's "disabled config parameter" comment markers.
-
-A disabled parameter is kept in the config file as a trailing *comment* line:
-
-    # llmux:disabled <key>: <yaml-inline-value>
-
-vLLM's `vllm serve` reads the config YAML directly and llama-server's flags are
-rendered from it, so a disabled param cannot live as a normal key — it would be
-passed to the server. A comment is inert to every YAML/flag parser, so the
-param is preserved (for re-enabling) without ever reaching the server.
-"""
-
 from __future__ import annotations
 
 import re
@@ -18,14 +6,47 @@ from typing import Any
 import yaml
 
 _MARKER_PREFIX = "# llmux:disabled "
-# Key is a config flag name (no colons); everything after the first ": " is the
-# inline-YAML value.
 _MARKER_RE = re.compile(r"^#\s*llmux:disabled\s+([^:]+):\s?(.*)$")
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_unique_mapping(loader, node, deep=False):
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise ValueError(f"duplicate mapping key {key!r}")
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
+def load_yaml_mapping(text: str, source: object) -> dict[str, Any]:
+    try:
+        parsed = yaml.load(text, Loader=_UniqueKeyLoader)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{source}: invalid YAML: {exc}") from exc
+    except ValueError as exc:
+        raise ValueError(f"{source}: {exc}") from exc
+    if parsed is None:
+        return {}
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            f"{source} must be a mapping; value is not a mapping "
+            f"({type(parsed).__name__})"
+        )
+    return dict(parsed)
+
+
 def _inline(value: Any) -> str:
-    # A marker is exactly one line, so width=10**9 disables wrapping — a
-    # wrapped value would be truncated at its first physical line.
     dumped = yaml.safe_dump(
         value,
         default_flow_style=True,
@@ -33,38 +54,22 @@ def _inline(value: Any) -> str:
         sort_keys=False,
         width=10**9,
     )
-    # Drop the bare `...` document-end marker scalars emit on their own line,
-    # then defensively space-join — a marker line must stay single-line (the
-    # only case that still has a real newline here is a string value that
-    # itself contains one, which config flags never do).
     lines = [ln for ln in dumped.strip().split("\n") if ln.strip() != "..."]
     return " ".join(lines)
 
 
 def render_disabled_markers(disabled: dict[str, Any]) -> str:
-    """Trailing comment block for a config file (empty string when none)."""
     lines = [f"{_MARKER_PREFIX}{key}: {_inline(value)}" for key, value in disabled.items()]
     return ("\n".join(lines) + "\n") if lines else ""
 
 
 def dump_active_config(existing_text: str | None, data: dict[str, Any]) -> str:
-    """Serialize `data` as the active-parameter YAML, keeping the user's own
-    comments (header, inline, trailing blocks) for any key that survives.
-
-    PyYAML can't round-trip comments, so editing a config used to erase every
-    hand-written `#` note. When the prior file carried comments we merge `data`
-    into it via ruamel's round-trip loader instead: values are replaced in
-    place (their attached comment stays), removed keys drop out, new keys append
-    at the end. A file with no comments — the common case — takes the original
-    plain PyYAML dump so its output stays byte-identical.
-
-    `existing_text` is the raw prior file (disabled markers and all); callers
-    pass the trailing disabled block separately via `render_disabled_markers`.
-    """
     active = strip_disabled_markers(existing_text or "")
-    plain = lambda: yaml.dump(  # noqa: E731 — one-liner fallback, used 3×
-        data, default_flow_style=False, allow_unicode=True, sort_keys=False
-    )
+
+    def plain() -> str:
+        return yaml.dump(
+            data, default_flow_style=False, allow_unicode=True, sort_keys=False
+        )
     if "#" not in active:
         return plain()
 
@@ -106,7 +111,6 @@ def dump_active_config(existing_text: str | None, data: dict[str, Any]) -> str:
 
 
 def parse_disabled_markers(text: str) -> dict[str, Any]:
-    """Extract disabled params from a raw config file's marker lines."""
     out: dict[str, Any] = {}
     for line in text.splitlines():
         m = _MARKER_RE.match(line.strip())
@@ -116,13 +120,14 @@ def parse_disabled_markers(text: str) -> dict[str, Any]:
         raw = m.group(2)
         try:
             out[key] = yaml.safe_load(raw)
-        except yaml.YAMLError:
-            out[key] = raw
+        except yaml.YAMLError as exc:
+            raise ValueError(
+                f"disabled marker {key!r} contains invalid YAML: {exc}"
+            ) from exc
     return out
 
 
 def strip_disabled_markers(text: str) -> str:
-    """Return `text` with any disabled-marker lines removed."""
     kept = [
         line for line in text.splitlines()
         if not _MARKER_RE.match(line.strip())

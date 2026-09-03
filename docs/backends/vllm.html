@@ -76,9 +76,9 @@
     runtime: nvidia
     volumes:
       - ${HF_CACHE_PATH}:/root/.cache/huggingface
-      - ./config/vllm:/config/
+      - ./config/vllm:/config/:ro
     ports:
-      - "${VLLM_PORT}:8000"
+      - "127.0.0.1:${VLLM_PORT}:8000"
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
       - NVIDIA_VISIBLE_DEVICES=${GPU_ID}
@@ -86,14 +86,14 @@
       - VLLM_WORKER_MULTIPROC_METHOD=spawn
       - VLLM_DISABLE_COMPILE_CACHE=1
     shm_size: "16g"
-    command: --config /config/${CONFIG_NAME}.yaml --tensor-parallel-size=${TENSOR_PARALLEL_SIZE} --trust-remote-code ${LORA_OPTIONS:-}</code></pre>
+    command: --config /config/${CONFIG_NAME}.yaml --tensor-parallel-size=${TENSOR_PARALLEL_SIZE} ${LORA_OPTIONS:-}</code></pre>
     <p>Key points:</p>
     <ul>
-      <li><strong><code>runtime: nvidia</code> + <code>NVIDIA_VISIBLE_DEVICES</code></strong> — the profile's <code>gpu_id</code> is passed straight through. A value of <code>"0,1"</code> exposes both GPUs to the container, which is what makes multi-GPU tensor parallelism work. (llama.cpp uses Compose's <code>deploy.resources</code> device list instead — see the <a href="comparison.html">comparison</a>.)</li>
+      <li><strong><code>runtime: nvidia</code> + <code>NVIDIA_VISIBLE_DEVICES</code></strong> — the profile's <code>gpu_id</code> is passed straight through. A value of <code>"0,1"</code> exposes both GPUs to the container, which is what makes multi-GPU tensor parallelism work. llama.cpp uses the same passthrough mechanism and applies its own split policy.</li>
       <li><strong><code>${VLLM_IMAGE:-...}</code></strong> — a per-profile <code>image_tag</code> overrides the default. UI choices (Local Latest / Official / Nightly / Dev / Custom Tag) take precedence; if none is given, <code>VLLM_IMAGE</code> from the profile pin is used; otherwise the base falls back to <code>vllm/vllm-openai:${VLLM_VERSION}</code>.</li>
       <li><strong><code>--config /config/&lt;name&gt;.yaml</code></strong> — your <code>config/vllm/&lt;name&gt;.yaml</code> is mounted read-only into the container and passed to <code>vllm serve</code> as its config file. Every key in that YAML maps 1:1 to a <code>vllm serve</code> CLI flag.</li>
       <li><strong><code>--tensor-parallel-size</code></strong> — injected from the profile, not the config.</li>
-      <li><strong><code>--trust-remote-code</code></strong> — always passed so models with custom code load.</li>
+      <li><strong><code>trust-remote-code</code></strong> — controlled by the profile config like any other vLLM flag; it can be enabled or explicitly disabled.</li>
       <li><strong><code>shm_size: "16g"</code></strong> — required headroom for vLLM's multiprocessing workers.</li>
     </ul>
     <div class="admonition note">

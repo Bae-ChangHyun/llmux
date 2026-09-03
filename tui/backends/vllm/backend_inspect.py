@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
-import os
 import re
 import urllib.request
+from pathlib import Path
+from urllib.parse import urljoin
 
+from tui.common import profile_store
 from tui.common.docker import (  # noqa: F401 — re-exported for backward compat
     GpuInfo,
     format_gpu_bar,
@@ -16,7 +19,7 @@ from tui.common.docker import (  # noqa: F401 — re-exported for backward compa
 )
 from tui.common.mem import estimate_model_memory  # noqa: F401 — re-exported
 
-from tui.common.ssl_ctx import open_url
+from tui.common.ssl_ctx import open_url, same_origin
 
 from .backend_common import CONFIG_DIR, DockerImage
 from .backend_process import run_command
@@ -28,11 +31,23 @@ logger = logging.getLogger(__name__)
 
 
 VLLM_OFFICIAL_REPO = "vllm/vllm-openai"
+_DOCKERHUB_TAG_PAGE_CAP = 5
+
+
+def resolve_vllm_image_ref(image_tag: str) -> str:
+    if "/" in image_tag or ":" in image_tag:
+        return image_tag
+    return f"{VLLM_OFFICIAL_REPO}:{image_tag}"
 
 
 async def get_docker_images(repo: str = VLLM_OFFICIAL_REPO) -> list[DockerImage]:
     """Local images for `repo`. Raises if the probe fails — an empty list must
     mean "no such image", never "docker could not be reached"."""
+    from tui.common.dev_build import image_reference_credential_error
+
+    error = image_reference_credential_error(repo)
+    if error:
+        raise RuntimeError(error)
     rc, out = await run_command(
         "docker",
         "images",
@@ -45,19 +60,9 @@ async def get_docker_images(repo: str = VLLM_OFFICIAL_REPO) -> list[DockerImage]
         raise RuntimeError(
             f"docker images {repo} failed or timed out: {out.strip() or 'no output'}"
         )
-    images = []
-    for line in out.strip().splitlines():
-        parts = line.split("\t")
-        if len(parts) >= 4:
-            images.append(
-                DockerImage(
-                    repository=parts[0],
-                    tag=parts[1],
-                    size=parts[2],
-                    created=parts[3],
-                )
-            )
-    return images
+    from tui.common.docker import parse_docker_image_rows
+
+    return [DockerImage(*row) for row in parse_docker_image_rows(out)]
 
 
 async def get_dev_images() -> list[DockerImage]:
@@ -155,20 +160,14 @@ async def _fetch_json_url(
         if headers:
             request_headers.update(headers)
         request = urllib.request.Request(url, headers=request_headers)
-        first_error: Exception | None = None
-        for target in (request, url):
-            try:
-                with open_url(target, timeout=timeout) as response:
-                    payload = response.read().decode("utf-8", errors="replace")
-                data = json.loads(payload)
-                if isinstance(data, dict):
-                    return data
-            except Exception as exc:
-                if first_error is None:
-                    first_error = exc
-                continue
-        if first_error is not None:
-            logger.debug("fetch %s failed: %s", url, first_error)
+        try:
+            with open_url(request, timeout=timeout) as response:
+                payload = response.read().decode("utf-8", errors="replace")
+            data = json.loads(payload)
+            if isinstance(data, dict):
+                return data
+        except Exception as exc:
+            logger.debug("fetch %s failed: %s", url, exc)
         return None
 
     return await loop.run_in_executor(None, _fetch)
@@ -203,22 +202,33 @@ async def get_dockerhub_release_version() -> str:
         for base_url in base_urls:
             url = base_url
             pages_checked = 0
-            while url and pages_checked < 5:
+            stable_tags: list[tuple[tuple[int, int, int], str]] = []
+            failed = False
+            while url:
+                if pages_checked >= _DOCKERHUB_TAG_PAGE_CAP:
+                    raise RuntimeError("DockerHub pagination exceeded the page limit")
                 data = await _fetch_json_url(url, timeout=5.0)
                 if not data:
+                    failed = True
                     break
-                stable_tags = [
+                stable_tags.extend(
                     (version, name)
                     for result in data.get("results", [])
                     if isinstance(result, dict)
                     if (name := str(result.get("name", "")))
                     if (version := _parse_stable_version_tag(name)) is not None
-                ]
-                if stable_tags:
-                    return max(stable_tags)[1]
+                )
                 next_url = data.get("next", "")
-                url = str(next_url) if next_url else ""
+                next_url = str(next_url) if next_url else ""
+                next_url = urljoin(url, next_url) if next_url else ""
+                if next_url and not same_origin(base_url, next_url):
+                    raise RuntimeError(
+                        "DockerHub pagination refused an off-origin URL"
+                    )
+                url = next_url
                 pages_checked += 1
+            if not failed and stable_tags:
+                return max(stable_tags)[1]
         if attempt < 2:
             await asyncio.sleep(0.5)
     registry_preferred = _pick_preferred_tag(await _fetch_docker_registry_tags())
@@ -249,31 +259,22 @@ async def get_dockerhub_nightly_date() -> str:
 
 _VLLM_PARAMS_CACHE_DIR = CONFIG_DIR
 
-_EXTRACT_SCRIPT = r'''
-import re, os, json
-vllm_path = __import__("vllm").__path__[0]
-args = set()
-scan_dirs = [
-    os.path.join(vllm_path, "entrypoints"),
-    os.path.join(vllm_path, "engine"),
-    os.path.join(vllm_path, "config"),
-]
-for scan_dir in scan_dirs:
-    if not os.path.isdir(scan_dir):
-        continue
-    for root, _, files in os.walk(scan_dir):
-        for f in files:
-            if not f.endswith(".py"):
-                continue
-            try:
-                with open(os.path.join(root, f)) as fh:
-                    for line in fh:
-                        for m in re.finditer(r"add_argument\(\s*[\"'](-{2}[a-zA-Z][a-zA-Z0-9_-]*)[\"']", line):
-                            args.add(m.group(1)[2:])
-            except Exception:
-                pass
-print(json.dumps(sorted(args)))
-'''
+_FLAG_RE = re.compile(r"(?<![A-Za-z0-9_-])--([A-Za-z][A-Za-z0-9_-]*)")
+
+
+def _validate_flags(raw: object) -> set[str]:
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("root must be a non-empty list")
+    if any(
+        not isinstance(flag, str) or not _FLAG_RE.fullmatch(f"--{flag}")
+        for flag in raw
+    ):
+        raise ValueError("items must be valid flag names")
+    return set(raw)
+
+
+def _load_flag_cache(path: Path) -> set[str]:
+    return _validate_flags(json.loads(path.read_text()))
 
 
 def _configured_vllm_image() -> str:
@@ -288,42 +289,66 @@ def _configured_vllm_image() -> str:
 
 async def extract_vllm_params(image_tag: str = "") -> set[str]:
     """Extract valid vllm serve parameters from a docker image."""
-    import json
+    if image_tag:
+        image_ref = resolve_vllm_image_ref(image_tag)
+    else:
+        image_ref = _configured_vllm_image()
+        if not image_ref:
+            local_tag = await get_local_latest_tag()
+            if local_tag == "none":
+                raise RuntimeError(
+                    "no vLLM image is configured or available locally for flag discovery"
+                )
+            image_ref = f"{VLLM_OFFICIAL_REPO}:{local_tag}"
 
-    if not image_tag:
-        image_tag = await get_local_latest_tag()
-        if image_tag == "none":
-            return set()
+    from tui.common.dev_build import image_reference_credential_error
 
-    cache_file = _VLLM_PARAMS_CACHE_DIR / f".vllm-params-{image_tag}.json"
-    if cache_file.exists():
+    error = image_reference_credential_error(image_ref)
+    if error:
+        raise RuntimeError(error)
+
+    from tui.common.docker import image_identity
+
+    identity = await image_identity(image_ref)
+    cache_file = None
+    if identity is not None:
+        cache_key = hashlib.sha256(f"{image_ref}@{identity}".encode()).hexdigest()[:16]
+        cache_file = _VLLM_PARAMS_CACHE_DIR / f".vllm-params-{cache_key}.json"
+    if cache_file is not None and cache_file.exists():
         try:
-            return set(json.loads(cache_file.read_text()))
-        except Exception:
-            pass
+            return _load_flag_cache(cache_file)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            raise RuntimeError(f"invalid vLLM flag cache {cache_file}: {exc}") from exc
 
     rc, out = await run_command(
         "docker",
         "run",
         "--rm",
         "--entrypoint",
-        "python3",
-        _configured_vllm_image() or f"{VLLM_OFFICIAL_REPO}:{image_tag}",
-        "-c",
-        _EXTRACT_SCRIPT,
+        "vllm",
+        image_ref,
+        "serve",
+        "--help",
         timeout=30,
     )
     if rc != 0 or not out.strip():
-        return set()
+        raise RuntimeError(
+            f"could not inspect vLLM flags from {image_ref}: "
+            f"{out.strip() or 'docker run failed'}"
+        )
 
-    for line in reversed(out.strip().splitlines()):
-        line = line.strip()
-        if line.startswith("["):
-            try:
-                params = json.loads(line)
-                _VLLM_PARAMS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-                cache_file.write_text(json.dumps(params))
-                return set(params)
-            except json.JSONDecodeError:
-                continue
-    return set()
+    params = set(_FLAG_RE.findall(out))
+    if not params:
+        try:
+            params = _validate_flags(json.loads(out))
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise RuntimeError(f"could not parse vLLM flags from {image_ref}: {exc}") from exc
+    if identity is None:
+        identity = await image_identity(image_ref)
+        if identity is not None:
+            cache_key = hashlib.sha256(f"{image_ref}@{identity}".encode()).hexdigest()[:16]
+            cache_file = _VLLM_PARAMS_CACHE_DIR / f".vllm-params-{cache_key}.json"
+    if cache_file is not None:
+        _VLLM_PARAMS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        profile_store._atomic_write(cache_file, json.dumps(sorted(params)))
+    return params

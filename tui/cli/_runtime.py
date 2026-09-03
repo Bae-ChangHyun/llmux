@@ -1,5 +1,3 @@
-"""CLI runtime helpers — async glue, backend detection, output formatting."""
-
 from __future__ import annotations
 
 import asyncio
@@ -16,11 +14,7 @@ BACKENDS = ("vllm", "llamacpp")
 
 
 def detect_backend(name: str, *, override: str | None = None) -> str:
-    """Resolve a profile name to its backend.
-
-    `override` (from `--backend`) wins. Otherwise scan profiles.yaml and pick
-    the unique backend that owns this name; ambiguity / not-found raises.
-    """
+    """Resolve a profile name to one backend."""
     if override:
         if override not in BACKENDS:
             raise typer.BadParameter(
@@ -55,32 +49,45 @@ def run_async(coro):
 
 
 def stream_async(agen: AsyncIterator) -> int:
-    """Drive an async generator that yields ('log', line) and exits with ('rc', n).
-
-    Lines go to stdout. Returns the final rc (or 0 if none yielded).
-
-    Explicitly closes the generator before asyncio.run() shutdown so that
-    the inner subprocess wrappers can run their cleanup deterministically.
-    Backend code may call `proc.kill()` on already-exited processes during
-    cancellation, raising ProcessLookupError; we swallow those (and the
-    cooperating CancelledError) so they don't leak as unraisable
-    exceptions to stderr.
-    """
+    """Print log events from an async generator and return its final rc event."""
 
     async def _drive() -> int:
-        rc = 0
+        rc: int | None = None
+        protocol_error = ""
         try:
             async for evt in agen:
+                if rc is not None:
+                    protocol_error = "received an event after terminal rc"
+                    break
+                if not isinstance(evt, (tuple, list)) or len(evt) != 2:
+                    protocol_error = f"malformed event: {evt!r}"
+                    break
                 kind = evt[0]
                 if kind == "log":
                     print(evt[1], flush=True)
                 elif kind == "rc":
-                    rc = int(evt[1])
+                    try:
+                        rc = int(evt[1])
+                    except (TypeError, ValueError):
+                        protocol_error = f"invalid terminal rc: {evt[1]!r}"
+                        break
+                else:
+                    protocol_error = f"unknown event kind: {kind!r}"
+                    break
         finally:
             with contextlib.suppress(
                 ProcessLookupError, OSError, asyncio.CancelledError
             ):
                 await agen.aclose()
+        if not protocol_error and rc is None:
+            protocol_error = "stream ended without a terminal rc"
+        if protocol_error:
+            print(
+                f"Error: lifecycle stream protocol error — {protocol_error}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 1
         return rc
 
     try:
@@ -115,17 +122,7 @@ def emit_table(rows: Iterable[dict], columns: list[str]) -> None:
 
 
 async def gather_conflict_warnings(profile_name: str, backend: str) -> list[str]:
-    """Pre-flight: run the same cross-backend port/GPU checks the TUI dashboard
-    runs before starting a container.
-
-    Mirrors `DashboardScreen._check_and_confirm`: aggregates llmux-managed rows
-    from both backend adapters, then applies `port_conflicts`, `gpu_conflicts`,
-    and `external_port_conflicts` against a fresh `docker ps` snapshot. Returns
-    a list of human-readable warning lines (empty = no conflicts). Each line is
-    pre-categorized so the caller can just print it.
-    """
-    # Imports live inside the function so the CLI can `--help` without paying
-    # the Textual / docker import cost.
+    """Return conflicts from a complete cross-backend pre-flight scan."""
     from tui.backends.llamacpp.adapter import LlamacppAdapter
     from tui.backends.vllm.adapter import VllmAdapter
     from tui.common import docker as common_docker
@@ -135,65 +132,71 @@ async def gather_conflict_warnings(profile_name: str, backend: str) -> list[str]
         port_conflicts,
     )
 
-    probe_warnings: list[str] = []
     try:
         running = await common_docker.running_container_names()
     except Exception as exc:
-        running = set()
-        probe_warnings.append(
-            "could not enumerate running containers via `docker ps` "
-            f"({exc}) — pre-flight conflict scan may be incomplete"
-        )
+        raise RuntimeError(
+            f"could not enumerate running containers via `docker ps`: {exc}"
+        ) from exc
 
     rows = []
     try:
         rows.extend(VllmAdapter().rows(running))
     except Exception as exc:
-        probe_warnings.append(f"vLLM profile scan failed: {exc}")
+        raise RuntimeError(f"vLLM profile scan failed: {exc}") from exc
     try:
         rows.extend(LlamacppAdapter().rows(running))
     except Exception as exc:
-        probe_warnings.append(f"llama.cpp profile scan failed: {exc}")
+        raise RuntimeError(f"llama.cpp profile scan failed: {exc}") from exc
 
     target = next(
         (r for r in rows if r.backend == backend and r.profile_name == profile_name),
         None,
     )
     if target is None:
-        # Profile vanished between detect_backend and now; let the backend's
-        # own start path surface the error.
-        return [f"port probe warning: {m}" for m in probe_warnings]
+        raise RuntimeError(
+            f"profile '{profile_name}' disappeared during conflict pre-flight"
+        )
 
-    warnings: list[str] = [f"port probe warning: {m}" for m in probe_warnings]
+    warnings: list[str] = []
     for m in port_conflicts(target, rows):
         warnings.append(f"port conflict (llmux): {m}")
     for m in gpu_conflicts(target, rows):
         warnings.append(f"GPU conflict: {m}")
     try:
         ext_ports = await common_docker.running_container_ports()
+        external_conflicts = external_port_conflicts(target, rows, ext_ports)
     except Exception as exc:
-        ext_ports = {}
-        warnings.append(
-            "port probe warning: could not inspect running container ports "
-            f"({exc})"
-        )
-    for m in external_port_conflicts(target, rows, ext_ports):
+        raise RuntimeError(
+            f"could not inspect running container ports: {exc}"
+        ) from exc
+    for m in external_conflicts:
         warnings.append(f"port conflict (external): {m}")
     return warnings
 
 
-async def docker_logs_once(container_name: str, *, tail: int) -> int:
-    """Print the last `tail` log lines for a container and exit (no follow).
+def partition_conflict_warnings(warnings: list[str]) -> tuple[list[str], list[str]]:
+    soft: list[str] = []
+    hard: list[str] = []
+    for warning in warnings:
+        if warning.startswith("GPU conflict:"):
+            soft.append(warning)
+        else:
+            hard.append(warning)
+    return hard, soft
 
-    Used by `llmux logs --no-follow` so the non-follow path goes through the
-    same async-subprocess wrapper the follow path uses, instead of a bare
-    `subprocess.run` call.
-    """
-    proc = await asyncio.create_subprocess_exec(
-        "docker", "logs", "--tail", str(tail), container_name,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
+
+async def docker_logs_once(container_name: str, *, tail: int) -> int:
+    """Print the last `tail` container log lines and return Docker's status."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "logs", "--tail", str(tail), container_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except FileNotFoundError:
+        print("Error: docker executable not found", file=sys.stderr)
+        return 127
     if proc.stdout is not None:
         while True:
             line = await proc.stdout.readline()
@@ -205,17 +208,16 @@ async def docker_logs_once(container_name: str, *, tail: int) -> int:
 
 
 async def docker_logs_follow(container_name: str, *, tail: int) -> int:
-    """Stream `docker logs -f` and return its exit code.
-
-    The CLI needs the child's status: with `stderr=STDOUT`, a missing container
-    prints "Error: No such container" as a log line and the stream simply ends,
-    so a hardcoded 0 would report success for a container that never existed.
-    """
-    proc = await asyncio.create_subprocess_exec(
-        "docker", "logs", "-f", "--tail", str(tail), container_name,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
+    """Stream `docker logs -f` and return Docker's status."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "logs", "-f", "--tail", str(tail), container_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except FileNotFoundError:
+        print("Error: docker executable not found", file=sys.stderr)
+        return 127
     try:
         if proc.stdout is not None:
             while True:

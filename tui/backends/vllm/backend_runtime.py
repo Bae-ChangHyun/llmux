@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import re
 import socket
 import urllib.request
+from urllib.parse import urlsplit
+
+import yaml
 
 from .backend_common import (
     COMMON_ENV,
@@ -20,7 +24,11 @@ from .backend_common import (
     ContainerStatus,
     Profile,
 )
-from .backend_inspect import get_dockerhub_release_version, get_local_latest_tag
+from .backend_inspect import (
+    get_dockerhub_release_version,
+    get_local_latest_tag,
+    resolve_vllm_image_ref,
+)
 from .backend_process import run_command, run_command_with_options, stream_command
 from .backend_storage import (
     _parse_env_file,
@@ -31,11 +39,27 @@ from .backend_storage import (
     save_profile,
 )
 from tui.common import dev_build, prepare, profile_store
-from tui.common.conflicts import gpu_conflict_messages as _shared_gpu_conflict_messages
+from tui.common import docker as common_docker
+from tui.common.conflicts import (
+    gpu_conflict_messages as _shared_gpu_conflict_messages,
+    published_tcp_host_ports,
+)
 from tui.common.env import expand_env_values, validate_common_env
 
 
 _BUILD_LOCK = asyncio.Lock()
+_PACKAGE_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s]+")
+_COMPOSE_PROFILE_ENV_KEYS = frozenset(
+    {
+        "CONTAINER_NAME",
+        "VLLM_PORT",
+        "GPU_ID",
+        "TENSOR_PARALLEL_SIZE",
+        "CONFIG_NAME",
+        "EXTRA_PIP_PACKAGES",
+        "VLLM_IMAGE",
+    }
+)
 
 
 def _common_env() -> dict[str, str]:
@@ -62,6 +86,16 @@ def _build_lora_options(profile: Profile) -> str:
     return " ".join(parts)
 
 
+def _extra_pip_packages_error(value: str) -> str:
+    for raw_url in _PACKAGE_URL_RE.findall(value):
+        parsed = urlsplit(raw_url.rstrip(",;)"))
+        if parsed.username is not None or parsed.password is not None:
+            return "credential-bearing package URLs are not allowed"
+        if parsed.query:
+            return "package URLs with query strings are not allowed"
+    return ""
+
+
 def _ensure_common_env(profile: Profile) -> tuple[bool, list[str]]:
     return validate_common_env(
         COMMON_ENV,
@@ -69,74 +103,113 @@ def _ensure_common_env(profile: Profile) -> tuple[bool, list[str]]:
     )
 
 
-def _ensure_profile_config(profile: Profile) -> tuple[bool, list[str]]:
-    messages: list[str] = []
-    if not profile.config_name:
-        profile.config_name = profile.name
-        save_profile(profile)
-        messages.append(
-            f"No config linked for '{profile.name}'. Auto-linked default config '{profile.config_name}'."
+def _validate_core_config_data(data: object) -> None:
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"vLLM config must be a mapping, got {type(data).__name__}"
+        )
+    model = data.get("model", "")
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("model must be a non-empty string")
+    gpu_memory = data.get("gpu-memory-utilization", 0.9)
+    if isinstance(gpu_memory, bool) or not isinstance(gpu_memory, (int, float)):
+        raise ValueError("gpu-memory-utilization must be a number")
+    if not 0 < gpu_memory <= 1:
+        raise ValueError(
+            "gpu-memory-utilization must be greater than 0 and at most 1"
         )
 
-    config = load_config(profile.config_name)
-    if config.path.exists():
-        model = config.model.strip()
-        if model and model != "your-org/your-model":
-            return True, messages
-        # Existing config still carries the placeholder. If the profile has a
-        # concrete model_id, promote it into the config (preserving other
-        # tuning on the same file) so a set MODEL_ID isn't overridden by it.
-        if profile.model_id:
-            config.model = profile.model_id
-            save_config(config)
+
+def _validate_core_config_file(path: os.PathLike[str] | str) -> None:
+    config_path = os.fspath(path)
+    try:
+        with open(config_path, encoding="utf-8") as config_file:
+            data = yaml.safe_load(config_file)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"invalid YAML in {config_path}: {exc}") from exc
+    _validate_core_config_data(data)
+
+
+def _ensure_profile_config(profile: Profile) -> tuple[bool, list[str]]:
+    with profile_store.storage_transaction():
+        latest = load_profile(profile.name)
+        messages: list[str] = []
+        if not latest.config_name:
+            latest.config_name = latest.name
+            save_profile(latest)
             messages.append(
-                f"Updated config/{profile.config_name}.yaml: model placeholder replaced "
-                f"with profile MODEL_ID '{profile.model_id}'."
+                f"No config linked for '{latest.name}'. Auto-linked default config '{latest.config_name}'."
             )
+        config = load_config(latest.config_name)
+        if config.path.exists():
+            _validate_core_config_file(config.path)
+            model = config.model.strip()
+            if model != "your-org/your-model":
+                return True, messages
+            if latest.model_id:
+                config.model = latest.model_id
+                save_config(config)
+                messages.append(
+                    f"Updated config/{latest.config_name}.yaml: model placeholder replaced "
+                    f"with profile MODEL_ID '{latest.model_id}'."
+                )
+                return True, messages
+            messages.extend(
+                [
+                    f"Error: config/{latest.config_name}.yaml does not have a valid model configured yet.",
+                    (
+                        f"Set the model field in config/{latest.config_name}.yaml or set MODEL_ID "
+                        f"in profiles.yaml for '{latest.name}', then start again."
+                    ),
+                ]
+            )
+            return False, messages
+
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        if latest.model_id:
+            save_config(
+                Config(
+                    name=latest.config_name,
+                    model=latest.model_id,
+                    gpu_memory_utilization=0.9,
+                )
+            )
+            messages.append(f"Created default config: config/{latest.config_name}.yaml")
             return True, messages
+
+        profile_store._atomic_write(
+            config.path,
+            f"# Auto-generated default config for profile: {latest.name}\n"
+            "# Set a valid Hugging Face model ID below, then start again.\n"
+            "model: your-org/your-model\n"
+            "gpu-memory-utilization: 0.9\n",
+        )
         messages.extend(
             [
-                f"Error: config/{profile.config_name}.yaml does not have a valid model configured yet.",
+                f"Created config/{latest.config_name}.yaml but MODEL_ID is not set for profile '{latest.name}'.",
                 (
-                    f"Set the model field in config/{profile.config_name}.yaml or set MODEL_ID "
-                    f"in profiles.yaml for '{profile.name}', then start again."
+                    f"Edit the config model field or set MODEL_ID in profiles.yaml for '{latest.name}', "
+                    "then start again."
                 ),
             ]
         )
         return False, messages
 
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    if profile.model_id:
-        save_config(
-            Config(
-                name=profile.config_name,
-                model=profile.model_id,
-            )
-        )
-        messages.append(f"Created default config: config/{profile.config_name}.yaml")
-        return True, messages
 
-    config.path.write_text(
-        f"# Auto-generated default config for profile: {profile.name}\n"
-        "# Set a valid Hugging Face model ID below, then start again.\n"
-        "model: your-org/your-model\n"
-        "gpu-memory-utilization: 0.9\n"
-    )
-    messages.extend(
-        [
-            f"Created config/{profile.config_name}.yaml but MODEL_ID is not set for profile '{profile.name}'.",
-            (
-                f"Edit the config model field or set MODEL_ID in profiles.yaml for '{profile.name}', "
-                "then start again."
-            ),
-        ]
-    )
-    return False, messages
+def _render_profile_snapshot(profile_name: str) -> tuple[Profile, os.PathLike[str]]:
+    with profile_store.storage_transaction():
+        stored = profile_store.load_profile(profile_name, "vllm")
+        if stored is None:
+            raise ValueError(f"profile {profile_name!r} not found in backend 'vllm'")
+        profile = load_profile(profile_name)
+        path = profile_store.render_env(stored)
+        return profile, path
 
 
 def _compose_files(profile: Profile, use_dev: bool) -> list[str]:
-    base = "docker-compose.dev.yaml" if use_dev else "docker-compose.yaml"
-    files = ["-f", str(COMPOSE_DIR / base)]
+    files = ["-f", str(COMPOSE_DIR / "docker-compose.yaml")]
+    if use_dev:
+        files.extend(["-f", str(COMPOSE_DIR / "docker-compose.dev.yaml")])
     if profile.enable_lora == "true":
         files.extend(["-f", str(COMPOSE_DIR / "docker-compose.lora.yaml")])
     files.extend(["-f", str(COMPOSE_DIR / "docker-compose.overrides.yaml")])
@@ -153,36 +226,29 @@ def _compose_env(
     vllm_image: str = "",
 ) -> dict[str, str]:
     env = os.environ.copy()
-    # Expand $VAR/~ only in the shared .env.common path values (HF_CACHE_PATH,
-    # MODEL_DIR, ...): process env outranks --env-file in compose, so a raw
-    # `/home/$USER/...` would be bind-mounted literally. The profile .env
-    # carries user env_vars, which must stay literal — expanding them would make
-    # a deliberate `$VAR`/`~` value impossible to pass through.
     env.update(expand_env_values(_common_env()))
-    env.update(_parse_env_file(profile.path))
+    profile_env = _parse_env_file(profile.path)
+    env.update(
+        {key: profile_env[key] for key in _COMPOSE_PROFILE_ENV_KEYS if key in profile_env}
+    )
     env["PROFILE_PATH"] = str(profile.path)
-    env["CONFIG_NAME"] = profile.config_name
-    env["LORA_OPTIONS"] = _build_lora_options(profile)
+    rendered_profile = Profile(
+        name=profile.name,
+        enable_lora=profile_env.get("ENABLE_LORA", "false"),
+        max_loras=profile_env.get("MAX_LORAS", ""),
+        max_lora_rank=profile_env.get("MAX_LORA_RANK", ""),
+        lora_modules=profile_env.get("LORA_MODULES", ""),
+    )
+    env["LORA_OPTIONS"] = _build_lora_options(rendered_profile)
     if use_dev:
         env["VLLM_DEV_TAG"] = image_tag
     else:
         env["VLLM_VERSION"] = version_tag
-    # Explicitly pin (or clear) VLLM_IMAGE. The rendered profile .env may
-    # already carry VLLM_IMAGE when the profile pins an image_tag; setting it
-    # here — to the desired value, or to "" for a UI/version-tag launch —
-    # ensures it never leaks past the priority order. An empty value lets
-    # compose's `${VLLM_IMAGE:-...}` fall back to the version-tag default.
     env["VLLM_IMAGE"] = vllm_image
     return env
 
 
 def _env_file_args(profile: Profile) -> list[str]:
-    """Return `--env-file` args, including each file only when it exists.
-
-    `docker compose` aborts up-front if an `--env-file` path is missing; that
-    would make `container_down` skip its clean network teardown and leak the
-    compose network, forcing the docker stop/rm fallback.
-    """
     args: list[str] = []
     if COMMON_ENV.exists():
         args.extend(["--env-file", str(COMMON_ENV)])
@@ -201,6 +267,15 @@ async def _container_exists(container_name: str) -> bool | None:
     if rc != 0:
         return None
     return container_name in out.strip().splitlines()
+
+
+async def _remove_compose_network(project_name: str) -> tuple[int, str]:
+    rc, out = await run_command(
+        "docker", "network", "rm", f"{project_name}_default", timeout=10
+    )
+    if rc == 0 or "No such network" in out:
+        return 0, ""
+    return rc or 1, out.strip() or "docker network rm failed"
 
 
 async def _gpu_conflict_messages(profile: Profile) -> list[str]:
@@ -361,48 +436,20 @@ async def _dev_image_matches(image_tag: str, repo_url: str, branch: str) -> bool
 
 
 async def get_container_statuses() -> list[ContainerStatus]:
-    """Get status for all profiles, including health check status."""
     profiles = list_profile_names()
-    rc, out = await run_command(
-        "docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}", timeout=10
-    )
-    if rc != 0:
-        raise RuntimeError(
-            "docker ps failed or timed out — container state is unknown"
-        )
-    container_info: dict[str, str] = {}
-    for line in out.strip().splitlines():
-        parts = line.split("\t", 1)
-        if len(parts) == 2:
-            container_info[parts[0]] = parts[1]
+    snapshots = await common_docker.container_snapshots(include_stopped=True)
 
     statuses = []
     for name in profiles:
         profile = load_profile(name)
-        docker_status = container_info.get(profile.container_name, "")
-        running = False
+        snapshot = snapshots.get(profile.container_name)
+        running = snapshot.running if snapshot is not None else False
         health = ""
         status_text = "stopped"
-        if docker_status:
-            if "(healthy)" in docker_status:
-                running = True
-                health = "healthy"
-                status_text = "healthy"
-            elif "(unhealthy)" in docker_status:
-                running = True
-                health = "unhealthy"
-                status_text = "unhealthy"
-            elif "(health: starting)" in docker_status:
-                running = True
-                health = "starting"
-                status_text = "starting"
-            elif docker_status.startswith("Up "):
-                running = True
-                status_text = "running"
-            elif docker_status.startswith("Exited ") or docker_status.startswith("Dead "):
-                status_text = "exited"
-            else:
-                status_text = "created"
+        if snapshot is not None:
+            status_text = snapshot.display_status
+            if snapshot.health is not common_docker.ContainerHealth.NONE:
+                health = snapshot.health.value
         model = ""
         if profile.config_name:
             config = load_config(profile.config_name)
@@ -433,30 +480,21 @@ async def check_port_conflict(profile: Profile) -> str | None:
     rc, out = await run_command(
         "docker", "ps", "--format", "{{.Names}}\t{{.Ports}}", timeout=10
     )
-    if rc == 0:
-        for line in out.strip().splitlines():
-            parts = line.split("\t", 1)
-            if len(parts) != 2:
-                continue
-            container_name, ports = parts
-            if container_name == profile.container_name:
-                # Our own container is already up. If it publishes this port,
-                # the LISTENing socket the bind probe below would trip over is
-                # our own docker-proxy — the probe can't tell that apart from a
-                # foreign process, so it reported "another local process" and
-                # blocked a re-`up` that compose treats as a no-op (exactly the
-                # recovery _post_start_validation tells users to perform).
-                # If it is running on some *other* port, fall through: the
-                # probe on this port is still meaningful.
-                if re.search(rf"(^|[^\d]){re.escape(profile.port)}->", ports):
-                    return None
-                continue
-            if re.search(rf"(^|[^\d]){re.escape(profile.port)}->", ports):
-                for name in list_profile_names():
-                    other = load_profile(name)
-                    if other.container_name == container_name:
-                        return f"profile '{name}'"
-                return f"container '{container_name}'"
+    if rc != 0:
+        raise RuntimeError(out.strip() or "docker ps port probe failed")
+    container_ports = common_docker.parse_running_container_ports(out)
+    for container_name, ports in container_ports.items():
+        published_ports = published_tcp_host_ports(ports)
+        if container_name == profile.container_name:
+            if int(profile.port) in published_ports:
+                return None
+            continue
+        if int(profile.port) in published_ports:
+            for name in list_profile_names():
+                other = load_profile(name)
+                if other.container_name == container_name:
+                    return f"profile '{name}'"
+            return f"container '{container_name}'"
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # SO_REUSEADDR: our own readiness probe leaves a TIME_WAIT entry on this
@@ -465,8 +503,12 @@ async def check_port_conflict(profile: Profile) -> str | None:
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         sock.bind(("127.0.0.1", int(profile.port)))
-    except OSError:
-        return f"another local process on 127.0.0.1:{profile.port}"
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            return f"another local process on 127.0.0.1:{profile.port}"
+        raise RuntimeError(
+            f"local port bind probe failed for 127.0.0.1:{profile.port}: {exc}"
+        ) from exc
     finally:
         sock.close()
     return None
@@ -491,22 +533,14 @@ async def _models_endpoint_ready(port: str, timeout: int = 3) -> bool:
 
 
 async def _dir_size_bytes(path: str | None) -> int | None:
-    """Disk usage of `path` in bytes via `du`, or None when unavailable.
-
-    Backend-agnostic download-progress signal: both vLLM and llama.cpp stream
-    model weights into the bind-mounted HF cache, so a growing cache directory
-    means a download is still in flight. `-B1` reports actual disk blocks (not
-    apparent size) so detection holds even if a downloader pre-allocates the
-    target file. Mirrors llamacpp._dir_size_bytes — keep the two in sync.
-    """
     if not path:
         return None
     rc, out = await run_command("du", "-s", "-B1", path, timeout=15)
     if rc != 0:
-        return None
+        raise RuntimeError(out.strip() or f"du exited with status {rc}")
     head = out.strip().split(maxsplit=1)
     if not head or not head[0].isdigit():
-        return None
+        raise RuntimeError(f"du returned malformed output: {out.strip()!r}")
     return int(head[0])
 
 
@@ -518,26 +552,6 @@ async def _post_start_validation(
     max_wait: float = 1800.0,
     hf_cache_path: str | None = None,
 ):
-    """Validate container state right after `compose up -d`.
-
-    Async generator: yields ("log", str) progress lines while waiting, then a
-    final ("result", ok: bool, messages: list[str]) tuple. Prevents
-    false-positive success when compose starts a container that exits
-    immediately (for example, GPU OOM during engine init).
-
-    Readiness uses a *stall* deadline rather than a fixed wall-clock budget:
-    the deadline is pushed back on every observed sign of progress — the HF
-    cache growing (model still downloading) or the container log advancing
-    (model still loading). A first-run download of a multi-GB model would
-    otherwise blow a flat 45s budget and surface as a false "not ready" error
-    even though the container comes up fine minutes later.
-
-    `max_wait` is an absolute backstop: a container that only churns its log
-    (e.g. an error-retry loop) would otherwise reset the stall deadline
-    forever. The backstop is *not* applied while a download is actively in
-    flight (cache still growing) — that is genuine progress and must never be
-    capped. Mirrors llamacpp._post_start_validation — keep the two in sync.
-    """
     loop = asyncio.get_running_loop()
     stall_timeout = max(timeout, poll_interval)
     deadline = loop.time() + stall_timeout
@@ -576,7 +590,7 @@ async def _post_start_validation(
             health = parts[1].strip() if len(parts) == 2 else "unknown"
 
         if status in {"restarting", "exited", "dead"} or health == "unhealthy":
-            _, tail = await run_command(
+            logs_rc, tail = await run_command(
                 "docker",
                 "logs",
                 "--tail",
@@ -590,7 +604,11 @@ async def _post_start_validation(
                 else f"container '{profile.container_name}' became unhealthy during startup"
             )
             messages = [f"Error: {reason}."]
-            if tail.strip():
+            if logs_rc != 0:
+                messages.append(
+                    f"Recent logs unavailable: {tail.strip() or f'docker logs exited with status {logs_rc}'}"
+                )
+            elif tail.strip():
                 messages.append("Recent logs:")
                 messages.extend([f"  {line}" for line in tail.strip().splitlines()[-12:]])
             yield ("result", False, messages)
@@ -610,13 +628,18 @@ async def _post_start_validation(
             yield ("result", True, [])
             return
 
-        # Progress detection: push the stall deadline back on any sign of life —
-        # the HF cache growing (still downloading) or the log advancing (still
-        # loading). Genuine stalls leave both flat and time out as before.
         progressed = False
         downloading = False
 
-        cache_size = await _dir_size_bytes(hf_cache_path)
+        try:
+            cache_size = await _dir_size_bytes(hf_cache_path)
+        except RuntimeError as exc:
+            yield (
+                "result",
+                False,
+                [f"Error: startup progress probe failed: {exc}"],
+            )
+            return
         if (
             last_cache_size is not None
             and cache_size is not None
@@ -628,15 +651,21 @@ async def _post_start_validation(
         if cache_size is not None:
             last_cache_size = cache_size
 
-        _, log_tail = await run_command(
+        logs_rc, log_tail = await run_command(
             "docker", "logs", "--tail", "15", profile.container_name, timeout=10
         )
+        if logs_rc != 0:
+            detail = log_tail.strip() or f"docker logs exited with status {logs_rc}"
+            yield (
+                "result",
+                False,
+                [f"Error: startup progress probe failed: {detail}"],
+            )
+            return
         if last_log_tail is not None and log_tail != last_log_tail:
             progressed = True
         last_log_tail = log_tail
 
-        # Read the clock *after* the awaited probes above so the stall window
-        # is measured from now, not from before up to ~25s of subprocess I/O.
         now = loop.time()
         if progressed:
             deadline = now + stall_timeout
@@ -653,10 +682,6 @@ async def _post_start_validation(
             last_heartbeat = now
 
         if not downloading and now - start >= max_wait:
-            # Absolute backstop: a download still in flight is never capped
-            # (cache growth above keeps `downloading` True), but a container
-            # that only churns its log without ever serving a model must not
-            # hold the probe open forever.
             yield (
                 "result",
                 False,
@@ -669,12 +694,6 @@ async def _post_start_validation(
             return
 
         if now >= deadline:
-            # No progress for the full stall window: the container is running
-            # but /v1/models still has no served entry, so we cannot truthfully
-            # claim readiness. Returning False prevents the caller (CLI/TUI)
-            # from chaining a benchmark or marking the start as a green success
-            # when the model is in fact still loading; users can re-run `up`
-            # (a no-op for a running container) once it finishes initializing.
             yield (
                 "result",
                 False,
@@ -714,9 +733,43 @@ async def stream_container_up(
         yield ("rc", 1)
         return
 
-    profile = load_profile(profile_name)
+    if tag and not use_dev:
+        error = dev_build.image_tag_error(resolve_vllm_image_ref(tag))
+        if error:
+            yield ("log", f"Error: invalid image reference: {error}")
+            yield ("rc", 1)
+            return
 
-    conflict = await check_port_conflict(profile)
+    if use_dev:
+        default_repo_url, _ = get_dev_build_defaults()
+        repo_error = dev_build.repo_url_error(repo_url.strip() or default_repo_url)
+        if repo_error:
+            yield ("log", f"Error: invalid repository URL: {repo_error}")
+            yield ("rc", 1)
+            return
+
+    profile = load_profile(profile_name)
+    image_credential_error = dev_build.image_reference_credential_error(
+        profile.image_tag
+    )
+    if image_credential_error:
+        yield ("log", f"Error: invalid profile image reference: {image_credential_error}")
+        yield ("rc", 1)
+        return
+
+    extra_packages = (profile.extra_pip_packages or "").strip()
+    extra_packages_error = _extra_pip_packages_error(extra_packages)
+    if extra_packages_error:
+        yield ("log", f"Error: EXTRA_PIP_PACKAGES {extra_packages_error}")
+        yield ("rc", 1)
+        return
+
+    try:
+        conflict = await check_port_conflict(profile)
+    except (OSError, RuntimeError, ValueError) as exc:
+        yield ("log", f"Error: port conflict probe failed — {exc}")
+        yield ("rc", 1)
+        return
     if conflict:
         yield ("log", f"Error: Port {profile.port} is already in use by {conflict}")
         yield ("rc", 1)
@@ -731,10 +784,7 @@ async def stream_container_up(
 
     try:
         ok, messages = _ensure_profile_config(profile)
-    except ValueError as exc:
-        # _ensure_profile_config persists the profile (save_profile), which
-        # rejects env_vars with forbidden characters — surface that through the
-        # log/rc contract instead of a raw traceback.
+    except (OSError, RuntimeError, ValueError) as exc:
         yield ("log", f"Error: cannot save {profile_name} — {exc}")
         yield ("rc", 1)
         return
@@ -744,19 +794,14 @@ async def stream_container_up(
         yield ("rc", 1)
         return
 
-    # load_profile() swallows a render failure so one bad profile can't break
-    # every read path — so re-render here, where it *is* this profile's start,
-    # and fail loudly with the offending key/character. Mirrors llamacpp.
-    stored = profile_store.load_profile(profile_name, "vllm")
-    if stored is not None:
-        try:
-            profile_store.render_env(stored)
-        except ValueError as exc:
-            yield ("log", f"Error: cannot render {profile_name}.env — {exc}")
-            yield ("log", "  Fix the value in profiles.yaml (e.g. `llmux profile edit "
-                          f"{profile_name} --unset <KEY>`).")
-            yield ("rc", 1)
-            return
+    try:
+        profile, _ = _render_profile_snapshot(profile_name)
+    except (OSError, RuntimeError, ValueError) as exc:
+        yield ("log", f"Error: cannot render {profile_name}.env — {exc}")
+        yield ("log", "  Fix the value in profiles.yaml (e.g. `llmux profile edit "
+                      f"{profile_name} --unset <KEY>`).")
+        yield ("rc", 1)
+        return
 
     if use_default_image:
         # Clear the pin *in memory*, before the image branch below reads it.
@@ -777,12 +822,17 @@ async def stream_container_up(
                 "Default Image: ignoring the profile's pinned image_tag for this run.",
             )
 
-    for message in await _gpu_conflict_messages(profile):
+    try:
+        gpu_conflicts = await _gpu_conflict_messages(profile)
+    except (OSError, RuntimeError, ValueError) as exc:
+        yield ("log", f"Error: GPU conflict probe failed — {exc}")
+        yield ("rc", 1)
+        return
+    for message in gpu_conflicts:
         yield ("log", message)
 
-    extra_packages = (profile.extra_pip_packages or "").strip()
     if extra_packages:
-        yield ("log", f"Extra pip packages: {extra_packages}")
+        yield ("log", "Extra pip packages are configured.")
 
     compose_files = _compose_files(profile, use_dev)
 
@@ -790,42 +840,43 @@ async def stream_container_up(
         default_repo_url, default_branch = get_dev_build_defaults()
         resolved_repo_url = repo_url.strip() or default_repo_url
         resolved_branch = branch.strip() or default_branch
-        # Must go through the same sanitizer the builder uses — it tags the
-        # image `vllm-dev:<safe_branch>`, so a raw `feat/foo` here would look
-        # up an invalid reference that can never match.
+        repo_error = dev_build.repo_url_error(resolved_repo_url)
+        if repo_error:
+            yield ("log", f"Error: invalid repository URL: {repo_error}")
+            yield ("rc", 1)
+            return
         image_tag = dev_build.sanitize_docker_tag(tag or resolved_branch)
-        rc, _ = await run_command(
-            "docker", "image", "inspect",
-            f"{VLLM_DEV_SPEC.image_prefix}:{image_tag}", timeout=20,
-        )
-        needs_build = rc != 0
-        if not tag and not needs_build:
-            needs_build = not await _dev_image_matches(image_tag, resolved_repo_url, resolved_branch)
+        try:
+            exists = await dev_build.image_exists_locally(VLLM_DEV_SPEC, image_tag)
+            needs_build = not exists
+            if exists:
+                needs_build = not await _dev_image_matches(
+                    image_tag, resolved_repo_url, resolved_branch
+                )
+        except RuntimeError as exc:
+            yield ("log", f"Error: Docker image probe failed — {exc}")
+            yield ("rc", 1)
+            return
 
         if needs_build:
-            if tag:
-                yield ("log", f"Error: Image {VLLM_DEV_SPEC.image_prefix}:{image_tag} not found")
-                rc, out = await run_command(
-                    "docker", "images", VLLM_DEV_SPEC.image_prefix,
-                    "--format", "  {{.Tag}}", timeout=20,
-                )
-                if rc == 0 and out.strip():
-                    yield ("log", "Available images:")
-                    for line in out.strip().splitlines():
-                        yield ("log", line)
-                yield ("rc", 1)
-                return
-            if rc == 0:
+            if exists:
                 yield (
                     "log",
                     "Existing dev image metadata does not match the requested repository/branch. Rebuilding...",
                 )
             else:
                 yield ("log", "Dev image not found. Building first...")
-            async for event in _stream_build_dev_image(resolved_branch, repo_url=resolved_repo_url):
+            async for event in _stream_build_dev_image(
+                resolved_branch,
+                repo_url=resolved_repo_url,
+                custom_tag=image_tag if tag else "",
+            ):
+                if event[0] == "rc":
+                    if int(event[1]) != 0:
+                        yield event
+                        return
+                    continue
                 yield event
-                if event[0] == "rc" and event[1] != 0:
-                    return
 
         yield ("log", f"Using image: {VLLM_DEV_SPEC.image_prefix}:{image_tag}")
         env = _compose_env(profile, use_dev=True, image_tag=image_tag)
@@ -849,14 +900,20 @@ async def stream_container_up(
         # Tag) take precedence and are handled above; absent those, honor the
         # profile's image_tag over the version-tag default. version_tag stays
         # empty so the shared block below skips version verification.
-        version_tag = ""
+        version_tag = profile.image_tag.rsplit(":", 1)[-1]
         # Mirror llama.cpp: a pinned dev image (vllm-dev:<tag>) that hasn't been
         # built yet would fail compose with an opaque "image not found" error.
         # Pre-check it exists locally and point the user at build-dev. (Non-dev
         # references are pulled/verified by compose itself.)
         if profile.image_tag.startswith(f"{VLLM_DEV_SPEC.image_prefix}:"):
             dev_tag = profile.image_tag.split(":", 1)[1]
-            if not await dev_build.image_exists_locally(VLLM_DEV_SPEC, dev_tag):
+            try:
+                exists = await dev_build.image_exists_locally(VLLM_DEV_SPEC, dev_tag)
+            except RuntimeError as exc:
+                yield ("log", f"Error: Docker image probe failed — {exc}")
+                yield ("rc", 1)
+                return
+            if not exists:
                 yield ("log", f"Error: Dev image {profile.image_tag} not found locally.")
                 yield ("log", "  Build it first:")
                 yield ("log", f"  uv run llmux image build-dev --backend vllm --tag {dev_tag}")
@@ -864,6 +921,11 @@ async def stream_container_up(
                 return
         yield ("log", f"Using image: {profile.image_tag}")
         env = _compose_env(profile, use_dev=False, vllm_image=profile.image_tag)
+        pull_policy = (
+            "never" if profile.image_tag.startswith(f"{VLLM_DEV_SPEC.image_prefix}:")
+            else "always" if pull
+            else "missing"
+        )
         compose_cmd = [
             "docker",
             "compose",
@@ -873,16 +935,18 @@ async def stream_container_up(
             profile.name,
             "up",
             "-d",
-            # Pinned image_tag implies the user already has the image
-            # locally — `--pull never` blocks a surprise re-pull from
-            # docker compose's default `missing` policy if the local
-            # image somehow drops out of `docker images`.
             "--pull",
-            "never",
+            pull_policy,
         ]
     else:
+        resolved_remote_release = False
+        explicit_image_ref = ""
         if tag:
-            version_tag = tag
+            if resolve_vllm_image_ref(tag) == tag:
+                explicit_image_ref = tag
+                version_tag = tag.rsplit(":", 1)[-1]
+            else:
+                version_tag = tag
         else:
             try:
                 version_tag = await get_local_latest_tag()
@@ -904,29 +968,27 @@ async def stream_container_up(
             yield ("rc", 1)
             return
         if version_tag == "none":
-            yield (
-                "log",
-                "Error: no versioned vllm/vllm-openai image found locally. "
-                "llmux refuses to start from `:latest` aliases because they don't "
-                "describe their actual contents.",
-            )
             release_version = await get_dockerhub_release_version()
-            if release_version != "unknown":
+            if release_version == "unknown":
                 yield (
                     "log",
-                    f"Pull a specific version first, e.g.: docker pull vllm/vllm-openai:{release_version}",
+                    "Error: no local versioned vllm/vllm-openai image and DockerHub "
+                    "is unreachable. Pull a specific version first: "
+                    "docker pull vllm/vllm-openai:<version>",
                 )
-            else:
-                yield (
-                    "log",
-                    "Pull a specific version first (docker pull vllm/vllm-openai:<version>), "
-                    "or choose Official Release in the UI.",
-                )
-            yield ("rc", 1)
-            return
+                yield ("rc", 1)
+                return
+            version_tag = release_version
+            resolved_remote_release = True
 
-        yield ("log", f"Using image: vllm/vllm-openai:{version_tag}")
-        env = _compose_env(profile, use_dev=False, version_tag=version_tag)
+        image_ref = explicit_image_ref or f"vllm/vllm-openai:{version_tag}"
+        yield ("log", f"Using image: {image_ref}")
+        if explicit_image_ref:
+            env = _compose_env(
+                profile, use_dev=False, vllm_image=explicit_image_ref
+            )
+        else:
+            env = _compose_env(profile, use_dev=False, version_tag=version_tag)
         compose_cmd = [
             "docker",
             "compose",
@@ -939,7 +1001,7 @@ async def stream_container_up(
         ]
         if pull or version_tag == "nightly":
             compose_cmd.extend(["--pull", "always"])
-        elif tag:
+        elif tag or resolved_remote_release:
             compose_cmd.extend(["--pull", "missing"])
         else:
             compose_cmd.extend(["--pull", "never"])
@@ -953,8 +1015,6 @@ async def stream_container_up(
         if rc != 0:
             yield ("rc", rc)
             return
-
-        yield ("log", f"{profile.name} started successfully!")
 
         ok = False
         val_messages: list[str] = []
@@ -971,6 +1031,7 @@ async def stream_container_up(
             yield ("rc", 1)
             return
 
+        yield ("log", f"{profile.name} started successfully!")
         if not use_dev:
             async for evt in _verify_vllm_version(profile.container_name, version_tag):
                 yield evt
@@ -986,6 +1047,9 @@ async def _resolve_prepare_image(profile: Profile) -> tuple[str, str]:
     (which prepare is allowed to pull — fetching ahead of time is its job).
     """
     if profile.image_tag:
+        error = dev_build.image_reference_credential_error(profile.image_tag)
+        if error:
+            return "", f"invalid profile image reference: {error}"
         return profile.image_tag, ""
     try:
         version_tag = await get_local_latest_tag()
@@ -1025,7 +1089,7 @@ async def stream_container_prepare(profile_name: str, *, max_workers: int | None
 
     try:
         ok, messages = _ensure_profile_config(profile)
-    except ValueError as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         yield ("log", f"Error: cannot save {profile_name} — {exc}")
         yield ("rc", 1)
         return
@@ -1035,15 +1099,13 @@ async def stream_container_prepare(profile_name: str, *, max_workers: int | None
         yield ("rc", 1)
         return
 
-    stored = profile_store.load_profile(profile_name, "vllm")
-    if stored is not None:
-        try:
-            path = profile_store.render_env(stored)
-        except ValueError as exc:
-            yield ("log", f"Error: cannot render {profile_name}.env — {exc}")
-            yield ("rc", 1)
-            return
-        yield ("log", f"▸ Rendered runtime env: {path}")
+    try:
+        profile, path = _render_profile_snapshot(profile_name)
+    except (OSError, RuntimeError, ValueError) as exc:
+        yield ("log", f"Error: cannot render {profile_name}.env — {exc}")
+        yield ("rc", 1)
+        return
+    yield ("log", f"▸ Rendered runtime env: {path}")
 
     config = load_config(profile.config_name)
     model = config.model.strip()
@@ -1058,7 +1120,13 @@ async def stream_container_prepare(profile_name: str, *, max_workers: int | None
         yield ("rc", 1)
         return
 
-    if not await prepare.image_present(image_ref):
+    try:
+        present = await prepare.image_present(image_ref)
+    except RuntimeError as exc:
+        yield ("log", f"Error: Docker image probe failed — {exc}")
+        yield ("rc", 1)
+        return
+    if not present:
         if image_ref.startswith(f"{VLLM_DEV_SPEC.image_prefix}:"):
             dev_tag = image_ref.split(":", 1)[1]
             yield ("log", f"Error: Dev image {image_ref} not found locally.")
@@ -1163,11 +1231,18 @@ async def _verify_vllm_version(container_name: str, expected_tag: str):
 
 
 async def container_down(profile_name: str) -> tuple[int, str]:
-    profile = load_profile(profile_name)
-    exists = await _container_exists(profile.container_name)
+    try:
+        stored = profile_store.load_profile(profile_name, "vllm")
+    except Exception as exc:
+        return 1, f"could not load vllm/{profile_name}: {exc}"
+    if stored is None:
+        return 1, f"profile not found: vllm/{profile_name}"
+    try:
+        profile = load_profile(profile_name)
+        exists = await _container_exists(profile.container_name)
+    except Exception as exc:
+        return 1, f"could not determine container state for {profile_name}: {exc}"
     if exists is None:
-        # Don't report a green "stopped" when we couldn't even tell — a slow or
-        # hung daemon must surface as an error, not a silent success.
         return 1, (
             f"could not determine container state for {profile_name} "
             "(docker ps failed or timed out)"
@@ -1175,47 +1250,81 @@ async def container_down(profile_name: str) -> tuple[int, str]:
     if not exists:
         return 0, f"{profile_name} is not running"
 
-    image_rc, image = await run_command(
-        "docker",
-        "inspect",
-        profile.container_name,
-        "--format={{.Config.Image}}",
-        timeout=20,
-    )
-    use_dev = image_rc == 0 and image.strip().startswith(
-        f"{VLLM_DEV_SPEC.image_prefix}:"
-    )
-    env = _compose_env(
-        profile,
-        use_dev=use_dev,
-        image_tag=image.strip().split(":", 1)[1] if use_dev and ":" in image.strip() else "",
-    )
-    compose_cmd = [
-        "docker",
-        "compose",
-        *_compose_files(profile, use_dev),
-        *_env_file_args(profile),
-        "-p",
-        profile.name,
-        "down",
-    ]
-    rc, out = await run_command_with_options(*compose_cmd, cwd=SCRIPT_DIR, env=env, timeout=60)
-    if rc == 0:
-        return 0, f"{profile_name} stopped successfully!"
+    compose_err = ""
+    try:
+        profile_store.render_env_for_profile(profile_name, "vllm")
+    except Exception as exc:
+        compose_err = f"could not render runtime env: {exc}"
 
-    compose_err = next(
-        (line for line in reversed(out.strip().splitlines()) if line.strip()),
-        f"rc={rc}",
-    )
+    if not compose_err:
+        try:
+            image_rc, image = await run_command(
+                "docker",
+                "inspect",
+                profile.container_name,
+                "--format={{.Config.Image}}",
+                timeout=20,
+            )
+        except Exception as exc:
+            image_rc, image = 1, ""
+            compose_err = f"image probe failed: {exc}"
+        if image_rc != 0 and not compose_err:
+            detail = image.strip() or f"docker inspect exited with status {image_rc}"
+            compose_err = f"image probe failed: {detail}"
+
+    if not compose_err:
+        use_dev = image.strip().startswith(f"{VLLM_DEV_SPEC.image_prefix}:")
+        try:
+            env = _compose_env(
+                profile,
+                use_dev=use_dev,
+                image_tag=(
+                    image.strip().split(":", 1)[1]
+                    if use_dev and ":" in image.strip()
+                    else ""
+                ),
+            )
+            compose_cmd = [
+                "docker",
+                "compose",
+                *_compose_files(profile, use_dev),
+                *_env_file_args(profile),
+                "-p",
+                profile.name,
+                "down",
+            ]
+            rc, out = await run_command_with_options(
+                *compose_cmd, cwd=SCRIPT_DIR, env=env, timeout=60
+            )
+            if rc == 0:
+                return 0, f"{profile_name} stopped successfully!"
+            compose_err = next(
+                (line for line in reversed(out.strip().splitlines()) if line.strip()),
+                f"rc={rc}",
+            )
+        except Exception as exc:
+            compose_err = f"compose preparation failed: {exc}"
+
     stop_rc, stop_out = await run_command("docker", "stop", profile.container_name, timeout=30)
     if stop_rc != 0:
-        return stop_rc, stop_out
+        detail = stop_out.strip() or f"docker stop exited with status {stop_rc}"
+        return stop_rc if stop_rc > 0 else 1, (
+            f"{profile_name} compose down unavailable ({compose_err}); "
+            f"manual stop failed: {detail}"
+        )
     rm_rc, rm_out = await run_command("docker", "rm", profile.container_name, timeout=30)
     if rm_rc != 0:
-        return rm_rc, rm_out
-    # Errors ignored — the network may not exist, or may still hold an external
-    # container; neither is fatal for the stop itself.
-    await run_command("docker", "network", "rm", f"{profile.name}_default", timeout=10)
+        detail = rm_out.strip() or f"docker rm exited with status {rm_rc}"
+        return rm_rc if rm_rc > 0 else 1, (
+            f"{profile_name} stopped, but manual remove failed: {detail} "
+            f"(compose down unavailable: {compose_err})"
+        )
+    network_rc, network_out = await _remove_compose_network(profile.name)
+    if network_rc != 0:
+        return network_rc, (
+            f"{profile_name} container stopped, but network cleanup failed: "
+            f"{network_out}"
+        )
     return 0, (
         f"{profile_name} stopped via docker stop/rm "
         f"(compose down failed: {compose_err})"
@@ -1228,16 +1337,20 @@ async def stream_container_logs(container_name: str, *, tail: int = 100):
     `tail` controls how many recent lines `docker logs` prints before it
     starts following live output.
     """
-    proc = await asyncio.create_subprocess_exec(
-        "docker",
-        "logs",
-        "-f",
-        "--tail",
-        str(tail),
-        container_name,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "logs",
+            "-f",
+            "--tail",
+            str(tail),
+            container_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except FileNotFoundError:
+        yield "Error: docker executable not found"
+        return
     try:
         while True:
             line = await proc.stdout.readline()

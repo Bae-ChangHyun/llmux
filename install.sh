@@ -47,10 +47,6 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 # ── 2. detect an existing install — update only, never relocate ──────────────
-# `uv tool install --force` silently switches the editable target. Re-running
-# the installer used to repoint `llmux` from a dev checkout to $INSTALL_DIR
-# (~/.llmux), surprising anyone developing the project. When llmux is already
-# installed, update that checkout in place instead and ignore $INSTALL_DIR.
 EXISTING_DIR=""
 if ! tool_dir=$(uv tool dir); then
     err "'uv tool dir' failed — cannot tell whether llmux is already installed."

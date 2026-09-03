@@ -1,5 +1,3 @@
-"""Container lifecycle commands: up / down / logs / ps / render-env."""
-
 from __future__ import annotations
 
 import asyncio
@@ -15,16 +13,30 @@ from tui.cli._runtime import (
     emit_json,
     emit_table,
     gather_conflict_warnings,
+    partition_conflict_warnings,
     run_async,
     stream_async,
 )
 from tui.common import profile_store
+from tui.common.dev_build import repo_url_error
+from tui.common.http import (
+    BENCH_MAX_TOKENS,
+    BENCH_PROMPT,
+    BENCH_RUNS,
+    BENCH_WARMUP,
+)
 
 app = typer.Typer(help="Container lifecycle (start, stop, logs, status).", no_args_is_help=True)
 
 
 class _StatusProbeFailed(RuntimeError):
     """`docker ps` failed, so container state is unknown rather than stopped."""
+
+
+class _MetricsProbeFailed(RuntimeError):
+    def __init__(self, failures: list[str]) -> None:
+        self.failures = tuple(failures)
+        super().__init__("; ".join(failures))
 
 
 
@@ -60,7 +72,7 @@ def up(
         ),
     ),
     pull: bool = typer.Option(
-        False, "--pull", help="vLLM only: force --pull always when bringing the container up."
+        False, "--pull", help="Force --pull always for non-dev images."
     ),
     repo_url: str = typer.Option(
         "", "--repo-url",
@@ -72,14 +84,11 @@ def up(
     ),
     force: bool = typer.Option(
         False, "--force",
-        help="Skip the cross-backend port/GPU conflict pre-flight (matches the "
-             "TUI dashboard's pre-start gate). Required to start a container "
-             "when llmux detects a conflict.",
+        help="Allow a detected GPU overlap. Port conflicts and failed port probes "
+             "always abort.",
     ),
 ) -> None:
     """Start a profile's container. Streams compose output to stdout."""
-    # Flag sanity first — these are contradictions in the invocation itself and
-    # don't depend on the profile resolving.
     if dev and default_image:
         typer.echo(
             "Error: --dev and --default-image are mutually exclusive (one forces a "
@@ -89,9 +98,6 @@ def up(
         raise typer.Exit(code=2)
 
     if tag and default_image:
-        # Contradictory: one names an image, the other says "use the default".
-        # Rejecting up-front also removes a cross-backend divergence — llama.cpp
-        # ignored the tag here while vLLM honored it.
         typer.echo(
             "Error: --tag and --default-image are mutually exclusive (one names an "
             "image, the other falls back to the compose default).",
@@ -99,25 +105,51 @@ def up(
         )
         raise typer.Exit(code=2)
 
+    error = repo_url_error(repo_url)
+    if error:
+        raise typer.BadParameter(error, param_hint="--repo-url")
+
     bk = detect_backend(profile, override=backend)
 
-    # Conflict pre-flight: mirror the TUI dashboard. The headless CLI defaults
-    # to ABORT-on-conflict so scripts/agents don't silently start a container
-    # that competes with another for the same port or GPU. `--force` opts out.
-    if not force:
+    if tag and not dev:
+        from tui.common.dev_build import image_tag_error
+
+        image_ref = tag
+        if bk == "vllm":
+            from tui.backends.vllm.backend_inspect import resolve_vllm_image_ref
+
+            image_ref = resolve_vllm_image_ref(tag)
+        error = image_tag_error(image_ref)
+        if error:
+            typer.echo(f"Error: invalid image reference: {error}", err=True)
+            raise typer.Exit(code=2)
+
+    try:
         warnings = run_async(gather_conflict_warnings(profile, bk))
-        if warnings:
+    except Exception as exc:
+        typer.echo(f"Conflict pre-flight failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    hard_conflicts, gpu_conflicts = partition_conflict_warnings(warnings)
+    blocking = hard_conflicts or (gpu_conflicts if not force else [])
+    if blocking:
+        typer.echo(
+            f"Conflict pre-flight: cannot start '{profile}' ({bk}) — "
+            f"{len(blocking)} issue(s) detected:",
+            err=True,
+        )
+        for warning in blocking:
+            typer.echo(f"  • {warning}", err=True)
+        if gpu_conflicts and not hard_conflicts:
             typer.echo(
-                f"Conflict pre-flight: cannot start '{profile}' ({bk}) — "
-                f"{len(warnings)} issue(s) detected:",
-                err=True,
+                "Aborting. Re-run with --force to allow the GPU overlap.", err=True
             )
-            for w in warnings:
-                typer.echo(f"  • {w}", err=True)
-            typer.echo(
-                "Aborting. Re-run with --force to start anyway.", err=True
-            )
-            raise typer.Exit(code=1)
+        else:
+            typer.echo("Aborting. Resolve the port check before retrying.", err=True)
+        raise typer.Exit(code=1)
+    if force and gpu_conflicts:
+        typer.echo("Warning: continuing despite GPU overlap:", err=True)
+        for warning in gpu_conflicts:
+            typer.echo(f"  • {warning}", err=True)
 
     if bk == "vllm":
         from tui.backends.vllm.backend_runtime import stream_container_up
@@ -136,17 +168,13 @@ def up(
     else:
         from tui.backends.llamacpp.backend_runtime import stream_container_up as lc_up
 
-        if pull:
-            typer.echo(
-                "Warning: --pull is vLLM-only and ignored for llama.cpp",
-                err=True,
-            )
         rc = stream_async(
             lc_up(
                 profile,
                 use_dev=dev,
                 use_default_image=default_image,
                 tag=tag,
+                pull=pull,
                 repo_url=repo_url,
                 branch=branch,
             )
@@ -167,14 +195,7 @@ def prepare(
              "Overrides PREPARE_MAX_WORKERS from .env.common.",
     ),
 ) -> None:
-    """Download the model and render the runtime files — without starting it.
-
-    Does everything `up` does up to the point of launching the server: renders
-    the profile env (and llama.cpp's command override), makes sure the image is
-    on disk, then downloads the weights into the HF cache using a throwaway
-    container. No server is started and no GPU is touched, so a later
-    `llmux up <profile>` only has to load what is already there.
-    """
+    """Render runtime files and download weights without starting the server."""
     bk = detect_backend(profile, override=backend)
     if bk == "vllm":
         from tui.backends.vllm.backend_runtime import stream_container_prepare
@@ -229,8 +250,6 @@ def logs(
     sp = profile_store.load_profile(profile, bk)
     container_name = sp.container_name or sp.name
 
-    # Both paths go through the shared wrapper so the exit code is the child
-    # `docker logs` status on either side of --follow.
     runner = docker_logs_follow if follow else docker_logs_once
     try:
         rc = run_async(runner(container_name, tail=tail))
@@ -247,23 +266,29 @@ def benchmark(
         None, "--backend", "-b", help="Force backend; auto-detect if omitted."
     ),
     prompt: str = typer.Option(
-        "Explain the theory of relativity in about 150 words.", "--prompt",
+        BENCH_PROMPT, "--prompt",
         help="Prompt to send to /v1/chat/completions.",
     ),
     max_tokens: int = typer.Option(
-        200, "--max-tokens", help="max_tokens for the bench request."
+        BENCH_MAX_TOKENS, "--max-tokens", help="max_tokens for the bench request."
     ),
     runs: int = typer.Option(
-        3, "--runs", help="Measured runs; the reported figure is their median."
+        BENCH_RUNS, "--runs", help="Measured runs; the reported figure is their median."
     ),
     warmup: int = typer.Option(
-        1, "--warmup", help="Warmup runs discarded before measuring."
+        BENCH_WARMUP, "--warmup", help="Warmup runs discarded before measuring."
     ),
     json_out: bool = typer.Option(
         False, "--json", help="Emit a JSON record instead of a human line."
     ),
 ) -> None:
     """Benchmark a running container (tok/s). Mirrors the TUI dashboard bench."""
+    if max_tokens < 1:
+        raise typer.BadParameter("must be at least 1", param_hint="--max-tokens")
+    if runs < 1:
+        raise typer.BadParameter("must be at least 1", param_hint="--runs")
+    if warmup < 0:
+        raise typer.BadParameter("must be at least 0", param_hint="--warmup")
     bk = detect_backend(profile, override=backend)
     sp = profile_store.load_profile(profile, bk)
     if not sp.port:
@@ -271,9 +296,6 @@ def benchmark(
         raise typer.Exit(code=2)
 
     async def _run() -> dict:
-        # Match the dashboard's per-backend dispatch: vLLM discovers the
-        # served model via /v1/models, llama.cpp uses the config `alias` (or
-        # the config name) since llama-server may not expose multiple models.
         from tui.common.http import list_served_models, run_bench
 
         if bk == "vllm":
@@ -346,25 +368,21 @@ def stats(
         False, "--json", help="Emit one compact JSON line per tick (NDJSON)."
     ),
 ) -> None:
-    """Live token throughput (tok/s) polled from each running container's /metrics.
-
-    Rates are deltas between successive samples, so the first sample only
-    establishes a baseline — the first line appears one `--interval` later.
-    A profile whose server is down or was started without metrics exposed
-    shows `n/a` and keeps being polled rather than aborting the run.
-    """
+    """Poll live token throughput from each running container."""
     import json as _json
     import time
 
     if backend and backend not in BACKENDS:
         raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
     if interval <= 0:
-        # asyncio.sleep(0) would spin the poll loop as fast as the event loop
-        # can schedule it, hammering /metrics and pinning a core.
         raise typer.BadParameter("interval must be > 0", param_hint="--interval")
     backends = [backend] if backend else list(BACKENDS)
 
-    from tui.common.metrics import ThroughputTracker, fetch_token_counters
+    from tui.common.metrics import (
+        MetricsUnavailableError,
+        ThroughputTracker,
+        fetch_token_counters,
+    )
 
     tracker = ThroughputTracker()
 
@@ -391,23 +409,25 @@ def stats(
 
     async def _sample() -> list[dict]:
         rows: list[dict] = []
+        failures: list[str] = []
         targets = await _running()
-        # Fetch concurrently (same as the dashboard's _poll_throughput): polling
-        # in turn let one slow/hanging /metrics endpoint delay every profile
-        # behind it, skewing the deltas of the ones that answered promptly.
         samples = await asyncio.gather(
             *(fetch_token_counters(t["port"]) for t in targets),
             return_exceptions=True,
         )
-        # One timestamp for the whole batch, taken after the fetches resolve.
         now = time.monotonic()
         for t, counters in zip(targets, samples):
             key = f"{t['backend']}:{t['profile']}"
+            if isinstance(counters, MetricsUnavailableError):
+                tracker.forget(key)
+                detail = str(counters).strip() or "metrics endpoint unavailable"
+                failures.append(
+                    f"{t['backend']}/{t['profile']} (port {t['port']}): {detail}"
+                )
+                continue
             if isinstance(counters, BaseException):
-                counters = None
+                raise counters
             if counters is None:
-                # Unreachable / no metrics — drop the baseline so a later
-                # restart doesn't diff against a stale pre-restart counter.
                 tracker.forget(key)
                 rate = None
             else:
@@ -419,6 +439,8 @@ def stats(
                     "generation_tok_per_s": rate[1] if rate else None,
                 }
             )
+        if failures:
+            raise _MetricsProbeFailed(failures)
         return rows
 
     def _emit(rows: list[dict]) -> None:
@@ -444,8 +466,6 @@ def stats(
         while True:
             rows = await _sample()
             if baseline:
-                # First pass only seeds the tracker; with nothing running there
-                # will never be a rate, so say so instead of hanging silently.
                 baseline = False
                 if not rows:
                     _emit(rows)
@@ -462,6 +482,10 @@ def stats(
         raise typer.Exit(code=130)
     except _StatusProbeFailed as exc:
         typer.echo(f"container status probe failed — {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except _MetricsProbeFailed as exc:
+        for failure in exc.failures:
+            typer.echo(f"metrics probe failed — {failure}", err=True)
         raise typer.Exit(code=1) from exc
 
 
@@ -484,10 +508,6 @@ def ps(
     rows = []
 
     async def _collect():
-        # Both backends expose the identical `get_container_statuses()`
-        # contract (field-for-field mirror — see llamacpp.backend_runtime
-        # ContainerStatus docstring), so dispatch once and reuse the same
-        # row-builder for both.
         for bk in backends:
             if bk == "vllm":
                 from tui.backends.vllm.backend_runtime import get_container_statuses
@@ -547,14 +567,13 @@ def render_env(
     if backend and backend not in BACKENDS:
         raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
     if profile is None:
-        # Render per-profile rather than via render_all(): a single unrenderable
-        # value would otherwise abort the whole batch with a traceback and never
-        # say which profile was at fault.
         failures: list[str] = []
         for bk in ([backend] if backend else list(BACKENDS)):
             for sp in profile_store.list_profiles(bk):
                 try:
-                    print(profile_store.render_env(sp))
+                    print(
+                        profile_store.render_env_for_profile(sp.name, sp.backend)
+                    )
                 except ValueError as exc:
                     failures.append(f"{bk}/{sp.name}: {exc}")
         if failures:
@@ -565,9 +584,8 @@ def render_env(
         return
 
     bk = detect_backend(profile, override=backend)
-    sp = profile_store.load_profile(profile, bk)
     try:
-        out_path = profile_store.render_env(sp)
+        out_path = profile_store.render_env_for_profile(profile, bk)
     except ValueError as exc:
         print(f"Error: cannot render {bk}/{profile}.env — {exc}")
         print(f"  Fix it with: llmux profile edit {profile} --unset <KEY>")

@@ -1,42 +1,24 @@
-# llmux llama.cpp base compose
-#
-# 사용법:
-#   uv run llmux up <profile> -b llamacpp
-#
-# 동작:
-#   1. profiles.yaml 의 llamacpp/<name> 을 .runtime/llamacpp/<name>.env 로 렌더.
-#   2. scripts/llamacpp/render-override.py 가 config/llamacpp/<name>.yaml 를
-#      읽어 .runtime/llamacpp/override-<name>.yaml 를 생성 (command: 블록 주입).
-#   3. docker compose up -d 가 base + per-profile override 를 병합해 기동.
-#   4. llama-server 가 `-hf <repo> -hff <file>` 로 HF 에서 직접 받음.
-#      받은 GGUF 는 호스트 ~/.cache/huggingface (= HF_CACHE_PATH) 에 영구 저장.
-#      vllm 흐름과 동일 — 호스트 hf CLI 의존성 없음.
-
 services:
   llama-server:
     image: ${LLAMACPP_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda}
-    container_name: ${CONTAINER_NAME}
+    container_name: ${CONTAINER_NAME:?CONTAINER_NAME is required — the profile env was not rendered}
     runtime: nvidia
     restart: unless-stopped
     ports:
-      - "${LLAMA_PORT:?LLAMA_PORT is required — the profile env was not rendered}:8080"
+      - "127.0.0.1:${LLAMA_PORT:?LLAMA_PORT is required — the profile env was not rendered}:8080"
     volumes:
-      # vllm 과 동일 — HF cache 만 mount. llama-server 가 컨테이너 안에서 직접 받음.
-      - ${HF_CACHE_PATH}:/root/.cache/huggingface
+      - ${HF_CACHE_PATH:?HF_CACHE_PATH is required — .env.common was not loaded}:/root/.cache/huggingface
     environment:
       - TZ=${TZ:-UTC}
       - HF_TOKEN=${HF_TOKEN}
-      # vllm 과 동일 포맷. 이전의 `deploy.resources.reservations.devices.device_ids`
-      # 는 comma-separated GPU_ID (예: `0,1`) 를 단일 id 로 취급해서 multi-GPU
-      # (split-mode / tensor-split) 구성이 깨졌다.
+      - CONFIG_NAME=${CONFIG_NAME:?CONFIG_NAME is required — the profile env was not rendered}
       - NVIDIA_VISIBLE_DEVICES=${GPU_ID:?GPU_ID is required — the profile env was not rendered}
     env_file:
-      - path: ${PROFILE_PATH}
-        required: false
+      - path: ${PROFILE_PATH:?PROFILE_PATH is required — the profile env was not rendered}
+        required: true
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 300s
-    # command 은 docker-compose.override.yaml (render-override.py 생성) 에서 주입됨.

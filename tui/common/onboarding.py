@@ -1,20 +1,9 @@
-"""First-run onboarding: interactively create `.env.common`.
-
-A fresh checkout has no `.env.common` — it is gitignored, only the tracked
-`.env.common.example` template ships. Rather than failing later with a
-"create it from the example" error, the CLI entry point runs this wizard once
-to collect the few values that genuinely need a human (HF cache location,
-model directory, optional HF token) and renders a complete `.env.common` from
-the template, keeping every other key at its documented default.
-
-The caller owns the TTY gate: a non-interactive invocation (script, pipe, CI)
-must skip this so it falls back to the normal validation error instead of
-blocking on a prompt.
-"""
+"""Interactive first-run `.env.common` setup."""
 
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 from tui.common.env import validate_common_env
@@ -25,16 +14,13 @@ COMMON_ENV_EXAMPLE = PROJECT_ROOT / ".env.common.example"
 
 
 def needs_onboarding() -> bool:
-    """True when `.env.common` is absent — the one signal of a fresh checkout."""
-    return not COMMON_ENV.exists()
+    if not COMMON_ENV.exists():
+        return True
+    ok, _messages = validate_common_env(COMMON_ENV)
+    return not ok
 
 
 def _render_env(overrides: dict[str, str]) -> str:
-    """Render `.env.common` from the tracked example, applying `overrides`.
-
-    Every comment and every unprompted key (LLAMACPP_*, TZ, LORA_BASE_PATH) is
-    kept verbatim from the template, so the result stays self-documenting.
-    """
     lines: list[str] = []
     for line in COMMON_ENV_EXAMPLE.read_text().splitlines():
         stripped = line.strip()
@@ -47,13 +33,31 @@ def _render_env(overrides: dict[str, str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run_onboarding() -> bool:
-    """Interactive wizard: collect a few values and write `.env.common`.
+def _write_common_env(content: str) -> None:
+    COMMON_ENV.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{COMMON_ENV.name}.", dir=COMMON_ENV.parent
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, COMMON_ENV)
+        COMMON_ENV.chmod(0o600)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        tmp_path.unlink(missing_ok=True)
+        raise
 
-    Returns True when `.env.common` was written and validates; False if the
-    user aborted or the template was missing. Never raises — the caller treats
-    a False result as "fall through to normal validation".
-    """
+
+def run_onboarding() -> bool:
+    """Write and validate `.env.common` from interactive answers."""
     from rich.console import Console
     from rich.panel import Panel
     from rich.prompt import Prompt
@@ -61,7 +65,6 @@ def run_onboarding() -> bool:
     console = Console()
 
     if not COMMON_ENV_EXAMPLE.exists():
-        # No template to render from — let normal validation guide the user.
         return False
 
     console.print(
@@ -89,6 +92,7 @@ def run_onboarding() -> bool:
             "HuggingFace token (optional — needed for gated models)",
             default="",
             console=console,
+            password=True,
         )
     except (KeyboardInterrupt, EOFError):
         console.print("\n[yellow]Onboarding cancelled.[/yellow]")
@@ -109,7 +113,7 @@ def run_onboarding() -> bool:
         return False
 
     try:
-        COMMON_ENV.write_text(
+        _write_common_env(
             _render_env(
                 {
                     "HF_CACHE_PATH": hf_cache_path,
@@ -122,9 +126,7 @@ def run_onboarding() -> bool:
         console.print(f"[red]Could not write {COMMON_ENV}:[/red] {exc}")
         return False
 
-    # Pre-create the bind-mount targets so docker does not create them as root.
-    # A failure is non-fatal (the path may need sudo, or be created later) but
-    # must be surfaced — silently continuing would hide a real misconfiguration.
+    # Pre-create bind targets before Docker can create root-owned directories.
     for path in (hf_cache_path, model_dir_path):
         try:
             Path(path).mkdir(parents=True, exist_ok=True)
@@ -137,13 +139,13 @@ def run_onboarding() -> bool:
     ok, messages = validate_common_env(COMMON_ENV)
     if not ok:
         console.print("[red]" + "\n".join(messages) + "[/red]")
-        # Remove the invalid file so the next launch re-runs onboarding —
-        # needs_onboarding() only checks existence, so leaving it would
-        # permanently strand the user with a broken config.
         try:
             COMMON_ENV.unlink()
-        except OSError:
-            pass
+        except OSError as exc:
+            console.print(
+                f"[red]Could not remove invalid {COMMON_ENV}:[/red] {exc}\n"
+                "[yellow]Onboarding will retry because the file remains invalid.[/yellow]"
+            )
         return False
 
     console.print(

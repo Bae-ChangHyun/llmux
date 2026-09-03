@@ -15,9 +15,11 @@ from typing import Optional
 import typer
 import yaml
 
-from tui.cli._runtime import BACKENDS, emit_json, emit_table
+from tui.cli._runtime import BACKENDS, emit_json, emit_table, run_async
 from tui.cli.profile import _validate_gpu_mem
 from tui.common import profile_store
+from tui.common.config_markers import load_yaml_mapping
+from tui.common.dev_build import image_reference_credential_error
 
 app = typer.Typer(help="Config (YAML) CRUD.", no_args_is_help=True)
 
@@ -45,14 +47,10 @@ def _load_yaml(backend: str, name: str) -> dict:
     path = _config_dir(backend) / f"{name}.yaml"
     if not path.exists():
         raise typer.BadParameter(f"config not found: {path}", param_hint="NAME")
-    raw = yaml.safe_load(path.read_text()) or {}
-    if not isinstance(raw, dict):
-        raise typer.BadParameter(
-            f"{path} is not a mapping ({type(raw).__name__}) — it would read as "
-            "an empty config.",
-            param_hint="NAME",
-        )
-    return raw
+    try:
+        return load_yaml_mapping(path.read_text(), path)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="NAME") from exc
 
 
 def _config_path(backend: str, name: str) -> Path:
@@ -63,14 +61,6 @@ def _config_path(backend: str, name: str) -> Path:
 def _backend_save_config(
     backend: str, name: str, data: dict, disabled: dict | None = None
 ) -> Path:
-    """Route a config write through the backend's canonical serializer.
-
-    The vLLM backend hoists `model` / `gpu-memory-utilization` into typed
-    fields and writes them in a fixed order; the llama.cpp backend writes a
-    flat flag dict. Going through these instead of a local `yaml.safe_dump`
-    keeps TUI and CLI round-trips byte-identical. `disabled`
-    carries params kept as comment markers rather than active keys.
-    """
     disabled = disabled or {}
     cdir = _config_dir(backend)
     cdir.mkdir(parents=True, exist_ok=True)
@@ -80,7 +70,7 @@ def _backend_save_config(
 
         extra = dict(data)
         model = str(extra.pop("model", ""))
-        gpu_mem = str(extra.pop("gpu-memory-utilization", "0.9"))
+        gpu_mem = extra.pop("gpu-memory-utilization", "0.9")
         v_save(VllmConfig(
             name=name,
             model=model,
@@ -145,8 +135,11 @@ def _parse_set_kv(items: list[str]) -> dict:
         else:
             try:
                 out[key] = yaml.safe_load(value)
-            except yaml.YAMLError:
-                out[key] = value
+            except yaml.YAMLError as exc:
+                raise typer.BadParameter(
+                    f"--set {key!r} contains invalid YAML: {exc}",
+                    param_hint="--set",
+                ) from exc
     return out
 
 
@@ -351,10 +344,12 @@ def new_config(
         gpu_mem_given=gpu_memory_utilization != "0.9",
     )
     if backend == "vllm":
+        if not model.strip():
+            raise typer.BadParameter(
+                "--model is required for vLLM configs",
+                param_hint="--model",
+            )
         _validate_gpu_mem(gpu_memory_utilization)
-    path = _config_dir(backend) / f"{name}.yaml"
-    if path.exists() and not overwrite:
-        raise typer.BadParameter(f"config already exists: {path} (use --overwrite)")
 
     if backend == "vllm":
         data: dict = {"model": model, "gpu-memory-utilization": gpu_memory_utilization}
@@ -362,7 +357,11 @@ def new_config(
         data = {}
     data.update(_parse_set_kv(set_kv))
     _validate_gpu_mem_in_data(backend, data)
-    saved = _backend_save_config(backend, name, data)
+    with profile_store.storage_transaction():
+        path = _config_dir(backend) / f"{name}.yaml"
+        if path.exists() and not overwrite:
+            raise typer.BadParameter(f"config already exists: {path} (use --overwrite)")
+        saved = _backend_save_config(backend, name, data)
     print(saved)
 
 
@@ -382,61 +381,55 @@ def edit_config(
     gpu_memory_utilization: Optional[str] = typer.Option(None, "--gpu-mem"),
 ) -> None:
     """Patch fields in an existing config."""
-    bk = _resolve_backend_for_existing(backend, name)
-    _warn_touching_example(bk, name, "modifying")
-    _reject_vllm_only_config_options(
-        bk,
-        model_given=model is not None,
-        gpu_mem_given=gpu_memory_utilization is not None,
-    )
-    data = _backend_load_config(bk, name)
-    disabled = _backend_load_disabled(bk, name)
-    if model is not None:
-        data["model"] = model
-    if gpu_memory_utilization is not None:
-        _validate_gpu_mem(gpu_memory_utilization)
-        data["gpu-memory-utilization"] = gpu_memory_utilization
-    # --set re-activates a key that was disabled (and updates its value).
-    for k, v in _parse_set_kv(set_kv).items():
-        disabled.pop(k, None)
-        data[k] = v
-    # vLLM's model / gpu-memory-utilization are typed fields the serializer
-    # always re-emits with a default, so a disabled marker for them would sit
-    # alongside a live default — `up` would silently use the default, not the
-    # value the user thought they'd toggled. Refuse to toggle them at all.
-    if bk == "vllm":
-        for flag, keys in (
-            ("--disable", disable), ("--enable", enable), ("--unset", unset),
-        ):
-            for k in keys:
-                if k in ("model", "gpu-memory-utilization"):
-                    raise typer.BadParameter(
-                        f"{k} is a core vLLM field and cannot be toggled or "
-                        "removed; use --model / --gpu-mem to change it.",
-                        param_hint=flag,
-                    )
-    for k in disable:
-        if k not in data:
-            raise typer.BadParameter(
-                f"cannot disable {k!r}: not an active param in config '{name}'.",
-                param_hint="--disable",
-            )
-        disabled[k] = data.pop(k)
-    # --enable: disabled -> active. Must currently be disabled.
-    for k in enable:
-        if k not in disabled:
-            raise typer.BadParameter(
-                f"cannot enable {k!r}: not a disabled param in config '{name}'.",
-                param_hint="--enable",
-            )
-        data[k] = disabled.pop(k)
-    # Validate AFTER enable so a bad gpu-memory-utilization brought back from
-    # the disabled set (or set above) can't slip through unchecked.
-    _validate_gpu_mem_in_data(bk, data)
-    for k in unset:
-        data.pop(k, None)
-        disabled.pop(k, None)
-    saved = _backend_save_config(bk, name, data, disabled)
+    parsed_set = _parse_set_kv(set_kv)
+    with profile_store.storage_transaction():
+        bk = _resolve_backend_for_existing(backend, name)
+        _warn_touching_example(bk, name, "modifying")
+        _reject_vllm_only_config_options(
+            bk,
+            model_given=model is not None,
+            gpu_mem_given=gpu_memory_utilization is not None,
+        )
+        data = _backend_load_config(bk, name)
+        disabled = _backend_load_disabled(bk, name)
+        if model is not None:
+            data["model"] = model
+        if gpu_memory_utilization is not None:
+            _validate_gpu_mem(gpu_memory_utilization)
+            data["gpu-memory-utilization"] = gpu_memory_utilization
+        for k, v in parsed_set.items():
+            disabled.pop(k, None)
+            data[k] = v
+        if bk == "vllm":
+            for flag, keys in (
+                ("--disable", disable), ("--enable", enable), ("--unset", unset),
+            ):
+                for k in keys:
+                    if k in ("model", "gpu-memory-utilization"):
+                        raise typer.BadParameter(
+                            f"{k} is a core vLLM field and cannot be toggled or "
+                            "removed; use --model / --gpu-mem to change it.",
+                            param_hint=flag,
+                        )
+        for k in disable:
+            if k not in data:
+                raise typer.BadParameter(
+                    f"cannot disable {k!r}: not an active param in config '{name}'.",
+                    param_hint="--disable",
+                )
+            disabled[k] = data.pop(k)
+        for k in enable:
+            if k not in disabled:
+                raise typer.BadParameter(
+                    f"cannot enable {k!r}: not a disabled param in config '{name}'.",
+                    param_hint="--enable",
+                )
+            data[k] = disabled.pop(k)
+        _validate_gpu_mem_in_data(bk, data)
+        for k in unset:
+            data.pop(k, None)
+            disabled.pop(k, None)
+        saved = _backend_save_config(bk, name, data, disabled)
     print(saved)
 
 
@@ -456,18 +449,19 @@ def clone_config(
     `--copy-from` isn't enough — e.g. cloning a tuned config to a new name
     without creating a profile in the same step.
     """
-    bk = _resolve_backend_for_existing(backend, src)
     _validate_new_name(dst, param_hint="DST")
     _reject_creating_example(dst, param_hint="DST")
-    dst_path = _config_dir(bk) / f"{dst}.yaml"
-    if dst_path.exists() and not overwrite:
-        raise typer.BadParameter(
-            f"destination config already exists: {dst_path} (use --overwrite)",
-            param_hint="DST",
-        )
-    data = _backend_load_config(bk, src)
-    disabled = _backend_load_disabled(bk, src)
-    saved = _backend_save_config(bk, dst, data, disabled)
+    with profile_store.storage_transaction():
+        bk = _resolve_backend_for_existing(backend, src)
+        dst_path = _config_dir(bk) / f"{dst}.yaml"
+        if dst_path.exists() and not overwrite:
+            raise typer.BadParameter(
+                f"destination config already exists: {dst_path} (use --overwrite)",
+                param_hint="DST",
+            )
+        data = _backend_load_config(bk, src)
+        disabled = _backend_load_disabled(bk, src)
+        saved = _backend_save_config(bk, dst, data, disabled)
     print(saved)
 
 
@@ -513,9 +507,68 @@ def rename_config(
         updated = config_store.rename_config(bk, old, new)
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="NEW") from exc
+    except (OSError, RuntimeError) as exc:
+        typer.echo(f"config rename failed — {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     print(f"Renamed {_config_path(bk, old)} → {_config_path(bk, new)}")
     for name in updated:
         print(f"Repointed profile: {name}")
+
+
+@app.command("flags")
+def list_flags(
+    backend: Optional[str] = typer.Option(None, "--backend", "-b"),
+    image: str = typer.Option("", "--image", help="Docker image used for discovery."),
+    profile: str = typer.Option("", "--profile", help="Use this profile's backend and image."),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """List flags supported by the selected backend image."""
+    if backend is not None and backend not in BACKENDS:
+        raise typer.BadParameter(f"unknown backend: {backend}", param_hint="--backend")
+    if image and profile:
+        raise typer.BadParameter(
+            "--image and --profile are mutually exclusive",
+            param_hint="--image",
+        )
+    if profile:
+        owner = profile_store.find_name_owner(profile)
+        if owner is None:
+            raise typer.BadParameter(f"profile not found: {profile}", param_hint="--profile")
+        if backend is not None and backend != owner:
+            raise typer.BadParameter(
+                f"profile {profile!r} belongs to backend {owner!r}",
+                param_hint="--backend",
+            )
+        backend = owner
+        stored = profile_store.load_profile(profile, backend)
+        if stored is None:
+            raise typer.BadParameter(f"profile not found: {profile}", param_hint="--profile")
+        image = stored.image_tag
+
+    backend = backend or "vllm"
+    image_error = image_reference_credential_error(image)
+    if image_error:
+        raise typer.BadParameter(image_error, param_hint="--image")
+    try:
+        if backend == "vllm":
+            from tui.backends.vllm.backend_inspect import extract_vllm_params
+
+            flags = sorted(run_async(extract_vllm_params(image)))
+        else:
+            from tui.backends.llamacpp.backend import extract_llama_server_flags
+
+            flags = sorted(run_async(extract_llama_server_flags(image)))
+    except RuntimeError as exc:
+        typer.echo(f"flag discovery failed — {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if json_out:
+        emit_json({"backend": backend, "image": image, "flags": flags})
+        return
+    emit_table(
+        [{"backend": backend, "flag": flag} for flag in flags],
+        columns=["backend", "flag"],
+    )
 
 
 @app.command("from-recipe")
@@ -555,7 +608,12 @@ def config_from_recipe(
     --variant (or let it auto-pick the highest-quality one that fits the GPU).
     """
     from tui.cli._runtime import run_async
-    from tui.common.recipes import RecipeUnavailable, build_config, fetch_recipe
+    from tui.common.recipes import (
+        RecipeUnavailable,
+        build_config,
+        fetch_recipe,
+        validate_feature_names,
+    )
 
     if merge and overwrite:
         raise typer.BadParameter(
@@ -563,6 +621,9 @@ def config_from_recipe(
             "existing params, the other replaces them)",
             param_hint="--merge",
         )
+    if name:
+        _validate_new_name(name, param_hint="--name")
+        _reject_creating_example(name, param_hint="--name")
 
     source_model = recipe_from.strip() or model_id
     try:
@@ -589,6 +650,10 @@ def config_from_recipe(
                 print(f"  {f.name:<16} {f.description}")
         return
 
+    try:
+        validate_feature_names(recipe, list(feature))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--feature") from exc
     chosen = _pick_recipe_variant(recipe, variant)
     model, params = build_config(recipe, chosen, list(feature))
 
@@ -611,34 +676,38 @@ def config_from_recipe(
         return
 
     cfg_name = name or _derive_config_name(model)
+    _validate_new_name(cfg_name, param_hint="--name")
+    _reject_creating_example(cfg_name, param_hint="--name")
     path = _config_dir("vllm") / f"{cfg_name}.yaml"
 
     if merge:
-        if not path.exists():
-            raise typer.BadParameter(
-                f"no such config to merge into: {path} (drop --merge to create it)",
-                param_hint="--merge",
-            )
-        data = _backend_load_config("vllm", cfg_name)
-        disabled = _backend_load_disabled("vllm", cfg_name)
-        data["model"] = model
-        data.update(params)
-        saved = _backend_save_config("vllm", cfg_name, data, disabled)
+        with profile_store.storage_transaction():
+            if not path.exists():
+                raise typer.BadParameter(
+                    f"no such config to merge into: {path} (drop --merge to create it)",
+                    param_hint="--merge",
+                )
+            data = _backend_load_config("vllm", cfg_name)
+            disabled = _backend_load_disabled("vllm", cfg_name)
+            data["model"] = model
+            data.update(params)
+            for key in ("model", *params):
+                disabled.pop(key, None)
+            saved = _backend_save_config("vllm", cfg_name, data, disabled)
         if chosen:
             print(f"variant: {chosen.name} (recipe {recipe.model_id})")
         print(f"merged {len(params)} recipe param(s) into {saved}")
         return
 
-    _validate_new_name(cfg_name, param_hint="--name")
-    _reject_creating_example(cfg_name, param_hint="--name")
-    if path.exists() and not overwrite:
-        raise typer.BadParameter(
-            f"config already exists: {path} (use --overwrite, --merge or --name)",
-            param_hint="--name",
-        )
     data: dict = {"model": model, "gpu-memory-utilization": "0.9"}
     data.update(params)
-    saved = _backend_save_config("vllm", cfg_name, data, {})
+    with profile_store.storage_transaction():
+        if path.exists() and not overwrite:
+            raise typer.BadParameter(
+                f"config already exists: {path} (use --overwrite, --merge or --name)",
+                param_hint="--name",
+            )
+        saved = _backend_save_config("vllm", cfg_name, data, {})
     if chosen:
         print(f"variant: {chosen.name} (model {model})")
     print(saved)
@@ -656,12 +725,17 @@ def _pick_recipe_variant(recipe, variant_name: str):
                 f"{', '.join(by_name)}", param_hint="--variant",
             )
         return by_name[variant_name]
-    # Auto-pick: highest-quality (recipe order) variant that fits the GPU;
-    # else the smallest-VRAM one. Mirrors the TUI review screen.
     from tui.cli._runtime import run_async
     from tui.common.docker import get_gpu_info
 
-    gpus = run_async(get_gpu_info())
+    try:
+        gpus = run_async(get_gpu_info())
+    except RuntimeError as exc:
+        raise typer.BadParameter(
+            f"could not read GPU memory ({exc}) — pass --variant explicitly; "
+            f"available: {', '.join(by_name)}",
+            param_hint="--variant",
+        ) from exc
     gpu_gb = None
     if gpus:
         try:
@@ -683,13 +757,12 @@ def _pick_recipe_variant(recipe, variant_name: str):
         recipe.variants,
         key=lambda v: v.vram_minimum_gb if v.vram_minimum_gb is not None else 1e9,
     )
-    typer.echo(
-        f"Warning: no variant fits {gpu_gb:.0f}GB of VRAM; falling back to "
-        f"{smallest.name!r} (needs "
-        f"{smallest.vram_minimum_gb or '?'}GB).",
-        err=True,
+    raise typer.BadParameter(
+        f"no recipe variant fits {gpu_gb:.0f}GB of VRAM; smallest is "
+        f"{smallest.name!r} (needs {smallest.vram_minimum_gb or '?'}GB). "
+        "Pass --variant explicitly to select it.",
+        param_hint="--variant",
     )
-    return smallest
 
 
 def _derive_config_name(model_id: str) -> str:
@@ -708,15 +781,14 @@ def delete_config(
     yes: bool = typer.Option(False, "--yes", "-y"),
 ) -> None:
     """Delete a config YAML."""
+    from tui.common import config_store
+
     bk = _resolve_backend_for_existing(backend, name)
     path = _config_dir(bk) / f"{name}.yaml"
     if not path.exists():
         raise typer.BadParameter(f"config not found: {path}", param_hint="NAME")
     _warn_touching_example(bk, name, "deleting")
-    # Profiles pointing at this config would keep a dangling config_name in
-    # profiles.yaml once the YAML is gone; clear them like the TUI's
-    # ConfirmDeleteConfigScreen does.
-    referencing = [p for p in profile_store.list_profiles(bk) if p.config_name == name]
+    referencing = config_store.referencing_profiles(bk, name)
     if not yes:
         prompt = f"Delete {path}?"
         if referencing:
@@ -727,9 +799,13 @@ def delete_config(
             )
         if not typer.confirm(prompt):
             raise typer.Exit(code=0)
-    path.unlink()
+    try:
+        changed = config_store.delete_config(bk, name)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="NAME") from exc
+    except (OSError, RuntimeError) as exc:
+        typer.echo(f"config delete failed — {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     print(f"Deleted {path}")
-    for p in referencing:
-        p.config_name = ""
-        profile_store.save_profile(p)
-        print(f"Cleared config_name on profile: {p.name}")
+    for profile_name in changed:
+        print(f"Cleared config_name on profile: {profile_name}")

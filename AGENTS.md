@@ -16,7 +16,7 @@ Start from `llmux --help`. Top-level shortcuts and sub-apps:
   (`prepare` = everything `up` does except starting the server: renders the
   runtime files, ensures the image is local, downloads the weights.)
 - Profiles: `llmux profile {list,show,new,edit,rename,clone,delete,quick-setup}`
-- Configs: `llmux config {list,show,new,edit,clone,rename,delete}`
+- Configs: `llmux config {list,show,new,edit,clone,rename,flags,from-recipe,delete}`
 - Images: `llmux image {list,pull,remove,build-dev}`
 - System: `llmux system {gpu,mem-estimate,disk,env-check}` (`gpu` / `env-check` also available top-level)
 - Self-update: `llmux update [--check|--yes|--json]` — on-demand release check (the startup check runs on every interactive invocation; only a failed lookup backs off). `U` in the TUI.

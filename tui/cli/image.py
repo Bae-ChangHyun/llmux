@@ -10,6 +10,12 @@ import typer
 from tui.backends.llamacpp.backend import LLAMACPP_OFFICIAL_REPO
 from tui.backends.vllm.backend_inspect import VLLM_OFFICIAL_REPO
 from tui.cli._runtime import emit_json, emit_table, run_async, stream_async
+from tui.common import system_operations
+from tui.common.dev_build import (
+    image_reference_credential_error,
+    image_tag_error,
+    repo_url_error,
+)
 
 app = typer.Typer(help="Docker image inventory + dev image build.", no_args_is_help=True)
 
@@ -17,9 +23,12 @@ app = typer.Typer(help="Docker image inventory + dev image build.", no_args_is_h
 @app.command("list")
 def list_images(
     repo: str = typer.Option(
-        "vllm/vllm-openai", "--repo", help="Image repo to list locally."
+        "", "--repo", help="Image repo override; empty = backend default."
     ),
-    dev: bool = typer.Option(False, "--dev", help="Also list local vllm-dev:* images."),
+    backend: str = typer.Option(
+        "vllm", "--backend", "-b", help="Backend whose images to list."
+    ),
+    dev: bool = typer.Option(False, "--dev", help="Also list local backend dev images."),
     remote: bool = typer.Option(
         False, "--remote",
         help="Query DockerHub for the latest stable + nightly tags (vllm/vllm-openai).",
@@ -29,32 +38,50 @@ def list_images(
     """List local (and optionally remote) docker images."""
     from tui.backends.vllm.backend_inspect import (
         get_dev_images,
-        get_docker_images,
+        get_docker_images as get_vllm_images,
         get_dockerhub_nightly_date,
         get_dockerhub_release_version,
     )
 
+    if backend not in _PULL_DEFAULTS:
+        raise typer.BadParameter(
+            f"unknown backend: {backend!r} (choose vllm or llamacpp)",
+            param_hint="--backend",
+        )
+    if remote and backend != "vllm":
+        raise typer.BadParameter(
+            "remote stable/nightly inventory is available only for the vLLM DockerHub repository",
+            param_hint="--remote",
+        )
+    repo = repo or _PULL_DEFAULTS[backend][0]
+    credential_error = image_reference_credential_error(repo)
+    if credential_error:
+        raise typer.BadParameter(credential_error, param_hint="--repo")
     rows: list[dict] = []
     failures: list[str] = []
 
     async def _collect():
-        for img in await get_docker_images(repo=repo):
+        if backend == "vllm":
+            local_images = await get_vllm_images(repo=repo)
+        else:
+            from tui.backends.llamacpp.backend import get_docker_images as get_llama_images
+
+            local_images = await get_llama_images(repo=repo)
+        for img in local_images:
             rows.append({"source": "local", **asdict(img)})
         if dev:
-            for img in await get_dev_images():
-                rows.append({"source": "local-dev", **asdict(img)})
-            # llama.cpp dev images live under a different prefix.
-            from tui.backends.llamacpp.backend_runtime import LLAMACPP_DEV_SPEC
-            from tui.common.dev_build import list_local_dev_images
+            if backend == "vllm":
+                dev_images = await get_dev_images()
+            else:
+                from tui.backends.llamacpp.backend_runtime import LLAMACPP_DEV_SPEC
+                from tui.common.dev_build import list_local_dev_images
 
-            for img in await list_local_dev_images(LLAMACPP_DEV_SPEC):
+                dev_images = await list_local_dev_images(LLAMACPP_DEV_SPEC)
+            for img in dev_images:
                 rows.append({"source": "local-dev", **asdict(img)})
         if remote:
             release = await get_dockerhub_release_version()
             nightly = await get_dockerhub_nightly_date()
-            # "unknown" means the registry lookup failed. Emitting it as a tag
-            # would hand `docker pull vllm/vllm-openai:unknown` to any script
-            # that reads this output.
             if release == "unknown":
                 failures.append("DockerHub stable-release lookup failed")
             else:
@@ -87,9 +114,6 @@ def list_images(
 
 
 _PULL_DEFAULTS = {
-    # (default repo, default tag). vLLM has no canonical "current" tag — users
-    # almost always pin a version — so we don't default a tag there. llama.cpp
-    # ships a single official server image tagged `server-cuda`.
     "vllm": (VLLM_OFFICIAL_REPO, ""),
     "llamacpp": (LLAMACPP_OFFICIAL_REPO, "server-cuda"),
 }
@@ -127,10 +151,13 @@ def pull_image(
             param_hint="TAG",
         )
 
-    import subprocess
-
     full = f"{repo}:{tag}"
-    rc = subprocess.run(["docker", "pull", full]).returncode
+    error = image_tag_error(full)
+    if error:
+        raise typer.BadParameter(error, param_hint="TAG")
+    rc, lines = run_async(system_operations.pull_image(full))
+    for line in lines:
+        typer.echo(line)
     raise typer.Exit(code=rc)
 
 
@@ -149,13 +176,12 @@ def remove_image(
     ),
 ) -> None:
     """`docker rmi <ref>` — drop a local image without leaving the CLI."""
-    import subprocess
-
-    cmd = ["docker", "rmi"]
-    if force:
-        cmd.append("--force")
-    cmd.append(ref)
-    rc = subprocess.run(cmd).returncode
+    credential_error = image_reference_credential_error(ref)
+    if credential_error:
+        raise typer.BadParameter(credential_error, param_hint="REF")
+    rc, output = run_async(system_operations.remove_image(ref, force=force))
+    if output:
+        typer.echo(output)
     raise typer.Exit(code=rc)
 
 
@@ -187,14 +213,13 @@ def build_dev(
         help="llamacpp only: disable GPU auto-detection and build for all archs (portable, slow).",
     ),
 ) -> None:
-    """Build a `<backend>-dev:<tag>` image from source, streaming docker output.
-
-    vllm:     vllm-dev:<tag>     (target=vllm-openai, docker/Dockerfile)
-    llamacpp: llamacpp-dev:<tag> (target=server, .devops/cuda.Dockerfile)
-    """
+    """Build a backend development image from source."""
     if backend not in ("vllm", "llamacpp"):
         typer.echo(f"Error: unknown --backend {backend!r}. Use vllm or llamacpp.", err=True)
         raise typer.Exit(code=2)
+    error = repo_url_error(repo_url)
+    if error:
+        raise typer.BadParameter(error, param_hint="--repo-url")
 
     if backend == "vllm":
         from tui.backends.vllm.backend_runtime import (
@@ -205,6 +230,9 @@ def build_dev(
         default_repo, default_branch = get_dev_build_defaults()
         branch = branch or default_branch
         repo_url = repo_url or default_repo
+        error = repo_url_error(repo_url)
+        if error:
+            raise typer.BadParameter(error, param_hint="--repo-url")
         if cuda_arch or multi_arch:
             typer.echo("Warning: --cuda-arch/--multi-arch are llamacpp-only and ignored for vllm", err=True)
         rc = stream_async(
@@ -224,6 +252,9 @@ def build_dev(
         default_repo, default_branch = get_dev_build_defaults()
         branch = branch or default_branch
         repo_url = repo_url or default_repo
+        error = repo_url_error(repo_url)
+        if error:
+            raise typer.BadParameter(error, param_hint="--repo-url")
         if official:
             typer.echo("Warning: --official is vllm-only and ignored for llamacpp", err=True)
         rc = stream_async(

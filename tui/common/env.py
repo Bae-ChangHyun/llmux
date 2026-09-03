@@ -93,8 +93,20 @@ def expand_env_values(env: dict[str, str]) -> dict[str, str]:
     return {k: host_expand(v) for k, v in env.items()}
 
 
+def required_image_reference_error(key: str, image_ref: str) -> str:
+    if not image_ref.strip():
+        return f"Error: {key} is not set in .env.common"
+    from tui.common.dev_build import image_tag_error
+
+    error = image_tag_error(image_ref)
+    return f"Error: invalid {key}: {error}" if error else ""
+
+
 def validate_common_env(
-    common_env_path: Path, *, require_lora_base_path: bool = False
+    common_env_path: Path,
+    *,
+    require_lora_base_path: bool = False,
+    require_downloader_image: bool = False,
 ) -> tuple[bool, list[str]]:
     """Validate `.env.common` for shared cross-backend invariants.
 
@@ -115,21 +127,53 @@ def validate_common_env(
             "Error: .env.common not found.",
             "Create it from .env.common.example before starting containers.",
         ]
+    try:
+        mode = common_env_path.stat().st_mode & 0o777
+    except OSError as exc:
+        return False, [f"Error: cannot inspect .env.common permissions: {exc}"]
+    if mode & 0o077:
+        return False, [
+            "Error: .env.common permissions must be owner-only "
+            f"(for example 0600). Current mode: {mode:04o}"
+        ]
     common = parse_env_file(common_env_path)
     hf_cache_path = common.get("HF_CACHE_PATH", "")
     if not hf_cache_path:
         return False, ["Error: HF_CACHE_PATH is not set in .env.common"]
-    if not os.path.isabs(hf_cache_path):
+    if not os.path.isabs(host_expand(hf_cache_path)):
         return False, [
             f"Error: HF_CACHE_PATH must be an absolute path. Current value: {hf_cache_path}"
         ]
+    workers = common.get("PREPARE_MAX_WORKERS", "").strip()
+    if workers and (not workers.isdigit() or int(workers) < 1):
+        return False, [
+            "Error: PREPARE_MAX_WORKERS must be empty or a positive integer. "
+            f"Current value: {workers}"
+        ]
+    if require_downloader_image:
+        downloader_error = required_image_reference_error(
+            "PREPARE_DOWNLOADER_IMAGE",
+            common.get("PREPARE_DOWNLOADER_IMAGE", ""),
+        )
+        if downloader_error:
+            return False, [downloader_error]
+
+    from tui.common.dev_build import image_tag_error
+
+    for key in ("VLLM_IMAGE", "LLAMACPP_IMAGE"):
+        image_ref = common.get(key, "").strip()
+        if not image_ref:
+            continue
+        error = image_tag_error(image_ref)
+        if error:
+            return False, [f"Error: invalid {key}: {error}"]
     if require_lora_base_path:
         lora_base_path = common.get("LORA_BASE_PATH", "")
         if not lora_base_path:
             return False, [
                 "Error: ENABLE_LORA=true but LORA_BASE_PATH is not set in .env.common"
             ]
-        if not os.path.isabs(lora_base_path):
+        if not os.path.isabs(host_expand(lora_base_path)):
             return False, [
                 f"Error: LORA_BASE_PATH must be an absolute path. Current value: {lora_base_path}"
             ]

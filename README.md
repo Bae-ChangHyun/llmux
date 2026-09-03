@@ -78,7 +78,7 @@ llmux unifies both under a single Textual dashboard backed by Docker Compose.
 
 - **One dashboard for both engines** &mdash; Every vLLM and llama.cpp profile side-by-side in a single Textual TUI, with a live **tok/s** column per running model.
 - **Build a profile once, spin it up and down** &mdash; Keep every model you're experimenting with as a named profile in one `profiles.yaml`. No re-writing config each time — pick one, hit Enter, and it launches the right engine; stop it and start another just as fast.
-- **Pin any engine version per profile** &mdash; Run the official release, a `nightly`, or an image you built from source — pinned per profile via `image_tag`, so one profile can serve vLLM `v0.21.0` while another runs your patched build. Refuses the ambiguous `:latest`, resolves stable picks to a specific version, and verifies the version actually running inside the container.
+- **Pin any engine image per profile** &mdash; Run a versioned vLLM release, `nightly`, the rolling llama.cpp CUDA image, or an image you built from source — pinned per profile via `image_tag`. llmux refuses the ambiguous `:latest`; versioned vLLM images are also verified inside the running container.
 - **VRAM-aware vLLM recipe import** &mdash; Pull a model's official [vllm-project/recipes](https://github.com/vllm-project/recipes) config, then review its precision variants (bf16 / fp8 / awq) against your actual GPU's VRAM before it's written &mdash; so a recipe verified on an 80 GB card doesn't silently overshoot a 16 GB one.
 - **Memory estimator** &mdash; Point it at an HF model and get a per-GPU fit bar ([`hf-mem`](https://github.com/alvarobartt/hf-mem)) before you download or launch anything.
 - **Every engine flag, 1:1** &mdash; `config/<backend>/<name>.yaml` maps directly to engine flags — sampling, context length, KV-cache precision, MoE CPU offload. Toggle any flag **on/off without deleting it**, and your hand-written comments survive edits.
@@ -87,7 +87,7 @@ llmux unifies both under a single Textual dashboard backed by Docker Compose.
 - **Benchmarks** &mdash; `llmux bench` runs a warmup + median pass so you can compare quant A against quant B on the same hardware.
 - **btop-style live monitor** &mdash; Press `v` in the TUI, or run `llmux top` with no TUI at all. Every GPU is always shown (util·mem·temp·power·PCIe as heat bars), plus a panel per running model: braille throughput and KV graphs, cache-hit, requests, and TTFT/E2E percentiles (p50/p95/p99) with prefill/decode phases. Metrics an engine doesn't expose read `—` rather than a made-up number.
 - **Dev builds from source** &mdash; Build a `vllm-dev:` / `llamacpp-dev:` image from any fork/branch (GPU arch auto-detected) and pin a profile to it via `image_tag`.
-- **Everything scriptable** &mdash; Every TUI action is also a headless `llmux` subcommand with `--json` output, built for scripts, agents, and CI.
+- **Everything scriptable** &mdash; Every TUI action is also a headless `llmux` subcommand. Structured output is available only on commands that document `--json`. Lifecycle and mutation commands keep their documented text or stream output and exit codes.
 
 <br/>
 

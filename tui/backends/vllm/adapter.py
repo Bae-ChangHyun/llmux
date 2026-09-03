@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from tui.backends.vllm import backend as vbackend
 from tui.common.adapter import DashboardRow
+from tui.common.docker import container_is_running
 
 
 class VllmAdapter:
@@ -19,7 +20,11 @@ class VllmAdapter:
                 continue
             port = _parse_port(getattr(p, "port", "") or "")
             container = getattr(p, "container_name", "") or name
-            model = getattr(p, "config_name", "") or ""
+            config_name = getattr(p, "config_name", "") or name
+            config = vbackend.load_config(config_name)
+            model = (getattr(config, "model", "") or "").strip()
+            if not model:
+                model = (getattr(p, "model_id", "") or "").strip()
             detail_parts: list[str] = []
             tp = getattr(p, "tensor_parallel", "") or ""
             if tp and tp != "1":
@@ -33,7 +38,7 @@ class VllmAdapter:
                     profile_name=name,
                     container_name=container,
                     port=port,
-                    running=container in running,
+                    running=container_is_running(running, container),
                     model=model,
                     detail=detail,
                     gpu_id=getattr(p, "gpu_id", "") or "",

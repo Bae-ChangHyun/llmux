@@ -1,4 +1,4 @@
 services:
   vllm:
     volumes:
-      - ${LORA_BASE_PATH}:/app/lora:ro
+      - ${LORA_BASE_PATH:?LORA_BASE_PATH is required when LoRA is enabled}:/app/lora:ro

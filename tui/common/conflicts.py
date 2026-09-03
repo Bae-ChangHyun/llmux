@@ -1,7 +1,6 @@
-"""Cross-backend 포트 / GPU 충돌 검사."""
-
 from __future__ import annotations
 
+import ipaddress
 import re
 
 from tui.common.adapter import DashboardRow
@@ -24,30 +23,16 @@ async def gpu_conflict_messages(
     profile_gpu_id: str,
     backend: str,
 ) -> list[str]:
-    """Cross-backend warnings when the target profile's GPUs overlap any
-    currently-running container.
-
-    Both backends call this with their own (name, container_name, gpu_id) and
-    read off the same list of warnings.
-
-    Never raises — a `docker ps` failure becomes a single inspection warning
-    the caller logs alongside genuine overlap warnings, so it can't abort a
-    startup.
-    """
-    # Lazy import: profile_store pulls in yaml at import time.
     from tui.common import profile_store
 
     rc, out = await run_command("docker", "ps", "--format", "{{.Names}}", timeout=10)
     if rc != 0:
-        return [
-            "Warning: could not inspect running containers for GPU overlap "
-            f"({out.strip() or 'docker ps failed'})."
-        ]
+        raise RuntimeError(
+            "could not inspect running containers for GPU overlap: "
+            f"{out.strip() or 'docker ps failed'}"
+        )
     running_names = {line.strip() for line in out.splitlines() if line.strip()}
     profile_gpu_ids = parse_gpu_ids(profile_gpu_id)
-    # No GPUs requested → nothing to overlap. Without this, an empty set against
-    # a wildcard-GPU container (`gpu_sets_overlap(∅, {*}) == {*}`) produced a
-    # false "all GPUs" warning — mirror the sync gpu_conflicts() guard.
     if not profile_gpu_ids:
         return []
     messages: list[str] = []
@@ -56,6 +41,8 @@ async def gpu_conflict_messages(
             if backend_name == backend and other.name == profile_name:
                 continue
             other_container = other.container_name or other.name
+            if other_container == container_name:
+                continue
             if other_container not in running_names:
                 continue
             other_gpu_ids = parse_gpu_ids(other.gpu_id)
@@ -76,7 +63,7 @@ def _row_gpu_ids(row: DashboardRow) -> set[str]:
 
 
 def port_conflicts(target: DashboardRow, rows: list[DashboardRow]) -> list[str]:
-    """running 상태 row 중 port 가 target 과 같은 것. target 자신은 제외."""
+    """Return running rows that share the target port."""
     if target.port is None:
         return []
     msgs: list[str] = []
@@ -101,37 +88,74 @@ def external_port_conflicts(
     rows: list[DashboardRow],
     external_ports: dict[str, str],
 ) -> list[str]:
-    """llmux 가 관리하지 않는 외부 컨테이너가 target.port 를 점유 중인지 감지.
-
-    Parameters
-    ----------
-    target : DashboardRow
-        새로 기동하려는 프로필.
-    rows : list[DashboardRow]
-        현재 llmux 가 아는 전체 row (external 제외용 화이트리스트).
-    external_ports : dict[str, str]
-        docker ps 결과 — container_name → "0.0.0.0:8080->8080/tcp" 식 ports 문자열.
-    """
+    """Return unmanaged containers that expose the target port."""
     if target.port is None:
         return []
     known_containers = {r.container_name for r in rows if r.container_name}
     msgs: list[str] = []
-    pat = re.compile(r":(\d+)->")
     for cname, ports in external_ports.items():
         if cname in known_containers:
             continue
-        for match in pat.finditer(ports):
-            try:
-                host_port = int(match.group(1))
-            except ValueError:
-                continue
-            if host_port == target.port:
-                msgs.append(
-                    f"Port {target.port} is occupied by external container "
-                    f"'{cname}' (not managed by llmux)"
-                )
-                break
+        if target.port in published_tcp_host_ports(ports):
+            msgs.append(
+                f"Port {target.port} is occupied by external container "
+                f"'{cname}' (not managed by llmux)"
+            )
     return msgs
+
+
+_UNPUBLISHED_PORT_RE = re.compile(r"^(\d+)(?:-(\d+))?/(tcp|udp|sctp)$")
+_PUBLISHED_PORT_RE = re.compile(
+    r"^(?:(?P<address>.+):)?"
+    r"(?P<host_start>\d+)(?:-(?P<host_end>\d+))?->"
+    r"(?P<container_start>\d+)(?:-(?P<container_end>\d+))?/"
+    r"(?P<protocol>tcp|udp|sctp)$"
+)
+
+
+def _port_range(start_raw: str, end_raw: str | None, raw: str) -> range:
+    start = int(start_raw)
+    end = int(end_raw) if end_raw is not None else start
+    if start < 1 or end > 65535 or end < start:
+        raise RuntimeError(f"invalid Docker port mapping: {raw!r}")
+    return range(start, end + 1)
+
+
+def published_tcp_host_ports(raw: str) -> set[int]:
+    if not raw:
+        return set()
+    published: set[int] = set()
+    for segment_raw in raw.split(","):
+        segment = segment_raw.strip()
+        if not segment:
+            raise RuntimeError(f"invalid Docker port mapping: {raw!r}")
+        unpublished = _UNPUBLISHED_PORT_RE.fullmatch(segment)
+        if unpublished is not None:
+            _port_range(unpublished.group(1), unpublished.group(2), segment)
+            continue
+        match = _PUBLISHED_PORT_RE.fullmatch(segment)
+        if match is None:
+            raise RuntimeError(f"invalid Docker port mapping: {segment!r}")
+        address = match.group("address")
+        if address:
+            normalized = address[1:-1] if address.startswith("[") and address.endswith("]") else address
+            try:
+                ipaddress.ip_address(normalized)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"invalid Docker port mapping: {segment!r}"
+                ) from exc
+        host_ports = _port_range(
+            match.group("host_start"), match.group("host_end"), segment
+        )
+        container_ports = _port_range(
+            match.group("container_start"), match.group("container_end"), segment
+        )
+        if len(host_ports) != len(container_ports):
+            raise RuntimeError(f"invalid Docker port mapping: {segment!r}")
+        if match.group("protocol") == "tcp":
+            published.update(host_ports)
+    return published
 
 
 def gpu_conflicts(target: DashboardRow, rows: list[DashboardRow]) -> list[str]:

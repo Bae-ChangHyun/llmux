@@ -31,6 +31,8 @@ from tui.backends.vllm.backend import (
     get_dockerhub_nightly_date,
 )
 from tui.common.i18n import t
+from tui.common.dev_build import image_tag_error
+from tui.backends.vllm.backend_inspect import resolve_vllm_image_ref
 
 
 VER_PINNED = "pinned_image"
@@ -167,6 +169,7 @@ class ContainerUpScreen(Screen):
         self._local_tag: str = ""
         self._release_version: str = ""
         self._version_retries: int = 0
+        self._gpu_error_notified = False
         self._dev_repo_url, self._dev_branch = get_dev_build_defaults()
 
     def compose(self) -> ComposeResult:
@@ -344,7 +347,19 @@ class ContainerUpScreen(Screen):
 
     @work(exclusive=False)
     async def _fetch_gpu_info(self) -> None:
-        gpus = await get_gpu_info()
+        try:
+            gpus = await get_gpu_info()
+        except RuntimeError as exc:
+            message = t(f"GPU lookup failed: {exc}", f"GPU 조회 실패: {exc}")
+            try:
+                self.query_one("#gpu-bar", Static).update(f"[red]{message}[/red]")
+            except Exception:
+                pass
+            if not self._gpu_error_notified:
+                self.notify(message, severity="error", timeout=8)
+                self._gpu_error_notified = True
+            return
+        self._gpu_error_notified = False
         try:
             self.query_one("#gpu-bar", Static).update(format_gpu_bar(gpus))
         except Exception:
@@ -384,7 +399,7 @@ class ContainerUpScreen(Screen):
 
     @on(Button.Pressed, "#start-btn")
     def _on_start(self) -> None:
-        self._do_start()
+        self.action_confirm_start()
 
     def action_confirm_start(self) -> None:
         """Enter: commit the highlighted version and start.
@@ -414,9 +429,17 @@ class ContainerUpScreen(Screen):
         pressed = radio_set.pressed_button
         if pressed is None:
             return
-        if pressed.id == VER_CUSTOM and not self.query_one("#custom-tag-input", Input).value.strip():
-            self.query_one("#custom-tag-input", Input).focus()
-            return
+        if pressed.id == VER_CUSTOM:
+            custom = self.query_one("#custom-tag-input", Input)
+            value = custom.value.strip()
+            if not value:
+                custom.focus()
+                return
+            error = image_tag_error(resolve_vllm_image_ref(value))
+            if error:
+                self.notify(error, severity="error", timeout=8)
+                custom.focus()
+                return
         if pressed.id == VER_DEV and not self.query_one("#dev-repo-input", Input).value.strip():
             self.query_one("#dev-repo-input", Input).focus()
             return
@@ -491,7 +514,15 @@ class ContainerUpScreen(Screen):
                 return
 
         # Always keep the runtime bind check enabled right before compose up.
-        conflict = await check_port_conflict(self._profile)
+        try:
+            conflict = await check_port_conflict(self._profile)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.app.notify(
+                t(f"Port conflict probe failed: {exc}", f"포트 충돌 조회 실패: {exc}"),
+                severity="error",
+                timeout=8,
+            )
+            return
         if conflict:
             self.app.notify(
                 t(

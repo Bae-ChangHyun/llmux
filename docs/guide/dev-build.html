@@ -88,6 +88,11 @@ llmux image build-dev --backend llamacpp</code></pre>
       <p>The builder refuses to silently switch the <code>.vllm-src/</code> / <code>.llamacpp-src/</code> checkout to a different remote URL. If you want to swap repos, move or delete the checkout directory yourself first.</p>
     </div>
 
+    <div class="admonition warning">
+      <p class="admonition-title">Do not embed credentials in the repo URL</p>
+      <p>An HTTP(S) URL containing userinfo, a query, or a fragment is rejected before Git runs. Use a credential helper or a credential-free SSH URL such as <code>ssh://git@host/path</code> instead; its username-only <code>git@</code> authority is allowed.</p>
+    </div>
+
     <h3 id="build-dev-options"><code>build-dev</code> options</h3>
     <table>
       <thead>
@@ -124,7 +129,7 @@ llmux image build-dev --backend llamacpp</code></pre>
         <p>Detected caps are passed as <code>torch_cuda_arch_list</code> (PyTorch's dotted, space-separated format, e.g. <code>8.6 8.9</code>). The builder also patches the upstream Dockerfile's DeepEP stage so it respects the local arch list. <code>--official</code> skips both — useful if detection fails or you need a portable image. If <code>nvidia-smi</code> is unavailable and you didn't pass <code>--official</code>, the build aborts with an error.</p>
       </div>
       <div class="tab-panel" id="tab-devbuild-llamacpp">
-        <p>Detected caps are passed as <code>CUDA_DOCKER_ARCH</code> (CMake's no-dot, semicolon-separated format, e.g. <code>86;89</code>). If <code>nvidia-smi</code> is unavailable, the builder falls back to a multi-arch build automatically. Override detection with <code>--cuda-arch '89'</code> or force the portable path with <code>--multi-arch</code>.</p>
+        <p>Detected caps are passed as <code>CUDA_DOCKER_ARCH</code> (CMake's no-dot, semicolon-separated format, e.g. <code>86;89</code>). If <code>nvidia-smi</code> is unavailable, the build stops with an error. Override detection with <code>--cuda-arch '89'</code> or explicitly request the portable path with <code>--multi-arch</code>.</p>
       </div>
     </div>
 

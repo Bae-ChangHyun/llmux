@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""
-render-override.py — profile + config 를 읽어 프로필별 compose override 를 생성.
-
-입력:
-  - profiles.yaml 의 llamacpp/<profile> (config_name, model_file, hf_repo, hf_file)
-  - config/llamacpp/<config_name>.yaml  (llama-server 플래그)
-
-출력:
-  - .runtime/llamacpp/override-<profile>.yaml  (services.llama-server.command 블록)
-
-사용:
-  python3 scripts/llamacpp/render-override.py <profile-name>
-"""
 
 from __future__ import annotations
 
@@ -22,24 +9,22 @@ from pathlib import Path
 
 import yaml
 
-# 이 스크립트가 사는 체크아웃 — `tui` 패키지를 import 하기 위한 sys.path 용도로만
-# 쓴다. 데이터 루트(profiles/config/.runtime)는 LLMUX_ROOT 를 볼 수 있어야 하므로
-# 아래에서 profile_store.PROJECT_ROOT 로 따로 잡는다.
 _CHECKOUT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_CHECKOUT_ROOT))
 from tui.common import profile_store  # noqa: E402
+from tui.common.config_markers import load_yaml_mapping  # noqa: E402
 
-# 프로필은 profile_store(LLMUX_ROOT 인식) 가 읽고, config/.runtime 은 여기서 읽고
-# 쓴다 — 둘이 서로 다른 루트를 가리키면 엉뚱한 config 로 override 를 렌더한다.
 ROOT = profile_store.PROJECT_ROOT
 CONFIG_DIR = ROOT / "config" / "llamacpp"
 RUNTIME_DIR = ROOT / ".runtime" / "llamacpp"
 
 _SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+_MANAGED_FLAGS = frozenset(
+    {"--host", "--port", "--webui", "--no-webui", "--metrics"}
+)
 
 
 def _validate_name(name: str, kind: str) -> str:
-    """filename stem 과 compose project name 에 안전한 값만 허용."""
     if not name or not _SAFE_NAME.match(name) or ".." in name:
         raise SystemExit(
             f"잘못된 {kind} 이름: {name!r} (허용: 소문자, 숫자, _, -)"
@@ -54,20 +39,17 @@ def render_command(
     hf_repo: str = "",
     hf_file: str = "",
 ) -> list[str]:
-    """config yaml + profile → llama-server CLI 인자 리스트.
-
-    Model source resolution mirrors the vllm flow — `-hf <repo> -hff <file>`
-    so llama-server downloads into the HF cache mounted from the host.
-    """
-    # `--metrics` is forced on so the dashboard's live tok/s poll has a
-    # /metrics endpoint to read (llama-server does not expose it by default).
     args: list[str] = [
         "--host", "0.0.0.0", "--port", "8080", "--no-webui", "--metrics",
     ]
 
-    # 모델 식별: profile 의 hf_repo/hf_file 이 1순위. config 의 model-file 은
-    # display 용 fallback (예: HF cache 에 이미 받아둔 파일명을 의도).
-    resolved_file = (hf_file or str(cfg.pop("model-file", "") or model_file)).strip()
+    configured_model_file = cfg.pop("model-file", "")
+    if configured_model_file is not None and not isinstance(configured_model_file, str):
+        raise ValueError(
+            "config key 'model-file' must be a string; "
+            f"got {type(configured_model_file).__name__}"
+        )
+    resolved_file = (hf_file or configured_model_file or model_file).strip()
     resolved_repo = hf_repo.strip()
     if not resolved_repo:
         raise ValueError(
@@ -79,10 +61,6 @@ def render_command(
     args.extend(["-hff", resolved_file])
     cfg.pop("model-file", None)
 
-    # llmux owns these: --host/--port are fixed because compose maps the
-    # container port and the healthcheck probes it; --metrics backs the live
-    # tok/s poll; the WebUI is off. A config that sets them would produce
-    # duplicate args, so they are dropped — loudly, since the user wrote them.
     for key in ("no-webui", "webui", "metrics", "host", "port"):
         if key in cfg:
             print(
@@ -91,39 +69,36 @@ def render_command(
             )
             cfg.pop(key, None)
 
-    # A scalar string is the natural way to write a single value (the flag
-    # help even shows one), so promote it instead of iterating it char by char
-    # — `-ot '.*=CPU'` was becoming `-ot .`, `-ot *`, `-ot =`, ...
-    override_tensors = cfg.pop("override-tensors", None) or []
-    if isinstance(override_tensors, str):
-        override_tensors = [override_tensors]
-    extra_args = cfg.pop("extra-args", None) or []
-    if isinstance(extra_args, str):
-        # extra-args is a command-line fragment; split it like a shell would.
-        extra_args = shlex.split(extra_args)
+    override_tensors = _string_list(
+        cfg.pop("override-tensors", None), "override-tensors"
+    )
+    extra_args_value = cfg.pop("extra-args", None)
+    if isinstance(extra_args_value, str):
+        extra_args = shlex.split(extra_args_value)
+    else:
+        extra_args = _string_list(extra_args_value, "extra-args")
+    _validate_extra_args(extra_args)
 
-    # Modern llama-server requires an explicit value for --flash-attn
-    # (`on` / `off` / `auto`); bare `--flash-attn` consumes the next CLI arg
-    # as the value and dies with "unknown value for --flash-attn: '--jinja'".
-    # Keep this as a narrow whitelist — other boolean keys (--jinja,
-    # --cont-batching, --metrics, --no-mmap, --mlock, …) are still bare flags.
     _BOOL_VALUE_FLAGS = {"flash-attn"}
 
     for key, value in cfg.items():
+        if not isinstance(key, str):
+            raise ValueError(
+                f"config keys must be strings; got {type(key).__name__}"
+            )
         flag = f"--{key}"
         if isinstance(value, bool):
             if key in _BOOL_VALUE_FLAGS:
                 args.extend([flag, "on" if value else "off"])
             elif value:
                 args.append(flag)
-            # value-less bool: False 는 무시
         elif isinstance(value, list):
             for item in value:
-                args.extend([flag, str(item)])
+                args.extend([flag, _scalar_text(item, key)])
         elif value is None:
             continue
         else:
-            args.extend([flag, str(value)])
+            args.extend([flag, _scalar_text(value, key)])
 
     for pattern in override_tensors:
         args.extend(["-ot", str(pattern)])
@@ -132,55 +107,85 @@ def render_command(
     return args
 
 
+def _scalar_text(value: object, key: str) -> str:
+    if not isinstance(value, (str, int, float, bool)):
+        raise ValueError(
+            f"config key '{key}' must be a scalar or list of scalar values; "
+            f"got {type(value).__name__}"
+        )
+    return str(value)
+
+
+def _string_list(value: object, key: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ValueError(f"{key} must be a string or a list of strings")
+    return value
+
+
+def _validate_extra_args(extra_args: list[str]) -> None:
+    for token in extra_args:
+        option = token.split("=", 1)[0]
+        if option in _MANAGED_FLAGS:
+            raise ValueError(f"extra-args cannot override llmux-managed option {option}")
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print(f"사용법: {sys.argv[0]} <profile-name>", file=sys.stderr)
         return 2
 
     profile = _validate_name(sys.argv[1], "profile")
-    stored = profile_store.load_profile(profile, "llamacpp")
-    if stored is None:
-        print(f"프로필 없음: llamacpp/{profile} (profiles.yaml 확인)", file=sys.stderr)
-        return 1
+    with profile_store.storage_transaction():
+        stored = profile_store.load_profile(profile, "llamacpp")
+        if stored is None:
+            print(f"프로필 없음: llamacpp/{profile} (profiles.yaml 확인)", file=sys.stderr)
+            return 1
 
-    config_name = _validate_name(stored.config_name or profile, "config")
-    config_path = CONFIG_DIR / f"{config_name}.yaml"
-    if not config_path.exists():
-        print(f"config 파일 없음: {config_path}", file=sys.stderr)
-        return 1
+        config_name = _validate_name(stored.config_name or profile, "config")
+        config_path = CONFIG_DIR / f"{config_name}.yaml"
+        if not config_path.exists():
+            print(f"config 파일 없음: {config_path}", file=sys.stderr)
+            return 1
 
-    cfg = yaml.safe_load(config_path.read_text()) or {}
-    if not isinstance(cfg, dict):
-        print(f"config 형식 오류: mapping YAML 이 필요합니다: {config_path}", file=sys.stderr)
-        return 1
-    try:
-        command = render_command(
-            cfg,
-            model_file=stored.model_file,
-            hf_repo=stored.hf_repo,
-            hf_file=stored.hf_file,
-        )
-    except ValueError as exc:
-        print(f"config 렌더 실패: {exc}", file=sys.stderr)
-        return 1
+        try:
+            cfg = load_yaml_mapping(config_path.read_text(), config_path)
+        except ValueError as exc:
+            print(f"config 형식 오류: {exc}", file=sys.stderr)
+            return 1
+        try:
+            command = render_command(
+                cfg,
+                model_file=stored.model_file,
+                hf_repo=stored.hf_repo,
+                hf_file=stored.hf_file,
+            )
+        except ValueError as exc:
+            print(f"config 렌더 실패: {exc}", file=sys.stderr)
+            return 1
 
-    override = {
-        "services": {
-            "llama-server": {
-                "command": command,
+        override = {
+            "services": {
+                "llama-server": {
+                    "command": command,
+                },
             },
-        },
-    }
+        }
 
-    # Per-profile override file so multiple llamacpp profiles can run
-    # concurrently without clobbering each other's command.
-    out_path = RUNTIME_DIR / f"override-{profile}.yaml"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    header = (
-        "# AUTO-GENERATED by scripts/llamacpp/render-override.py — 직접 수정 금지.\n"
-        f"# Profile: {profile}  Config: {config_name}\n"
-    )
-    out_path.write_text(header + yaml.safe_dump(override, sort_keys=False, width=200))
+        out_path = RUNTIME_DIR / f"override-{profile}.yaml"
+        header = (
+            "# AUTO-GENERATED by scripts/llamacpp/render-override.py — 직접 수정 금지.\n"
+            f"# Profile: {profile}  Config: {config_name}\n"
+        )
+        profile_store._atomic_write(
+            out_path,
+            header + yaml.safe_dump(override, sort_keys=False, width=200),
+            mode=0o600,
+        )
+        profile_store.render_env(stored)
     print(str(out_path))
     return 0
 

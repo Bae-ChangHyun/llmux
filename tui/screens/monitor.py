@@ -1,11 +1,3 @@
-"""Live btop-style monitor inside the Textual TUI (`v` on a dashboard row).
-
-Draws the same `monitor_render.render_dashboard` view as `llmux top`: every GPU
-always, plus a panel per running model. Opening it never requires a running
-container — with nothing up you still get the GPU panel. Keys: `q`/Esc back,
-`p` pause, `r` reset peaks, `+`/`-` interval, `l` language.
-"""
-
 from __future__ import annotations
 
 import os
@@ -48,8 +40,6 @@ class MonitorScreen(Screen):
 
     def __init__(self, row: DashboardRow | None = None) -> None:
         super().__init__()
-        # Focus the row it was opened from when that model is up; otherwise the
-        # view is system-wide (every running model, or none).
         self._focus = row.profile_name if row is not None and row.running else None
         self._states: dict[str, MonitorState] = {}
         self._started = monotonic()
@@ -72,21 +62,37 @@ class MonitorScreen(Screen):
         self.call_after_refresh(self._poll)
 
     async def _poll(self) -> None:
-        # Serialized by set_interval; the guard covers an interval shorter than
-        # one fetch so two polls never mutate state concurrently.
         if self._paused or self._polling:
             return
         self._polling = True
         try:
-            t0 = monotonic()
-            gpus = await common_docker.get_gpu_info()
-            pcie = await common_docker.get_pcie_stats()
-            lag_ms = (monotonic() - t0) * 1000
+            started = monotonic()
+            gpu_notices: list[str] = []
+            try:
+                gpus = await common_docker.get_gpu_info()
+            except RuntimeError as exc:
+                gpus = self._last["gpus"]
+                gpu_notices.append(
+                    t(f"GPU scan failed: {exc}", f"GPU 스캔 실패: {exc}")
+                )
+            try:
+                pcie = await common_docker.get_pcie_stats()
+            except RuntimeError as exc:
+                pcie = {}
+                gpu_notices.append(
+                    t(f"PCIe scan failed: {exc}", f"PCIe 스캔 실패: {exc}")
+                )
             entries, notices = await sample_entries(
-                self._focus, self._states, monotonic(), lag_ms
+                self._focus, self._states, started, 0.0
             )
-            self._last.update(entries=entries, gpus=gpus, pcie=pcie, lag=lag_ms,
-                              ready=True, notices=notices)
+            self._last.update(
+                entries=entries,
+                gpus=gpus,
+                pcie=pcie,
+                lag=(monotonic() - started) * 1000,
+                ready=True,
+                notices=gpu_notices + notices,
+            )
             self._repaint()
         finally:
             self._polling = False

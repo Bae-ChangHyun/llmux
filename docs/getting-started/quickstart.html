@@ -52,7 +52,7 @@
 
     <div class="admonition note">
       <p class="admonition-title">Before you start</p>
-      <p>Make sure you've finished <a href="installation.html">Installation</a>: <code>llmux</code> is on your <code>PATH</code>, and <code>llmux env-check</code> reports <code>Status: OK</code>. All commands below run from inside the repo, or anywhere if you've set <code>LLMUX_ROOT</code>.</p>
+      <p>Make sure you've finished <a href="installation.html">Installation</a>: <code>llmux</code> is on your <code>PATH</code>, and <code>llmux env-check</code> reports <code>Status: OK</code>. The one-line install works from any directory; <code>LLMUX_ROOT</code> is only needed for a manual checkout in a nonstandard location.</p>
     </div>
 
     <h2 id="path-a-serve-a-model-with-vllm">Path A — Serve a model with vLLM</h2>
@@ -89,7 +89,7 @@
       </div>
       <div class="tab-panel" id="tab-vllm-start-cli">
         <pre data-lang="bash"><code>llmux up qwen3-0-6b</code></pre>
-        <p><code>llmux up</code> auto-detects the backend from the profile name and streams <code>docker compose</code> output to your terminal. Add <code>--tag v0.20.1 --pull</code> to pin and pull a specific vLLM image version.</p>
+        <p><code>llmux up</code> auto-detects the backend and streams <code>docker compose</code> output. On a fresh host it resolves Docker Hub's current stable vLLM release to an explicit version and pulls it if missing. Add <code>--tag v0.20.1 --pull</code> to choose a specific version.</p>
       </div>
     </div>
 
@@ -110,7 +110,7 @@
         <button onclick="switchTab(this, 'tab-vllm-health-cli')">CLI</button>
       </div>
       <div class="tab-panel active" id="tab-vllm-health-tui">
-        <p>The dashboard row shows live status (<code>starting</code> &rarr; <code>healthy</code>), port, GPU, and model. Press <kbd>r</kbd> to refresh.</p>
+        <p>The dashboard row shows running/stopped state, port, throughput, model, and backend. Press <kbd>r</kbd> to refresh.</p>
       </div>
       <div class="tab-panel" id="tab-vllm-health-cli">
         <pre data-lang="bash"><code>llmux ps                    # table of every profile + container status
@@ -153,7 +153,7 @@ llmux logs qwen3-0-6b --no-follow --tail 100   # snapshot of recent lines</code>
     <p>llama.cpp serves GGUF files. A llama.cpp profile needs GGUF metadata (<code>model_file</code>, <code>hf_repo</code>, <code>hf_file</code>) — llmux downloads the file automatically on first start, so there's no manual <code>hf download</code>.</p>
 
     <h3 id="1-create-a-profile-llamacpp">1. Create a profile</h3>
-    <p><code>quick-setup</code> currently supports vLLM only, so create the llama.cpp profile directly with <code>profile new</code> (CLI) or <strong>Quick Setup</strong> (TUI).</p>
+    <p><code>quick-setup</code> supports both backends. For llama.cpp, pass the Hugging Face GGUF repository and filename.</p>
 
     <div class="tabs">
       <div class="tab-bar">
@@ -164,14 +164,12 @@ llmux logs qwen3-0-6b --no-follow --tail 100   # snapshot of recent lines</code>
         <p>Press <kbd>n</kbd> on the dashboard, pick the <strong>llama.cpp</strong> backend, and provide the GGUF repo and file. llmux generates the profile and config.</p>
       </div>
       <div class="tab-panel" id="tab-llama-create-cli">
-        <pre data-lang="bash"><code>llmux profile new gemma-3-4b \
+        <pre data-lang="bash"><code>llmux profile quick-setup \
   --backend llamacpp \
-  --port 8080 \
-  --gpu-id 0 \
-  --model-file gemma-3-4b-it-q4_k_m.gguf \
   --hf-repo unsloth/gemma-3-4b-it-GGUF \
-  --hf-file gemma-3-4b-it-q4_k_m.gguf</code></pre>
-        <p>This prints <code>Created profile 'gemma-3-4b' (backend=llamacpp)</code>.</p>
+  --hf-file gemma-3-4b-it-q4_k_m.gguf \
+  --gpu-id 0</code></pre>
+        <p>The profile name is derived from the repository unless you pass <code>--name</code>.</p>
       </div>
     </div>
 
@@ -187,13 +185,13 @@ llmux logs qwen3-0-6b --no-follow --tail 100   # snapshot of recent lines</code>
       </div>
       <div class="tab-panel" id="tab-llama-start-cli">
         <pre data-lang="bash"><code>llmux up gemma-3-4b</code></pre>
-        <p>The GGUF is fetched into <code>MODEL_DIR</code> (from <code>.env.common</code>) on first start, then <code>docker compose</code> brings up the <code>llama.cpp</code> server.</p>
+        <p><code>llama-server</code> fetches the GGUF inside the container into the shared <code>HF_CACHE_PATH</code>, then serves it through the OpenAI-compatible API.</p>
       </div>
     </div>
 
     <div class="admonition tip">
       <p class="admonition-title">GGUF download stuck?</p>
-      <p>Check <code>HF_TOKEN</code> in <code>.env.common</code> and confirm the <code>hf</code> CLI is installed (<code>uv tool install huggingface_hub</code>). Then retry the start.</p>
+      <p>For a gated repo, check <code>HF_TOKEN</code> in <code>.env.common</code> and confirm you accepted the model license. For a public repo, verify the <code>hf_repo</code> and <code>hf_file</code> values. No host-side <code>hf</code> CLI is needed.</p>
     </div>
 
     <h3 id="3-check-health-llamacpp">3. Check health</h3>

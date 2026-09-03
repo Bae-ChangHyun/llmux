@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from tui.common import prepare
 
@@ -20,6 +19,34 @@ async def _drain(agen) -> tuple[list[str], int]:
         else:
             logs.append(str(data))
     return logs, rc
+
+
+class ImageProbeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_image_is_false(self) -> None:
+        with patch.object(
+            prepare,
+            "_run",
+            AsyncMock(return_value=(1, "Error response from daemon: No such image: x")),
+        ):
+            self.assertFalse(await prepare.image_present("x"))
+
+    async def test_docker_probe_failure_is_not_reported_as_missing(self) -> None:
+        with patch.object(
+            prepare,
+            "_run",
+            AsyncMock(return_value=(1, "Cannot connect to the Docker daemon")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Cannot connect"):
+                await prepare.image_present("x")
+
+    async def test_missing_docker_binary_is_not_reported_as_missing(self) -> None:
+        with patch.object(
+            prepare,
+            "_run",
+            AsyncMock(return_value=(-1, "Executable not found: docker")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Executable not found"):
+                await prepare.image_present("x")
 
 
 class StreamLinesTests(unittest.IsolatedAsyncioTestCase):
@@ -138,7 +165,11 @@ class LlamacppDownloadTests(unittest.IsolatedAsyncioTestCase):
             async def fail(*args, **kwargs):
                 raise AssertionError("docker must not run for a cached model")
 
-            with patch.object(prepare, "_run", fail):
+            with patch.object(prepare, "_run", fail), patch.object(
+                prepare,
+                "downloader_image",
+                return_value="vllm/vllm-openai:v0.27.1",
+            ):
                 logs, rc = await _drain(
                     prepare.stream_llamacpp_download(
                         hf_repo="o/r", hf_file="m.gguf",
@@ -155,12 +186,14 @@ class LlamacppDownloadTests(unittest.IsolatedAsyncioTestCase):
             snap.mkdir(parents=True)
             hf_file = "UD-Q3/m-00001-of-00002.gguf"
             seen: list[list[str]] = []
+            seen_env: list[dict[str, str] | None] = []
 
             async def fake_run(*args, **kwargs):
                 return 0, ""
 
-            async def fake_stream(args):
+            async def fake_stream(args, *, env=None):
                 seen.append(args)
+                seen_env.append(env)
                 yield ("log", "Fetching 2 files")
                 (snap / "m-00001-of-00002.gguf").write_text("gguf")
                 (snap / "m-00002-of-00002.gguf").write_text("gguf")
@@ -186,6 +219,38 @@ class LlamacppDownloadTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("downloader:img", args)
             self.assertNotIn("-hf", args)
+            self.assertNotIn("tok", " ".join(args))
+            self.assertEqual(seen_env[0]["HF_TOKEN"], "tok")
+            self.assertEqual(seen_env[0]["HUGGING_FACE_HUB_TOKEN"], "tok")
+
+    async def test_vllm_token_is_not_exposed_in_docker_arguments(self) -> None:
+        seen: list[tuple[list[str], dict[str, str] | None]] = []
+
+        async def fake_run(*args, **kwargs):
+            return 0, ""
+
+        async def fake_stream(args, *, env=None):
+            seen.append((args, env))
+            yield ("rc", 0)
+
+        with patch.object(prepare, "_run", fake_run), patch.object(
+            prepare, "stream_lines", fake_stream
+        ):
+            _, rc = await _drain(
+                prepare.stream_vllm_download(
+                    image_ref="vllm:test",
+                    model_id="o/r",
+                    cache_path="/tmp/cache",
+                    token="hf_secret",
+                    container_name="prepare-test",
+                )
+            )
+
+        self.assertEqual(rc, 0)
+        args, env = seen[0]
+        self.assertNotIn("hf_secret", " ".join(args))
+        self.assertEqual(env["HF_TOKEN"], "hf_secret")
+        self.assertEqual(env["HUGGING_FACE_HUB_TOKEN"], "hf_secret")
 
     async def test_exit_before_download_completes_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -229,7 +294,13 @@ class PrepareRuntimeGuardTests(unittest.IsolatedAsyncioTestCase):
         profile = lrt.Profile(
             name="p", container_name="p", port=8080, config_name="p"
         )
-        with patch.object(lrt, "validate_common_env", lambda _p: (True, [])), \
+
+        def validate_common_env(path, *, require_downloader_image=False):
+            self.assertEqual(path, lrt.COMMON_ENV)
+            self.assertTrue(require_downloader_image)
+            return True, []
+
+        with patch.object(lrt, "validate_common_env", validate_common_env), \
              patch.object(lrt.profile_store, "load_profile", lambda *a, **k: stored), \
              patch.object(lrt, "load_profile", lambda _n: profile), \
              patch.object(lrt, "_ensure_profile_config", lambda *_a: (True, [])):
@@ -270,15 +341,25 @@ class LlamacppPrepareHappyPathTests(unittest.IsolatedAsyncioTestCase):
             async def no_docker(*args, **kwargs):
                 raise AssertionError("no container may run for a cached model")
 
-            with patch.object(lrt, "validate_common_env", lambda _p: (True, [])), \
+            def validate_common_env(path, *, require_downloader_image=False):
+                self.assertEqual(path, lrt.COMMON_ENV)
+                self.assertTrue(require_downloader_image)
+                return True, []
+
+            def render_env_for_profile(name, backend):
+                self.assertEqual((name, backend), ("p", "llamacpp"))
+                return Path("p.env")
+
+            with patch.object(lrt, "validate_common_env", validate_common_env), \
                  patch.object(lrt.profile_store, "load_profile", lambda *a, **k: stored), \
-                 patch.object(lrt.profile_store, "render_env", lambda _s: Path("p.env")), \
+                 patch.object(lrt.profile_store, "render_env_for_profile", render_env_for_profile), \
                  patch.object(lrt, "load_profile", lambda _n: profile), \
                  patch.object(lrt, "_ensure_profile_config", lambda *_a: (True, [])), \
                  patch.object(lrt, "_render_override", render_ok), \
                  patch.object(lrt.prepare, "image_present", image_present), \
                  patch.object(lrt.prepare, "hf_cache_path", lambda: str(tmp)), \
                  patch.object(lrt.prepare, "hf_token", lambda: ""), \
+                 patch.object(lrt.prepare, "downloader_image", lambda: "vllm/vllm-openai:v0.27.1"), \
                  patch.object(prepare, "_run", no_docker):
                 logs, rc = await _drain(lrt.stream_container_prepare("p"))
 

@@ -1,9 +1,4 @@
-"""Width-guard screen — terminal이 MIN_WIDTH보다 좁아지면 표시되는 안내 화면.
-
-nvitop 처럼, 좁은 폭에서는 form/modal 컨텐츠가 잘려 읽을 수 없으므로
-앱 위에 덮어씌워 "터미널을 늘려 주세요" 안내만 띄운다. 폭이 회복되면
-자동으로 dismiss 된다 (LlmuxApp.on_resize 가 push/pop 을 관리).
-"""
+"""Terminal width guard."""
 
 from __future__ import annotations
 
@@ -14,18 +9,13 @@ from textual.widgets import Static
 
 
 class TooNarrowScreen(Screen):
-    """Modal-like overlay shown while the terminal is too narrow."""
-
     DEFAULT_CSS = """
     TooNarrowScreen {
         align: center middle;
         background: $surface;
     }
 
-    /* width:1fr, NOT auto — an auto box whose children are width:100% is a
-       circular constraint that collapsed to a ~6-col empty box, so the message
-       never showed. A concrete fill width lets the text wrap into whatever
-       columns are left (down to a very narrow terminal). */
+    /* width:1fr avoids Textual's circular auto/100% child constraint. */
     TooNarrowScreen > Vertical {
         width: 1fr;
         max-width: 54;
@@ -79,7 +69,6 @@ class TooNarrowScreen(Screen):
         )
 
     def update_width(self, current_width: int) -> None:
-        """LlmuxApp.on_resize 가 호출. 실시간으로 표시 폭을 갱신."""
         self._current_width = current_width
         try:
             self.query_one("#status", Static).update(self._status_line())
@@ -87,14 +76,6 @@ class TooNarrowScreen(Screen):
             pass
 
     def on_screen_resume(self) -> None:
-        """Self-dismiss if the terminal was widened while another screen sat
-        on top of this guard.
-
-        `_enforce_width` can only pop the guard when it is the top screen. If
-        a screen was pushed above it and the user then widened the terminal,
-        the guard would otherwise stay buried and resurface — on a terminal
-        that is now wide enough — as soon as that screen closed.
-        """
         if self.app.size.width < self._min_width:
             self.update_width(self.app.size.width)
             return

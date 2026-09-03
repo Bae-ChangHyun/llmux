@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Installation &middot; llmux</title>
-  <meta name="description" content="Install llmux: system requirements, the uv tool install command, and one-time setup of .env.common and profiles.yaml." />
+  <meta name="description" content="Install llmux with one command, complete the first-run wizard, and verify Docker GPU access." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -46,7 +46,7 @@
     <div class="docs-header">
       <h1>Installation</h1>
       <p class="lede">
-        This page walks through everything you need to get <code>llmux</code> installed and configured: system requirements, the install command itself, and the three one-time setup steps (<code>.env.common</code>, <code>profiles.yaml</code>, and a sanity check).
+        Install <code>llmux</code>, complete the first-run wizard, and verify that Docker can reach your NVIDIA GPU.
       </p>
     </div>
 
@@ -60,7 +60,6 @@
         <tr><td><strong>Linux + NVIDIA GPU</strong></td><td>One or more NVIDIA GPUs with a recent driver installed (<code>nvidia-smi</code> should work).</td></tr>
         <tr><td><strong>Docker + NVIDIA Container Toolkit</strong></td><td>Docker Engine with the <a href="https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html">NVIDIA Container Toolkit</a> so containers can see the GPU.</td></tr>
         <tr><td><strong>Python 3.10+</strong></td><td>Managed through <a href="https://docs.astral.sh/uv/">uv</a> — uv installs and isolates the tool for you.</td></tr>
-        <tr><td><strong>Hugging Face CLI (<code>hf</code>)</strong></td><td>Only needed for llama.cpp GGUF auto-download: <code>uv tool install huggingface_hub</code>.</td></tr>
       </tbody>
     </table>
 
@@ -75,15 +74,8 @@
     </div>
 
     <h2 id="install-llmux">Install llmux</h2>
-    <p>llmux is installed as a <a href="https://docs.astral.sh/uv/concepts/tools/">uv tool</a> in editable mode. This puts the <code>llmux</code> binary on your <code>PATH</code> while keeping it pinned to your local checkout, so any code edits are picked up live.</p>
-    <pre data-lang="bash"><code>git clone https://github.com/Changroro/llmux.git
-cd llmux
-
-# Install the `llmux` command globally (editable — local edits apply immediately)
-uv tool install --editable .
-
-# One-time: add ~/.local/bin to your PATH, then re-source your shell
-uv tool update-shell</code></pre>
+    <p>The installer clones llmux into <code>~/.llmux</code>, installs <a href="https://docs.astral.sh/uv/">uv</a> if needed, and puts the <code>llmux</code> command on your <code>PATH</code>:</p>
+    <pre data-lang="bash"><code>curl -fsSL https://raw.githubusercontent.com/Changroro/llmux/main/install.sh | sh</code></pre>
 
     <p>Once installed, the <code>llmux</code> binary lives in <code>~/.local/bin/llmux</code> and runs from any directory:</p>
     <pre data-lang="bash"><code>llmux --help</code></pre>
@@ -91,23 +83,27 @@ uv tool update-shell</code></pre>
     <div class="admonition tip">
       <p class="admonition-title">Upgrading and uninstalling</p>
       <ul>
-        <li><strong>Upgrade:</strong> pull the latest commit and reinstall — <code>git pull &amp;&amp; uv tool install --editable . --reinstall</code></li>
+        <li><strong>Upgrade:</strong> run <code>llmux update</code>, press <kbd>U</kbd> in the TUI, or run the installer again.</li>
         <li><strong>Uninstall:</strong> <code>uv tool uninstall llmux</code></li>
       </ul>
     </div>
 
     <div class="admonition tip">
       <p class="admonition-title">Run without installing globally</p>
-      <p>From inside the repo you can also run it ad-hoc with <code>uv run llmux</code>. llmux resolves <code>profiles.yaml</code>, <code>compose/</code>, <code>config/</code>, <code>scripts/</code>, and <code>.env.common</code> relative to the project root — so if you run it from <strong>outside</strong> the repo, set <code>LLMUX_ROOT=/path/to/llmux</code> so it can find them.</p>
+      <p>For a manual development install, clone the repo and run <code>uv tool install --editable .</code>. From inside that checkout, <code>uv run llmux</code> also works without a global command. Set <code>LLMUX_ROOT=/path/to/llmux</code> only when a manually installed command must use a different checkout.</p>
     </div>
 
     <h2 id="initial-setup">Initial setup</h2>
-    <p>llmux needs two files before it can start a model: <code>.env.common</code> (shared host paths and tokens) and <code>profiles.yaml</code> (your model definitions). Both are gitignored — they're yours to edit freely.</p>
+    <p>Run llmux once. The wizard creates the shared host configuration; Quick Setup creates profiles when you need them:</p>
+    <pre data-lang="bash"><code>llmux</code></pre>
 
-    <h3 id="1-create-and-edit-env-common">1. Create and edit <code>.env.common</code></h3>
-    <p><code>.env.common</code> holds host-side settings shared by every profile: where to cache Hugging Face downloads, where GGUF files live, the llama.cpp image tag, and so on. Copy the template and edit the values:</p>
-    <pre data-lang="bash"><code>cp .env.common.example .env.common
-$EDITOR .env.common</code></pre>
+    <h3 id="1-create-and-edit-env-common">1. Complete the shared-settings wizard</h3>
+    <p>On the first launch, llmux asks for the Hugging Face cache path, a legacy model-directory path used by disk views, and an optional Hugging Face token. The token prompt is hidden. The wizard creates the directories and writes the gitignored <code>.env.common</code> file for you.</p>
+
+    <div class="admonition warning">
+      <p class="admonition-title">Manual setup must keep the token private</p>
+      <p>The wizard writes <code>.env.common</code> with owner-only mode <code>0600</code>. If you create it manually, run <code>install -m 600 .env.common.example .env.common</code> before editing it; a plain copy can leave <code>HF_TOKEN</code> readable by other local users.</p>
+    </div>
 
     <p>The variables you can set:</p>
     <table>
@@ -117,7 +113,7 @@ $EDITOR .env.common</code></pre>
       <tbody>
         <tr><td><code>HF_TOKEN</code></td><td>Hugging Face access token for gated model downloads. Leave empty if you only use public repos.</td></tr>
         <tr><td><code>HF_CACHE_PATH</code></td><td>Host path mounted into containers as the Hugging Face cache. <strong>Must be an absolute path.</strong></td></tr>
-        <tr><td><code>MODEL_DIR</code></td><td>Host directory where llama.cpp GGUF files are stored (mounted into the container as <code>/models</code>).</td></tr>
+        <tr><td><code>MODEL_DIR</code></td><td>Legacy host directory used for old GGUF detection and disk views. Current downloads use <code>HF_CACHE_PATH</code>.</td></tr>
         <tr><td><code>LORA_BASE_PATH</code></td><td>vLLM only: host path holding LoRA adapters (mounted into the container as <code>/app/lora</code>).</td></tr>
         <tr><td><code>LLAMACPP_IMAGE</code></td><td>llama.cpp server image tag — defaults to <code>ghcr.io/ggml-org/llama.cpp:server-cuda</code>.</td></tr>
         <tr><td><code>LLAMACPP_REPO_URL</code></td><td>Source repo URL used by <code>llmux image build-dev</code> for llama.cpp dev builds. Defaults to the upstream <code>ggml-org/llama.cpp</code> repo.</td></tr>
@@ -133,13 +129,13 @@ $EDITOR .env.common</code></pre>
 
     <div class="admonition note">
       <p class="admonition-title">Gated models need <code>HF_TOKEN</code></p>
-      <p>Public models download fine with an empty <code>HF_TOKEN</code>. For gated repos (some Llama and Gemma weights, for example), set a token with access — and for llama.cpp's GGUF auto-download, make sure the <code>hf</code> CLI is installed too.</p>
+      <p>Public models download fine with an empty <code>HF_TOKEN</code>. For gated repos, use a token with access and accept the model license on Hugging Face. Both backends download inside their containers, so no host-side <code>hf</code> CLI is required.</p>
     </div>
 
-    <h3 id="2-prepare-profiles-yaml">2. Prepare <code>profiles.yaml</code></h3>
-    <p><code>profiles.yaml</code> is the single source of truth for your model profiles across both backends. Start from the bundled template:</p>
-    <pre data-lang="bash"><code>cp profiles.example.yaml profiles.yaml
-$EDITOR profiles.yaml</code></pre>
+    <h3 id="2-prepare-profiles-yaml">2. Create a profile with Quick Setup</h3>
+    <p>Press <kbd>n</kbd> in the dashboard, or use the CLI. Both vLLM and llama.cpp are supported, and llmux writes <code>profiles.yaml</code> plus the matching backend config:</p>
+    <pre data-lang="bash"><code>llmux profile quick-setup Qwen/Qwen3-0.6B --gpu-id 0</code></pre>
+    <p><code>profiles.yaml</code> remains the single source of truth. For a manual setup, run <code>install -m 600 profiles.example.yaml profiles.yaml</code> and then edit it by hand; profile environment values can contain secrets.</p>
 
     <p>The template defines a <code>defaults</code> block per backend plus one example profile for each engine:</p>
     <pre data-lang="yaml"><code>version: 1
@@ -181,14 +177,14 @@ profiles:
     <p><code>llmux env-check</code> validates <code>.env.common</code> and reports the resolved project paths. Run it from inside the repo (or with <code>LLMUX_ROOT</code> set):</p>
     <pre data-lang="bash"><code>llmux env-check</code></pre>
 
-    <p>A healthy setup ends with <code>Status       : OK</code>. If something is missing, the command lists each issue and exits non-zero — for example a missing <code>.env.common</code>, an unset <code>HF_TOKEN</code>, or a relative <code>HF_CACHE_PATH</code>.</p>
+    <p>A healthy setup ends with <code>Status       : OK</code>. If something is missing or unsafe, the command lists each issue and exits non-zero — for example a missing or group/world-accessible <code>.env.common</code>, or a relative <code>HF_CACHE_PATH</code>. <code>HF_TOKEN</code> is optional.</p>
 
     <p>You can also confirm the GPU runtime is visible to llmux:</p>
     <pre data-lang="bash"><code>llmux gpu          # nvidia-smi summary, one row per GPU</code></pre>
 
     <div class="admonition tip">
-      <p class="admonition-title"><code>--json</code> everywhere</p>
-      <p><code>env-check</code>, <code>gpu</code>, and every <code>list</code>/<code>show</code> command accept <code>--json</code> for clean piping into scripts and agents.</p>
+      <p class="admonition-title">Machine-readable checks</p>
+      <p><code>env-check</code>, <code>gpu</code>, and every <code>list</code>/<code>show</code> command accept <code>--json</code> for clean piping into scripts and agents. Token JSON reports only whether a token is set and its length, never its value.</p>
     </div>
 
     <h2 id="next-steps">Next steps</h2>

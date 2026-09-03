@@ -110,6 +110,17 @@ def _patched_vllm_config_dir(path: Path):
         yield
 
 
+@contextlib.contextmanager
+def _patched_llamacpp_config_dir(path: Path):
+    from tui.backends.llamacpp import backend
+    from tui.backends.llamacpp.screens import quick_setup
+
+    with patch.object(backend, "CONFIG_DIR", path), patch.object(
+        quick_setup, "CONFIG_DIR", path
+    ):
+        yield
+
+
 class ConfigFormDisableSwitchTests(unittest.IsolatedAsyncioTestCase):
     """The config form's per-row Switch decides active vs disabled; toggling it
     off and saving must write a disabled marker, and re-opening must restore the
@@ -157,9 +168,112 @@ class ConfigFormDisableSwitchTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("max-model-len", cfg.extra_params)
 
 
+class ConfigFlagImageSelectionTests(unittest.TestCase):
+    def test_vllm_config_uses_referencing_profile_image(self) -> None:
+        from types import SimpleNamespace
+        from tui.backends.vllm.screens import config as screen_module
+
+        screen = screen_module.ConfigFormScreen("cfg")
+        profile = SimpleNamespace(config_name="cfg", image_tag="custom/vllm:v1")
+        with patch.object(screen_module, "list_profile_names", return_value=["p"]), \
+            patch.object(screen_module, "load_profile", return_value=profile):
+            self.assertEqual(screen._profile_image(), "custom/vllm:v1")
+
+    def test_llamacpp_config_rejects_ambiguous_profile_images(self) -> None:
+        from types import SimpleNamespace
+        from tui.backends.llamacpp.screens import config as screen_module
+
+        screen = screen_module.ConfigFormScreen("cfg")
+        profiles = {
+            "a": SimpleNamespace(config_name="cfg", image_tag="custom/llama:a"),
+            "b": SimpleNamespace(config_name="cfg", image_tag="custom/llama:b"),
+        }
+        with patch.object(
+            screen_module, "list_profile_names", return_value=["a", "b"]
+        ), patch.object(
+            screen_module, "load_profile", side_effect=lambda name: profiles[name]
+        ):
+            with self.assertRaisesRegex(RuntimeError, "multiple images"):
+                screen._profile_image()
+
+    def test_new_config_does_not_inherit_an_unlinked_profile_image(self) -> None:
+        from types import SimpleNamespace
+        from tui.backends.vllm.screens import config as screen_module
+
+        screen = screen_module.ConfigFormScreen()
+        profile = SimpleNamespace(config_name="", image_tag="custom/vllm:old")
+        with patch.object(screen_module, "list_profile_names", return_value=["p"]), \
+            patch.object(screen_module, "load_profile", return_value=profile):
+            self.assertEqual(screen._profile_image(), "")
+
+
+class ConfigFlagIsolationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_vllm_flag_sets_are_isolated_per_form(self) -> None:
+        from tui.backends.vllm.screens import config as screen_module
+
+        screens = []
+        for flag in ("image-a-only", "image-b-only"):
+            with patch.object(screen_module, "list_profile_names", return_value=[]), \
+                patch.object(
+                    screen_module,
+                    "extract_vllm_params",
+                    AsyncMock(return_value={flag}),
+                ):
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    screen = screen_module.ConfigFormScreen()
+                    screens.append(screen)
+                    await app.push_screen(screen)
+                    await app.workers.wait_for_complete()
+        self.assertEqual(screens[0]._known_params, {"image-a-only"})
+        self.assertEqual(screens[1]._known_params, {"image-b-only"})
+
+    async def test_llamacpp_flag_sets_are_isolated_per_form(self) -> None:
+        from tui.backends.llamacpp.screens import config as screen_module
+
+        screens = []
+        for flag in ("image-a-only", "image-b-only"):
+            with patch.object(screen_module, "list_profile_names", return_value=[]), \
+                patch.object(
+                    screen_module,
+                    "extract_llama_server_flags",
+                    AsyncMock(return_value={flag}),
+                ):
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    screen = screen_module.ConfigFormScreen()
+                    screens.append(screen)
+                    await app.push_screen(screen)
+                    await app.workers.wait_for_complete()
+        self.assertEqual(screens[0]._known_flags, {"image-a-only"})
+        self.assertEqual(screens[1]._known_flags, {"image-b-only"})
+
+
 class ConfigListRenameTests(unittest.IsolatedAsyncioTestCase):
     """`R` on the config list renames the YAML and repoints referencing
     profiles — and refuses while a referencing profile's container is up."""
+
+    async def test_vllm_params_count_matches_cli_yaml_key_count(self) -> None:
+        from textual.widgets import DataTable
+        from tui.backends.vllm.screens.config import ConfigListScreen
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cdir = Path(tmp)
+            (cdir / "cfg.yaml").write_text(
+                "model: org/model\ngpu-memory-utilization: 0.9\nmax-model-len: 4096\n"
+            )
+            with _patched_vllm_config_dir(cdir):
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    screen = ConfigListScreen()
+                    await app.push_screen(screen)
+                    await pilot.pause()
+                    row = screen.query_one("#config-table", DataTable).get_row_at(0)
+
+            self.assertEqual(str(row[3]), "3")
 
     async def test_rename_moves_file_and_notifies(self) -> None:
         from tui.backends.vllm.screens.config import ConfigListScreen
@@ -320,6 +434,245 @@ class ProfileFormRenameTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(profile_store.list_profiles("vllm")), 1)
 
 
+class ProfileDeleteSafetyTests(unittest.IsolatedAsyncioTestCase):
+    @contextlib.contextmanager
+    def _env(self, root: Path, running: set[str]):
+        profiles_yaml = root / "profiles.yaml"
+        profiles_yaml.write_text(
+            "version: 1\ndefaults: {}\nprofiles:\n"
+            "- name: delete-me\n  backend: vllm\n  port: 8123\n  config_name: cfg\n"
+        )
+        config_dir = root / "config"
+        config_dir.mkdir()
+        (config_dir / "cfg.yaml").write_text("model: m/x\n")
+        with _patched_vllm_config_dir(config_dir), \
+            patch("tui.common.profile_store.PROFILES_YAML", profiles_yaml), \
+            patch("tui.common.profile_store.RUNTIME_DIR", root / ".runtime"), \
+            patch(
+                "tui.common.docker.running_container_names",
+                AsyncMock(return_value=running),
+            ):
+            yield profiles_yaml, config_dir
+
+    async def test_delete_confirmation_rechecks_running_state(self) -> None:
+        from tui.backends.vllm.screens.profile import ProfileDeleteScreen
+        from tui.common import profile_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self._env(root, {"delete-me"}):
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    await app.push_screen(ProfileDeleteScreen("delete-me"))
+                    await pilot.pause()
+                    app.screen.query_one("#delete-btn").press()
+                    await pilot.pause()
+                    await pilot.pause()
+                self.assertIsNotNone(profile_store.load_profile("delete-me", "vllm"))
+
+    async def test_tui_delete_keeps_linked_config_by_default(self) -> None:
+        from tui.backends.vllm.screens.profile import ProfileDeleteScreen
+        from tui.common import profile_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self._env(root, set()) as (_, config_dir):
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    await app.push_screen(ProfileDeleteScreen("delete-me"))
+                    await pilot.pause()
+                    app.screen.query_one("#delete-btn").press()
+                    await pilot.pause()
+                    await pilot.pause()
+                self.assertIsNone(profile_store.load_profile("delete-me", "vllm"))
+                self.assertTrue((config_dir / "cfg.yaml").exists())
+
+
+class VllmProfileGpuEditTests(unittest.IsolatedAsyncioTestCase):
+    async def test_gpu_edit_recomputes_untouched_tensor_parallel(self) -> None:
+        from textual.widgets import Input
+        from tui.backends.vllm.backend import Profile
+        from tui.backends.vllm.screens import profile as screen_module
+
+        saved = []
+        profile = Profile(
+            name="gpu-edit",
+            container_name="gpu-edit",
+            port="8123",
+            gpu_id="0",
+            tensor_parallel="1",
+        )
+        with patch.object(screen_module, "list_config_names", return_value=[]), \
+            patch.object(screen_module, "save_profile", side_effect=saved.append):
+            app = LlmuxApp()
+            async with app.run_test(size=WIDE) as pilot:
+                await pilot.pause()
+                screen = screen_module.ProfileFormScreen(profile)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen.query_one("#gpu-input", Input).value = "0,1"
+                screen.query_one("#save-btn").press()
+                await pilot.pause()
+
+        self.assertEqual(saved[0].gpu_id, "0,1")
+        self.assertEqual(saved[0].tensor_parallel, "2")
+
+
+class ProfileParityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_action_menus_offer_clone_for_both_backends(self) -> None:
+        from tui.backends.llamacpp import backend as lbackend
+        from tui.backends.llamacpp.screens.dashboard import ActionModal
+        from tui.backends.vllm.screens.dashboard import ProfileActionScreen
+
+        app = LlmuxApp()
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            vllm = ProfileActionScreen("v", False)
+            await app.push_screen(vllm)
+            await pilot.pause()
+            self.assertIn("clone", {option.id for option in vllm.query_one("#action-list").options})
+            app.pop_screen()
+            await pilot.pause()
+
+            profile = lbackend.Profile(name="l", container_name="l", port=8080)
+            llama = ActionModal(profile)
+            await app.push_screen(llama)
+            await pilot.pause()
+            self.assertIn("clone-profile", {option.id for option in llama.query_one("#action-list").options})
+
+    async def test_action_menus_offer_runtime_env_rendering_for_both_backends(self) -> None:
+        from tui.backends.llamacpp import backend as lbackend
+        from tui.backends.llamacpp.screens.dashboard import ActionModal
+        from tui.backends.vllm.screens.dashboard import ProfileActionScreen
+
+        app = LlmuxApp()
+        async with app.run_test(size=WIDE) as pilot:
+            await pilot.pause()
+            vllm = ProfileActionScreen("v", False)
+            await app.push_screen(vllm)
+            await pilot.pause()
+            self.assertIn("render_env", {option.id for option in vllm.query_one("#action-list").options})
+            app.pop_screen()
+            await pilot.pause()
+
+            profile = lbackend.Profile(name="l", container_name="l", port=8080)
+            llama = ActionModal(profile)
+            await app.push_screen(llama)
+            await pilot.pause()
+            self.assertIn("render-env", {option.id for option in llama.query_one("#action-list").options})
+
+    async def test_vllm_profile_form_saves_environment_variables(self) -> None:
+        from textual.widgets import TextArea
+        from tui.backends.vllm.backend import Profile
+        from tui.backends.vllm.screens import profile as screen_module
+
+        saved = []
+        profile = Profile(name="v", container_name="v", port="8123")
+        with patch.object(screen_module, "list_config_names", return_value=[]), \
+            patch.object(screen_module, "save_profile", side_effect=saved.append):
+            app = LlmuxApp()
+            async with app.run_test(size=WIDE) as pilot:
+                await pilot.pause()
+                screen = screen_module.ProfileFormScreen(profile)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen.query_one("#env-vars-input", TextArea).text = "OMP_NUM_THREADS=4\nEMPTY="
+                screen.query_one("#save-btn").press()
+                await pilot.pause()
+
+        self.assertEqual(saved[0].env_vars, {"OMP_NUM_THREADS": "4", "EMPTY": ""})
+
+    async def test_llamacpp_profile_form_saves_environment_variables(self) -> None:
+        from textual.widgets import TextArea
+        from tui.backends.llamacpp import backend
+        from tui.backends.llamacpp.screens import profile as screen_module
+
+        saved = []
+        profile = backend.Profile(name="l", container_name="l", port=8124)
+        with patch.object(screen_module, "list_config_names", return_value=[]), \
+            patch.object(screen_module, "save_profile", side_effect=saved.append):
+            app = LlmuxApp()
+            async with app.run_test(size=WIDE) as pilot:
+                await pilot.pause()
+                screen = screen_module.ProfileFormScreen(profile)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen.query_one("#env-vars-input", TextArea).text = "LLAMA_LOG_COLORS=1"
+                screen.query_one("#save-btn").press()
+                await pilot.pause()
+
+        self.assertEqual(saved[0].env_vars, {"LLAMA_LOG_COLORS": "1"})
+
+    async def test_vllm_quick_setup_uses_custom_profile_name(self) -> None:
+        from textual.widgets import Input
+        from tui.backends.vllm.screens import quick_setup as screen_module
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / "config" / "vllm"
+            with _patched_vllm_config_dir(config_dir), patch.object(
+                screen_module.profile_store, "PROFILES_YAML", root / "profiles.yaml"
+            ), patch.object(
+                screen_module.profile_store, "RUNTIME_DIR", root / ".runtime"
+            ):
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    screen = screen_module.QuickSetupScreen()
+                    await app.push_screen(screen)
+                    await pilot.pause()
+                    screen.query_one("#model-input", Input).value = "org/Model"
+                    screen.query_one("#name-input", Input).value = "custom-name"
+                    screen.query_one("#create-btn").press()
+                    await pilot.pause()
+
+                stored = screen_module.profile_store.load_profile(
+                    "custom-name", "vllm"
+                )
+                self.assertIsNotNone(stored)
+                self.assertEqual(stored.name, "custom-name")
+                self.assertTrue((config_dir / "custom-name.yaml").exists())
+
+
+class LlamacppQuickSetupManualFileTests(unittest.IsolatedAsyncioTestCase):
+    async def test_manual_gguf_file_allows_creation_without_listing(self) -> None:
+        from textual.widgets import Input
+        from tui.backends.llamacpp.screens import quick_setup as screen_module
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / "config" / "llamacpp"
+            with _patched_llamacpp_config_dir(config_dir), patch.object(
+                screen_module.profile_store, "PROFILES_YAML", root / "profiles.yaml"
+            ), patch.object(
+                screen_module.profile_store, "RUNTIME_DIR", root / ".runtime"
+            ):
+                app = LlmuxApp()
+                async with app.run_test(size=WIDE) as pilot:
+                    await pilot.pause()
+                    screen = screen_module.QuickSetupScreen()
+                    await app.push_screen(screen)
+                    await pilot.pause()
+                    screen.query_one("#repo-input", Input).value = "org/model-GGUF"
+                    screen._listing_failed = True
+                    manual = screen.query_one("#manual-file-input", Input)
+                    manual.disabled = False
+                    manual.value = "model.gguf"
+                    screen.query_one("#name-input", Input).value = "manual-model"
+                    screen.query_one("#create-btn").press()
+                    await pilot.pause()
+
+                stored = screen_module.profile_store.load_profile(
+                    "manual-model", "llamacpp"
+                )
+                config = screen_module.load_config("manual-model")
+                self.assertIsNotNone(stored)
+                self.assertEqual(stored.hf_file, "model.gguf")
+                self.assertEqual(config.params["model-file"], "model.gguf")
+
+
 class ConfigFormRenameTests(unittest.IsolatedAsyncioTestCase):
     """The config form's Name field is editable too: changing it renames the
     YAML and repoints referencing profiles, instead of forking a copy."""
@@ -388,8 +741,6 @@ class MonitorScreenTests(unittest.IsolatedAsyncioTestCase):
         from tui.common.metrics import MetricsSnapshot
         from tui.common.docker import GpuInfo
         from tui.screens.monitor import MonitorScreen
-        from textual.widgets import Static
-
         snap = MetricsSnapshot(
             backend="vllm", prompt_tokens=100.0, generation_tokens=200.0,
             requests_running=3.0, requests_waiting=1.0, kv_cache_usage=0.34,
@@ -536,6 +887,61 @@ class VersionScreenEnterTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(called, [])
                 self.assertIs(app.focused, screen.query_one("#custom-tag-input", Input))
 
+    async def test_vllm_custom_latest_does_not_start(self) -> None:
+        from tui.backends.vllm.screens import container as mod
+        from tui.backends.vllm.screens.container import ContainerUpScreen, VER_CUSTOM
+        from textual.widgets import Input, RadioButton, RadioSet
+
+        with patch.object(mod, "load_profile", lambda n: self._profile()), \
+            patch.object(mod, "get_local_latest_tag", AsyncMock(return_value="v0.1.0")), \
+            patch.object(mod, "get_dockerhub_release_version", AsyncMock(return_value="v0.1.0")), \
+            patch.object(mod, "get_dockerhub_nightly_date", AsyncMock(return_value="available")), \
+            patch.object(mod, "get_gpu_info", AsyncMock(return_value=[])):
+            app = LlmuxApp()
+            async with app.run_test(size=WIDE) as pilot:
+                await pilot.pause()
+                screen = ContainerUpScreen("p")
+                await app.push_screen(screen)
+                await pilot.pause()
+                await pilot.pause()
+                radio = screen.query_one("#version-radio", RadioSet)
+                radio.query_one(f"#{VER_CUSTOM}", RadioButton).value = True
+                await pilot.pause()
+                custom = screen.query_one("#custom-tag-input", Input)
+                custom.value = "custom/vllm:latest"
+                called = []
+                screen._do_start = lambda: called.append(True)
+                screen.action_confirm_start()
+                self.assertEqual(called, [])
+                self.assertIs(app.focused, custom)
+
+    async def test_llamacpp_custom_latest_does_not_start(self) -> None:
+        from tui.backends.llamacpp.screens import container as mod
+        from tui.backends.llamacpp.screens.container import ContainerUpScreen, VER_CUSTOM
+        from textual.widgets import Input, RadioButton, RadioSet
+
+        profile = mod.backend.Profile(name="p", container_name="p", port=8080)
+        with patch.object(mod.backend, "load_profile", return_value=profile), \
+            patch.object(mod, "get_dev_build_defaults", return_value=("repo", "main")), \
+            patch.object(mod, "get_gpu_info", AsyncMock(return_value=[])), \
+            patch.object(mod, "list_local_dev_images", AsyncMock(return_value=[])):
+            app = LlmuxApp()
+            async with app.run_test(size=WIDE) as pilot:
+                await pilot.pause()
+                screen = ContainerUpScreen("p")
+                await app.push_screen(screen)
+                await pilot.pause()
+                radio = screen.query_one("#version-radio", RadioSet)
+                radio.query_one(f"#{VER_CUSTOM}", RadioButton).value = True
+                await pilot.pause()
+                custom = screen.query_one("#custom-tag-input", Input)
+                custom.value = "ghcr.io/example/llama:latest"
+                called = []
+                screen._do_start = lambda: called.append(True)
+                screen.action_confirm_start()
+                self.assertEqual(called, [])
+                self.assertIs(app.focused, custom)
+
 
 class PlainModeToggleTests(unittest.IsolatedAsyncioTestCase):
     """The `t` key suspends the TUI, runs the plain dashboard, then reloads."""
@@ -561,6 +967,113 @@ class PlainModeToggleTests(unittest.IsolatedAsyncioTestCase):
                 await dash.action_plain_mode()
                 run.assert_awaited_once()
                 dash._reload.assert_called_once()
+
+
+class DashboardReloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_docker_scan_failure_preserves_last_verified_state(self) -> None:
+        from textual.widgets import Static
+        from tui.common.adapter import DashboardRow
+
+        row = DashboardRow(
+            backend="vllm",
+            profile_name="verified",
+            container_name="verified",
+            port=8000,
+            running=True,
+            model="org/model",
+            detail="",
+        )
+
+        def rows_for_status(running):
+            return [
+                DashboardRow(
+                    backend=row.backend,
+                    profile_name=row.profile_name,
+                    container_name=row.container_name,
+                    port=row.port,
+                    running=row.container_name in running,
+                    model=row.model,
+                    detail=row.detail,
+                )
+            ]
+
+        with (
+            patch(
+                "tui.common.docker.running_container_names",
+                AsyncMock(return_value={"verified"}),
+            ) as docker_status,
+            patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=[])),
+            patch(
+                "tui.screens.dashboard.VllmAdapter.rows",
+                side_effect=rows_for_status,
+            ),
+            patch("tui.screens.dashboard.LlamacppAdapter.rows", return_value=[]),
+        ):
+            app = LlmuxApp()
+            async with app.run_test(size=WIDE) as pilot:
+                await pilot.pause()
+                dash = next(
+                    screen
+                    for screen in app.screen_stack
+                    if isinstance(screen, DashboardScreen)
+                )
+                docker_status.side_effect = RuntimeError("daemon offline")
+                dash._reload()
+                await pilot.pause()
+
+                self.assertTrue(dash._rows[0].running)
+                status = str(dash.query_one("#status-bar", Static).render())
+                self.assertIn("Docker status unavailable", status)
+
+    async def test_created_profile_becomes_selected(self) -> None:
+        from tui.common.adapter import DashboardRow
+
+        rows = [
+            DashboardRow(
+                backend="vllm",
+                profile_name="old",
+                container_name="old",
+                port=8000,
+                running=False,
+                model="org/old",
+                detail="",
+            )
+        ]
+        with (
+            patch(
+                "tui.common.docker.running_container_names",
+                AsyncMock(return_value=set()),
+            ),
+            patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=[])),
+            patch(
+                "tui.screens.dashboard.VllmAdapter.rows",
+                side_effect=lambda _running: list(rows),
+            ),
+            patch("tui.screens.dashboard.LlamacppAdapter.rows", return_value=[]),
+        ):
+            app = LlmuxApp()
+            async with app.run_test(size=WIDE) as pilot:
+                await pilot.pause()
+                dash = next(
+                    screen
+                    for screen in app.screen_stack
+                    if isinstance(screen, DashboardScreen)
+                )
+                rows.append(
+                    DashboardRow(
+                        backend="vllm",
+                        profile_name="new",
+                        container_name="new",
+                        port=8001,
+                        running=False,
+                        model="org/new",
+                        detail="",
+                    )
+                )
+                dash._after_mutation("new")
+                await pilot.pause()
+
+                self.assertEqual(dash._selected_row().profile_name, "new")
 
 
 class ConfigFormRecipeMergeTests(unittest.IsolatedAsyncioTestCase):
@@ -747,3 +1260,136 @@ class DashboardUpdateCheckTests(unittest.IsolatedAsyncioTestCase):
         messages = " ".join(str(c.args[0]) for c in notify.call_args_list)
         self.assertIn("uncommitted", messages)
         self.assertNotIn("ConfirmModal", pushed)
+
+    async def test_successful_update_exits_the_old_process(self) -> None:
+        from unittest.mock import MagicMock
+
+        from tui.common import version_check as vc
+
+        with patch("tui.common.docker.running_container_names", AsyncMock(return_value=set())), \
+             patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=[])), \
+             patch.object(vc, "apply_update", return_value=(True, "updated")):
+            app = LlmuxApp()
+            async with app.run_test(size=WIDE) as pilot:
+                await pilot.pause()
+                dash = next(s for s in app.screen_stack if isinstance(s, DashboardScreen))
+                dash.notify = MagicMock()
+                app.exit = MagicMock()
+                dash._apply_update("v9.9.9")
+                await app.workers.wait_for_complete()
+
+                app.exit.assert_called_once_with()
+
+
+class SystemOperationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pull_image_collects_stream_result(self) -> None:
+        from tui.common import system_operations
+
+        async def events():
+            yield "log", "pulling"
+            yield "rc", 0
+
+        with patch.object(system_operations, "stream_pull", return_value=events()):
+            rc, lines = await system_operations.pull_image("registry.example/model:v1")
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(lines, ["pulling"])
+
+    async def test_llamacpp_build_passes_multi_arch_to_backend(self) -> None:
+        from tui.common import system_operations
+
+        captured = {}
+
+        async def events():
+            yield "rc", 0
+
+        def build(branch, **kwargs):
+            captured.update({"branch": branch, **kwargs})
+            return events()
+
+        with patch(
+            "tui.backends.llamacpp.backend_runtime._stream_build_dev_image",
+            side_effect=build,
+        ):
+            rc, _ = await system_operations.build_dev_image(
+                "llamacpp",
+                repo_url="https://example.test/llama.cpp.git",
+                branch="main",
+                custom_tag="dev",
+                cuda_arch="89",
+                multi_arch=True,
+            )
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(captured["use_multi_arch"])
+
+    def test_environment_status_never_returns_token_value(self) -> None:
+        from tui.common import system_operations
+
+        with tempfile.TemporaryDirectory() as tmp:
+            common = Path(tmp) / ".env.common"
+            secret = "hf_do_not_render_this"
+            common.write_text(
+                f"HF_TOKEN={secret}\nHF_CACHE_PATH={Path(tmp) / 'cache'}\n"
+            )
+            _, messages = system_operations.environment_status(common)
+
+        self.assertNotIn(secret, "\n".join(messages))
+
+    def test_render_backend_envs_reports_each_failed_profile(self) -> None:
+        from types import SimpleNamespace
+        from tui.common import system_operations
+
+        profiles = [
+            SimpleNamespace(name="ok", backend="vllm"),
+            SimpleNamespace(name="bad", backend="vllm"),
+        ]
+
+        def render(name, backend):
+            self.assertEqual(backend, "vllm")
+            if name == "bad":
+                raise ValueError("invalid config")
+            return Path("/runtime/ok.env")
+
+        with patch.object(system_operations.profile_store, "list_profiles", return_value=profiles), \
+            patch.object(
+                system_operations.profile_store,
+                "render_env_for_profile",
+                side_effect=render,
+            ):
+            rendered, failures = system_operations.render_backend_envs("vllm")
+
+        self.assertEqual(rendered, [Path("/runtime/ok.env")])
+        self.assertEqual(failures, ["bad: invalid config"])
+
+
+class SystemScreenParityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_both_system_screens_expose_image_and_environment_actions(self) -> None:
+        from unittest.mock import MagicMock
+        from tui.backends.llamacpp.screens.system import SystemScreen as LlamaSystem
+        from tui.backends.vllm.screens.system import SystemScreen as VllmSystem
+
+        ids = (
+            "#btn-pull-image",
+            "#btn-remove-image",
+            "#btn-build-image",
+            "#btn-validate-env",
+            "#btn-render-envs",
+        )
+        with patch("tui.common.docker.running_container_names", AsyncMock(return_value=set())), \
+            patch("tui.common.docker.get_gpu_info", AsyncMock(return_value=[])):
+            app = LlmuxApp()
+            async with app.run_test(size=WIDE) as pilot:
+                await pilot.pause()
+                for screen_type in (VllmSystem, LlamaSystem):
+                    with patch.object(screen_type, "_refresh_gpu", MagicMock()), \
+                        patch.object(screen_type, "_refresh_images", MagicMock()), \
+                        patch.object(screen_type, "_refresh_containers", MagicMock()), \
+                        patch.object(screen_type, "_refresh_disk", MagicMock()):
+                        screen = screen_type()
+                        await app.push_screen(screen)
+                        await pilot.pause()
+                        for selector in ids:
+                            self.assertIsNotNone(screen.query_one(selector))
+                        app.pop_screen()
+                        await pilot.pause()

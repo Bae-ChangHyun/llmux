@@ -21,19 +21,29 @@ from textual.widgets import (
 )
 
 from tui.backends.llamacpp.backend import (
+    CONFIG_DIR,
     Config,
     Profile,
     list_config_names,
     HfListingUnavailable,
     list_hf_repo_files,
-    list_profile_names,
+    list_profile_names as list_profile_names,
     load_config,
     save_config,
     save_profile,
     validate_name,
 )
+from tui.backends.llamacpp.defaults import (
+    QUICK_SETUP_CACHE_TYPE_K,
+    QUICK_SETUP_CACHE_TYPE_V,
+    QUICK_SETUP_CTX_SIZE,
+    QUICK_SETUP_FLASH_ATTN,
+    QUICK_SETUP_JINJA,
+    QUICK_SETUP_N_GPU_LAYERS,
+)
 from tui.common import profile_store
 from tui.common.i18n import t
+from tui.common.prepare import hf_file_error
 
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$")
@@ -144,6 +154,7 @@ class QuickSetupScreen(ModalScreen[str]):
     def __init__(self) -> None:
         super().__init__()
         self._last_repo = ""
+        self._listing_failed = False
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -159,6 +170,14 @@ class QuickSetupScreen(ModalScreen[str]):
                     [(t("(enter repo then Fetch)", "(repo 입력 후 Fetch)"), "__none__")],
                     allow_blank=False,
                     id="gguf-select",
+                )
+                yield Input(
+                    placeholder=t(
+                        "manual filename (enabled if lookup fails)",
+                        "수동 파일명 (조회 실패 시 활성화)",
+                    ),
+                    id="manual-file-input",
+                    disabled=True,
                 )
                 yield Static("", id="moe-hint")
 
@@ -190,10 +209,23 @@ class QuickSetupScreen(ModalScreen[str]):
                     )
 
                     yield Label(t("Ctx size (context length, tokens)", "Ctx size (컨텍스트 길이, tokens)"))
-                    yield Input(placeholder="32768", value="32768", id="ctx-input")
+                    yield Input(
+                        placeholder=QUICK_SETUP_CTX_SIZE,
+                        value=QUICK_SETUP_CTX_SIZE,
+                        id="ctx-input",
+                    )
 
-                    yield Label(t("N-GPU-Layers (layers on GPU, 99=all)", "N-GPU-Layers (GPU 에 올릴 레이어, 99=전체)"))
-                    yield Input(placeholder="99", value="99", id="ngl-input")
+                    yield Label(
+                        t(
+                            f"N-GPU-Layers (layers on GPU, {QUICK_SETUP_N_GPU_LAYERS}=all)",
+                            f"N-GPU-Layers (GPU 에 올릴 레이어, {QUICK_SETUP_N_GPU_LAYERS}=전체)",
+                        )
+                    )
+                    yield Input(
+                        placeholder=QUICK_SETUP_N_GPU_LAYERS,
+                        value=QUICK_SETUP_N_GPU_LAYERS,
+                        id="ngl-input",
+                    )
 
                     yield Label(
                         t(
@@ -201,21 +233,32 @@ class QuickSetupScreen(ModalScreen[str]):
                             "KV cache K 정밀도 (f16 / bf16 / q8_0 / q4_0 — 낮출수록 VRAM ↓)",
                         )
                     )
-                    yield Input(placeholder="bf16", value="bf16", id="ctk-input")
+                    yield Input(
+                        placeholder=QUICK_SETUP_CACHE_TYPE_K,
+                        value=QUICK_SETUP_CACHE_TYPE_K,
+                        id="ctk-input",
+                    )
 
                     yield Label(t("KV cache V precision", "KV cache V 정밀도"))
-                    yield Input(placeholder="bf16", value="bf16", id="ctv-input")
+                    yield Input(
+                        placeholder=QUICK_SETUP_CACHE_TYPE_V,
+                        value=QUICK_SETUP_CACHE_TYPE_V,
+                        id="ctv-input",
+                    )
 
                     yield Label(t("Batch size (prompt eval unit, blank = default)", "Batch size (prompt eval 단위, 비우면 기본)"))
                     yield Input(placeholder=t("use default", "기본값 사용"), id="batch-input")
 
                     with Horizontal(classes="switch-row"):
                         yield Label(t("Flash Attention (faster, same accuracy)", "Flash Attention (속도↑, 정확도는 동일)"))
-                        yield Switch(value=True, id="flash-attn-switch")
+                        yield Switch(
+                            value=QUICK_SETUP_FLASH_ATTN,
+                            id="flash-attn-switch",
+                        )
 
                     with Horizontal(classes="switch-row"):
                         yield Label(t("Jinja chat template (needed for /v1/chat/completions)", "Jinja chat template (/v1/chat/completions 에 필요)"))
-                        yield Switch(value=True, id="jinja-switch")
+                        yield Switch(value=QUICK_SETUP_JINJA, id="jinja-switch")
 
                 with Collapsible(
                     title=t("MoE Expert Offload (optional)", "MoE Expert Offload (선택)"),
@@ -284,12 +327,22 @@ class QuickSetupScreen(ModalScreen[str]):
         try:
             files = await list_hf_repo_files(repo)
         except HfListingUnavailable as exc:
-            info.update(t(f"[red]Could not reach huggingface.co: {exc}[/red]",
-                          f"[red]huggingface.co 조회 실패: {exc}[/red]"))
+            self._listing_failed = True
+            info.update(t(
+                f"[red]Could not reach huggingface.co: {exc}. Enter the GGUF filename manually.[/red]",
+                f"[red]huggingface.co 조회 실패: {exc}. GGUF 파일명을 직접 입력하세요.[/red]",
+            ))
             self.query_one("#gguf-select", Select).set_options(
                 [(t("(lookup failed)", "(조회 실패)"), "__none__")]
             )
+            manual = self.query_one("#manual-file-input", Input)
+            manual.disabled = False
+            manual.focus()
             return
+        self._listing_failed = False
+        manual = self.query_one("#manual-file-input", Input)
+        manual.value = ""
+        manual.disabled = True
         gguf_items = [
             f for f in files
             if isinstance(f, dict)
@@ -317,8 +370,9 @@ class QuickSetupScreen(ModalScreen[str]):
 
     @on(Select.Changed, "#gguf-select")
     def _on_gguf_changed(self, event: Select.Changed) -> None:
-        if event.value in (Select.BLANK, "__none__", None):
+        if event.value in (Select.NULL, Select.BLANK, "__none__", None):
             return
+        self.query_one("#manual-file-input", Input).value = str(event.value)
         self._update_moe_hint(str(event.value))
 
     def _update_moe_hint(self, gguf_file: str) -> None:
@@ -377,9 +431,12 @@ class QuickSetupScreen(ModalScreen[str]):
         gguf_select = self.query_one("#gguf-select", Select)
         gguf_file = (
             str(gguf_select.value)
-            if gguf_select.value not in (Select.BLANK, "__none__", None)
+            if gguf_select.value
+            not in (Select.NULL, Select.BLANK, "__none__", None)
             else ""
         )
+        if self._listing_failed:
+            gguf_file = self._get("manual-file-input")
         name_raw = self._get("name-input")
         port_raw = self._get("port-input")
         gpu = self._get("gpu-input") or "0"
@@ -395,8 +452,21 @@ class QuickSetupScreen(ModalScreen[str]):
         if not repo or not _REPO_RE.match(repo):
             self.notify(t("A valid HF repo is required", "유효한 HF repo 필요"), severity="error")
             return
+        if self._last_repo and repo != self._last_repo:
+            self.notify(
+                t(
+                    "The repo changed after Fetch; fetch its GGUF files again",
+                    "Fetch 후 repo 가 변경되었습니다. GGUF 파일을 다시 가져오세요",
+                ),
+                severity="error",
+            )
+            return
         if not gguf_file:
             self.notify(t("Select a GGUF file (after Fetch)", "GGUF 파일 선택 필요 (Fetch 후)"), severity="error")
+            return
+        file_error = hf_file_error(gguf_file)
+        if file_error:
+            self.notify(file_error, severity="error")
             return
         try:
             port_num = int(
@@ -426,98 +496,90 @@ class QuickSetupScreen(ModalScreen[str]):
             self.notify(t("GPU ID must be digits/commas (e.g. 0 or 0,1)", "GPU ID 는 숫자/콤마 (예: 0 또는 0,1)"), severity="error")
             return
 
-        # 충돌 시 suffix. Profile 이름은 두 백엔드에 걸쳐 전역 유일해야 하므로
-        # vLLM 프로필 이름도 포함한다. list_config_names() 가 example 을
-        # 걸러내므로 명시 추가 — 없으면 "example" 이름이 tracked example.yaml 을
-        # 덮어쓴다.
-        existing = (
-            set(list_profile_names())
-            | set(profile_store.list_profile_names("vllm"))
-            | set(list_config_names())
-            | {"example"}
-        )
-        final_name = name_raw
-        i = 0
-        while final_name in existing:
-            i += 1
-            final_name = f"{name_raw}-{i}"
-
-        params: dict[str, Any] = {}
-        disabled_params: dict[str, Any] = {}
         copy_sel = self.query_one("#copy-config-select", Select)
-        if copy_sel.value and copy_sel.value != Select.BLANK:
-            src = load_config(str(copy_sel.value))
-            params.update(src.params)
-            disabled_params = dict(src.disabled_params)
-
-        params["model-file"] = gguf_file
-        params.setdefault("alias", final_name)
-
-        def _set_int(key: str, raw: str, label: str) -> bool:
+        copy_from = (
+            str(copy_sel.value)
+            if copy_sel.value not in (Select.NULL, Select.BLANK, None)
+            else ""
+        )
+        updates: dict[str, Any] = {"model-file": gguf_file}
+        removals: set[str] = set()
+        for key, raw, label in (
+            ("ctx-size", ctx, "Ctx size"),
+            ("n-gpu-layers", ngl, "N-GPU-Layers"),
+            ("batch-size", batch, "Batch size"),
+        ):
             if not raw:
-                params.pop(key, None)
-                return True
+                removals.add(key)
+                continue
             try:
-                params[key] = int(raw)
+                updates[key] = int(raw)
             except ValueError:
-                # Reject up front rather than storing a non-numeric string that
-                # only blows up at llama-server start — port/GPU already validate
-                # eagerly in this same form.
                 self.notify(
                     t(f"{label} must be an integer", f"{label} 은(는) 정수여야 합니다"),
                     severity="error",
                 )
-                return False
-            return True
-
-        if not _set_int("ctx-size", ctx, "Ctx size"):
-            return
-        if not _set_int("n-gpu-layers", ngl, "N-GPU-Layers"):
-            return
-        if ctk:
-            params["cache-type-k"] = ctk
-        else:
-            params.pop("cache-type-k", None)
-        if ctv:
-            params["cache-type-v"] = ctv
-        else:
-            params.pop("cache-type-v", None)
-        if batch:
-            if not _set_int("batch-size", batch, "Batch size"):
                 return
+        if ctk:
+            updates["cache-type-k"] = ctk
         else:
-            params.pop("batch-size", None)
-
-        # boolean 스위치는 켜져 있을 때만 저장 (꺼진 상태 = llama.cpp 기본)
+            removals.add("cache-type-k")
+        if ctv:
+            updates["cache-type-v"] = ctv
+        else:
+            removals.add("cache-type-v")
         if flash_attn:
-            params["flash-attn"] = True
+            updates["flash-attn"] = True
         else:
-            params.pop("flash-attn", None)
+            removals.add("flash-attn")
         if jinja:
-            params["jinja"] = True
+            updates["jinja"] = True
         else:
-            params.pop("jinja", None)
-
-        # MoE offload
+            removals.add("jinja")
         if ot:
-            params["override-tensors"] = [ot]
+            updates["override-tensors"] = [ot]
         else:
-            params.pop("override-tensors", None)
+            removals.add("override-tensors")
 
-        save_config(Config(name=final_name, params=params, disabled_params=disabled_params))
-
-        save_profile(
-            Profile(
-                name=final_name,
-                container_name=final_name,
-                port=port_num,
-                gpu_id=gpu,
-                config_name=final_name,
-                model_file=gguf_file,
-                hf_repo=repo,
-                hf_file=gguf_file,
-            )
-        )
+        try:
+            with profile_store.quick_setup_transaction(
+                name_raw,
+                "llamacpp",
+                CONFIG_DIR,
+            ) as final_name:
+                params: dict[str, Any] = {}
+                disabled_params: dict[str, Any] = {}
+                if copy_from:
+                    source = CONFIG_DIR / f"{copy_from}.yaml"
+                    if not source.exists():
+                        raise ValueError(f"config not found: {source}")
+                    copied = load_config(copy_from)
+                    params.update(copied.params)
+                    disabled_params = dict(copied.disabled_params)
+                for key in removals:
+                    params.pop(key, None)
+                params.update(updates)
+                params.setdefault("alias", final_name)
+                config = Config(
+                    name=final_name,
+                    params=params,
+                    disabled_params=disabled_params,
+                )
+                profile = Profile(
+                    name=final_name,
+                    container_name=final_name,
+                    port=port_num,
+                    gpu_id=gpu,
+                    config_name=final_name,
+                    model_file=gguf_file,
+                    hf_repo=repo,
+                    hf_file=gguf_file,
+                )
+                save_config(config)
+                save_profile(profile)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.notify(str(exc), severity="error", timeout=8)
+            return
 
         self.notify(
             t(

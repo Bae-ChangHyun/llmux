@@ -1,46 +1,140 @@
-"""Backend-agnostic dev image builder.
-
-vllm and llama.cpp share the same shape:
-  1. git clone/update a source checkout
-  2. docker build -f <dockerfile> --target <stage> -t <prefix>:<tag>
-  3. label the image with repo/branch/commit so we can identify it later
-
-The mechanics (clone, fetch, checkout, pull, rev-parse, docker build) are
-identical. The backend-specific pieces are:
-  - which directory to check out into (`.vllm-src` vs `.llamacpp-src`)
-  - default repo URL, image prefix
-  - Dockerfile path within the checkout
-  - whether to detect local GPU arch and pass it as a build-arg
-  - optional Dockerfile patches (vllm's DeepEP arch fixup)
-
-The backend hands us a DevBuildSpec and any extra build args; this module
-handles the rest, yielding ("log", str) / ("commit", sha) / ("rc", int)
-events compatible with the existing AsyncGenerator API.
-"""
+"""Backend-agnostic development image builds."""
 
 from __future__ import annotations
 
 import asyncio
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import unquote, urlsplit, urlunsplit
+
+
+def sanitize_repo_url(repo_url: str) -> str:
+    parsed = urlsplit(repo_url)
+    if not parsed.scheme or parsed.hostname is None:
+        return repo_url
+    hostname = parsed.hostname
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    netloc = f"{hostname}:{parsed.port}" if parsed.port is not None else hostname
+    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+
+
+def repo_url_error(repo_url: str) -> str:
+    if any(ord(character) < 32 or ord(character) == 127 for character in repo_url):
+        return "repository URL cannot include control characters"
+    try:
+        parsed = urlsplit(repo_url)
+    except ValueError:
+        return "repository URL is invalid"
+    if parsed.query or parsed.fragment:
+        return "repository URL cannot include a query or fragment"
+    if parsed.password is not None or (
+        parsed.username is not None and parsed.scheme != "ssh"
+    ):
+        return "repository URL cannot include inline credentials"
+    return ""
+
+
+_INVALID_GIT_REF_CHAR_RE = re.compile(r"[\x00-\x20\x7f~^:?*\[\\]")
+
+
+def git_branch_error(branch: str) -> str:
+    if not branch:
+        return "Git branch must be non-empty"
+    if branch.startswith("-"):
+        return "Git branch cannot begin with '-'"
+    if branch == "@":
+        return "Git branch cannot be '@'"
+    if _INVALID_GIT_REF_CHAR_RE.search(branch):
+        return "Git branch contains a character forbidden by Git ref syntax"
+    if (
+        branch.startswith("/")
+        or branch.endswith("/")
+        or "//" in branch
+        or branch.endswith(".")
+        or ".." in branch
+        or "@{" in branch
+    ):
+        return "Git branch is not a valid Git ref"
+    if any(
+        component.startswith(".") or component.endswith(".lock")
+        for component in branch.split("/")
+    ):
+        return "Git branch is not a valid Git ref"
+    return ""
+
+
+_HTTP_URL_RE = re.compile(r"https?://[^\s'\"<>]+")
+
+
+def _redact_git_output(output: str, repo_url: str) -> str:
+    redacted = output.replace(repo_url, sanitize_repo_url(repo_url))
+    redacted = _HTTP_URL_RE.sub(
+        lambda match: sanitize_repo_url(match.group(0)), redacted
+    )
+    parsed = urlsplit(repo_url)
+    for credential in (parsed.username, parsed.password):
+        if credential:
+            redacted = redacted.replace(unquote(credential), "***")
+    return redacted
+
+
+def _git_transport(
+    repo_url: str,
+) -> tuple[str, dict[str, str] | None, tempfile.TemporaryDirectory[str] | None]:
+    parsed = urlsplit(repo_url)
+    if parsed.query or parsed.fragment:
+        raise ValueError("repository URLs cannot include a query or fragment")
+    has_credentials = parsed.username is not None or parsed.password is not None
+    if not has_credentials:
+        return repo_url, None, None
+    if parsed.scheme == "ssh" and parsed.password is None:
+        return repo_url, None, None
+    if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+        raise ValueError(
+            "repository URL credentials are supported only for HTTP(S) repositories"
+        )
+    temp_dir = tempfile.TemporaryDirectory(prefix="llmux-git-auth-")
+    askpass = Path(temp_dir.name) / "askpass.sh"
+    askpass.write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in\n"
+        "  *Username*) printf '%s\\n' \"$LLMUX_GIT_AUTH_USERNAME\" ;;\n"
+        "  *Password*) printf '%s\\n' \"$LLMUX_GIT_AUTH_PASSWORD\" ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac\n"
+    )
+    askpass.chmod(0o700)
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_ASKPASS": str(askpass),
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "credential.helper",
+            "GIT_CONFIG_VALUE_0": "",
+            "LLMUX_GIT_AUTH_USERNAME": unquote(parsed.username or ""),
+            "LLMUX_GIT_AUTH_PASSWORD": unquote(parsed.password or ""),
+        }
+    )
+    return sanitize_repo_url(repo_url), env, temp_dir
 
 
 @dataclass(frozen=True)
 class DevBuildSpec:
-    """Backend-specific knobs for the unified dev build pipeline."""
-
-    backend: str                       # "vllm" or "llamacpp"
-    image_prefix: str                  # "vllm-dev" or "llamacpp-dev"
-    src_dir: Path                      # absolute path; module-level constant on each backend
+    backend: str
+    image_prefix: str
+    src_dir: Path
     default_repo_url: str
     default_branch: str = "main"
-    dockerfile_relpath: str = ""       # relative to src_dir, e.g. "docker/Dockerfile"
-    target: str = ""                   # docker build --target value; "" disables
+    dockerfile_relpath: str = ""
+    target: str = ""
     base_build_args: tuple[tuple[str, str], ...] = ()
-    label_prefix: str = ""             # defaults to backend
+    label_prefix: str = ""
 
 
 def _label(spec: DevBuildSpec) -> str:
@@ -51,27 +145,12 @@ _TAG_INVALID_CHARS = re.compile(r"[^A-Za-z0-9._-]")
 
 
 def sanitize_docker_tag(name: str) -> str:
-    """Replace docker-tag-invalid characters with `-`.
-
-    Docker image tags accept `[A-Za-z0-9_.-]` and must not start with `.` or `-`.
-    Branch names like `releases/v0.21.0` or `feat/foo` are common, so map every
-    invalid character to `-` and trim leading punctuation. The branch's original
-    spelling is still preserved in the `<prefix>.repo.branch` label.
-
-    Public because the *runtime* paths must derive the exact same tag the
-    builder stamps (`<prefix>:<safe_branch>`) — a slash in a branch like
-    `feat/foo` is not a valid docker tag reference.
-    """
+    """Replace Docker-tag-invalid characters with `-`."""
     sanitized = _TAG_INVALID_CHARS.sub("-", name).lstrip(".-")
     return sanitized or "branch"
 
 
-# Back-compat alias for existing internal callers.
-_sanitize_docker_tag = sanitize_docker_tag
-
-
 def _dev_image_prefixes() -> tuple[str, ...]:
-    """Registered dev-image prefixes, from the specs that own them."""
     from tui.backends.llamacpp.backend_runtime import LLAMACPP_DEV_SPEC
     from tui.backends.vllm.backend_runtime import VLLM_DEV_SPEC
 
@@ -81,20 +160,33 @@ def _dev_image_prefixes() -> tuple[str, ...]:
 
 
 _TAG_PART_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
+_DIGEST_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._+-]*:[A-Fa-f0-9]+$")
+
+
+def image_reference_credential_error(value: str) -> str:
+    if not value:
+        return ""
+    if "://" in value or "?" in value or "#" in value:
+        return (
+            "image reference cannot include URL credentials, a query, or a fragment"
+        )
+    if any(character.isspace() or ord(character) < 32 for character in value):
+        return "image reference cannot include whitespace or control characters"
+    if "@" in value and not _DIGEST_RE.fullmatch(value.rsplit("@", 1)[1]):
+        return (
+            "image reference cannot include URL credentials, a query, or a fragment"
+        )
+    return ""
 
 
 def image_tag_error(value: str) -> str:
-    """Why `value` is an unusable image reference, or "" if it's fine.
-
-    Empty is allowed (it clears the pin). For our own dev images the tag part
-    must already equal `sanitize_docker_tag(tag)` — otherwise a pin like
-    `vllm-dev:feat/foo` would name an image the builder/runtime (which sanitize
-    to `feat-foo`) never produce. For any other reference the tag part just has
-    to be a legal docker tag.
-    """
+    """Return why an image reference is unusable, or an empty string."""
     value = value.strip()
     if not value:
         return ""
+    credential_error = image_reference_credential_error(value)
+    if credential_error:
+        return credential_error
     for prefix in _dev_image_prefixes():
         if value.startswith(prefix):
             tag = value[len(prefix):]
@@ -107,12 +199,8 @@ def image_tag_error(value: str) -> str:
                     f"'/' or other specials — did you mean {prefix}{safe}?"
                 )
             return ""
-    # Generic reference: the tag is the segment after the last ':' *unless* that
-    # colon belongs to a registry host:port (i.e. sits before the last '/').
     has_tag = ":" in value and value.rfind(":") > value.rfind("/")
     if not has_tag:
-        # An untagged ref resolves to `:latest` at pull time — same ambiguous
-        # alias the Custom Tag field hard-rejects, so refuse it here too.
         return (
             f"image reference {value!r} has no tag and would resolve to "
             "`:latest`; pin a specific version tag."
@@ -131,19 +219,24 @@ def image_tag_error(value: str) -> str:
     return ""
 
 
-async def _run(*args: str, cwd: Path | None = None, timeout: float = 30) -> tuple[int, str]:
+async def _run(
+    *args: str,
+    cwd: Path | None = None,
+    timeout: float = 30,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str]:
     try:
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(cwd) if cwd else None,
+            env=env,
         )
     except FileNotFoundError:
-        # Binary not on PATH (e.g. nvidia-smi on a CPU-only host or CI).
-        # Callers treat a non-zero rc as "command unavailable" and degrade
-        # gracefully — e.g. detect_local_gpu_caps() returns [] → multi-arch.
         return -1, f"command not found: {args[0]}"
+    except OSError as exc:
+        return -1, f"failed to start {args[0]}: {exc}"
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
@@ -159,13 +252,25 @@ async def _stream(
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
 ):
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        cwd=str(cwd) if cwd else None,
-        env=env,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(cwd) if cwd else None,
+            env=env,
+        )
+    except FileNotFoundError:
+        yield ("log", f"Error: command not found: {args[0] if args else '<empty>'}")
+        yield ("rc", 127)
+        return
+    except OSError as exc:
+        yield (
+            "log",
+            f"Error: failed to start {args[0] if args else '<empty>'}: {exc}",
+        )
+        yield ("rc", 126)
+        return
     if proc.stdout is None:
         yield ("rc", 1)
         return
@@ -190,64 +295,171 @@ async def _stream(
 
 
 async def clone_or_update(spec: DevBuildSpec, repo_url: str, branch: str):
-    """Yield ('log', str) / ('commit', sha) / ('rc', int).
-
-    Refuses to silently switch remotes if .git/ already points at a different
-    repository URL — the caller can rm -rf the checkout if they want to swap.
-    """
-    if spec.src_dir.joinpath(".git").exists():
-        yield ("log", f"Updating existing {spec.backend} source...")
-        rc, current = await _run("git", "remote", "get-url", "origin", cwd=spec.src_dir, timeout=30)
-        if rc != 0:
-            yield ("log", current.strip() or f"Error: failed to inspect existing {spec.backend} source")
-            yield ("rc", 1)
-            return
-        if current.strip() != repo_url:
-            yield ("log", f"Error: existing {spec.src_dir.name} remote URL differs from the requested repository.")
-            yield ("log", f"Existing: {current.strip()}")
-            yield ("log", f"Requested: {repo_url}")
-            yield ("log", f"Move or delete {spec.src_dir.name} yourself if you want to replace the checkout.")
-            yield ("rc", 1)
-            return
-
-    if not spec.src_dir.exists():
-        async for event in _stream(["git", "clone", repo_url, str(spec.src_dir)]):
-            if event[0] == "rc":
-                if event[1] != 0:
-                    yield event
-                    return
-                continue
-            yield event
-
-    rc, out = await _run("git", "fetch", "origin", cwd=spec.src_dir, timeout=120)
-    if rc != 0:
-        yield ("log", out.strip() or "Error: git fetch failed")
-        yield ("rc", rc)
+    """Clone or update a checkout without silently switching its remote."""
+    error = repo_url_error(repo_url)
+    if error:
+        yield ("log", f"Error: {error}")
+        yield ("rc", 1)
+        return
+    branch_error = git_branch_error(branch)
+    if branch_error:
+        yield ("log", f"Error: {branch_error}")
+        yield ("rc", 1)
+        return
+    try:
+        transport_url, git_env, auth_temp_dir = _git_transport(repo_url)
+    except ValueError as exc:
+        yield ("log", f"Error: {exc}")
+        yield ("rc", 1)
         return
 
-    rc, out = await _run("git", "checkout", branch, cwd=spec.src_dir, timeout=60)
-    if rc != 0:
+    try:
+        if spec.src_dir.joinpath(".git").exists():
+            yield ("log", f"Updating existing {spec.backend} source...")
+            rc, current = await _run(
+                "git",
+                "remote",
+                "get-url",
+                "origin",
+                cwd=spec.src_dir,
+                timeout=30,
+                env=git_env,
+            )
+            if rc != 0:
+                message = _redact_git_output(current, repo_url).strip()
+                yield (
+                    "log",
+                    message
+                    or f"Error: failed to inspect existing {spec.backend} source",
+                )
+                yield ("rc", 1)
+                return
+            current_url = current.strip()
+            if sanitize_repo_url(current_url) != sanitize_repo_url(repo_url):
+                yield (
+                    "log",
+                    f"Error: existing {spec.src_dir.name} remote URL differs from the requested repository.",
+                )
+                yield ("log", f"Existing: {sanitize_repo_url(current_url)}")
+                yield ("log", f"Requested: {sanitize_repo_url(repo_url)}")
+                yield (
+                    "log",
+                    f"Move or delete {spec.src_dir.name} yourself if you want to replace the checkout.",
+                )
+                yield ("rc", 1)
+                return
+            if current_url != transport_url:
+                rc, out = await _run(
+                    "git",
+                    "remote",
+                    "set-url",
+                    "origin",
+                    transport_url,
+                    cwd=spec.src_dir,
+                    timeout=30,
+                    env=git_env,
+                )
+                if rc != 0:
+                    yield (
+                        "log",
+                        _redact_git_output(out, repo_url).strip()
+                        or "Error: failed to remove credentials from Git origin",
+                    )
+                    yield ("rc", rc)
+                    return
+
+        if not spec.src_dir.exists():
+            async for event in _stream(
+                ["git", "clone", transport_url, str(spec.src_dir)], env=git_env
+            ):
+                if event[0] == "log":
+                    yield ("log", _redact_git_output(str(event[1]), repo_url))
+                    continue
+                if event[0] == "rc":
+                    if event[1] != 0:
+                        yield event
+                        return
+                    continue
+                yield event
+
         rc, out = await _run(
-            "git", "checkout", "-b", branch, f"origin/{branch}", cwd=spec.src_dir, timeout=60
+            "git", "fetch", "origin", cwd=spec.src_dir, timeout=120, env=git_env
         )
         if rc != 0:
-            yield ("log", out.strip() or f"Error: failed to checkout branch {branch}")
+            yield (
+                "log",
+                _redact_git_output(out, repo_url).strip()
+                or "Error: git fetch failed",
+            )
             yield ("rc", rc)
             return
 
-    rc, out = await _run("git", "pull", "origin", branch, cwd=spec.src_dir, timeout=120)
-    if rc != 0:
-        yield ("log", out.strip() or f"Error: git pull failed for branch {branch}")
-        yield ("log", f"Hint: stash or reset local changes in {spec.src_dir.name}/, then retry.")
-        yield ("rc", rc)
-        return
+        rc, out = await _run(
+            "git", "checkout", branch, cwd=spec.src_dir, timeout=60, env=git_env
+        )
+        if rc != 0:
+            rc, out = await _run(
+                "git",
+                "checkout",
+                "-b",
+                branch,
+                f"origin/{branch}",
+                cwd=spec.src_dir,
+                timeout=60,
+                env=git_env,
+            )
+            if rc != 0:
+                yield (
+                    "log",
+                    _redact_git_output(out, repo_url).strip()
+                    or f"Error: failed to checkout branch {branch}",
+                )
+                yield ("rc", rc)
+                return
 
-    rc, sha = await _run("git", "rev-parse", "--short", "HEAD", cwd=spec.src_dir, timeout=30)
-    if rc != 0:
-        yield ("log", sha.strip() or "Error: failed to read commit hash")
-        yield ("rc", rc)
-        return
-    yield ("commit", sha.strip())
+        rc, out = await _run(
+            "git",
+            "pull",
+            "origin",
+            branch,
+            cwd=spec.src_dir,
+            timeout=120,
+            env=git_env,
+        )
+        if rc != 0:
+            yield (
+                "log",
+                _redact_git_output(out, repo_url).strip()
+                or f"Error: git pull failed for branch {branch}",
+            )
+            yield (
+                "log",
+                f"Hint: stash or reset local changes in {spec.src_dir.name}/, then retry.",
+            )
+            yield ("rc", rc)
+            return
+
+        rc, sha = await _run(
+            "git",
+            "rev-parse",
+            "--short",
+            "HEAD",
+            cwd=spec.src_dir,
+            timeout=30,
+            env=git_env,
+        )
+        if rc != 0:
+            yield (
+                "log",
+                _redact_git_output(sha, repo_url).strip()
+                or "Error: failed to read commit hash",
+            )
+            yield ("rc", rc)
+            return
+        yield ("commit", sha.strip())
+    finally:
+        if auth_temp_dir is not None:
+            auth_temp_dir.cleanup()
 
 
 async def stream_build(
@@ -258,38 +470,37 @@ async def stream_build(
     custom_tag: str = "",
     extra_build_args: tuple[tuple[str, str], ...] = (),
     extra_log_lines: tuple[str, ...] = (),
-    pre_build=None,  # async callable() -> (ok: bool, message: str) or None
+    pre_build=None,
     extra_labels: tuple[tuple[str, str], ...] = (),
 ):
-    """Clone/update, then docker build with backend-prefixed tags + labels.
-
-    Tags applied:
-      - <prefix>:<custom_tag or branch-YYYYMMDD>  (the unique tag)
-      - <prefix>:<branch>                         (stable alias to the latest build)
-
-    `pre_build` runs between clone_or_update and docker build — backends use
-    this to patch the freshly-checked-out Dockerfile (vllm's DeepEP arch fix).
-    `extra_build_args` lets the backend pass through things like
-    `--build-arg torch_cuda_arch_list=...`.
-    """
+    """Clone or update source and stream a backend-prefixed Docker build."""
     resolved_repo = repo_url or spec.default_repo_url
+    error = repo_url_error(resolved_repo)
+    if error:
+        yield ("log", f"Error: {error}")
+        yield ("rc", 1)
+        return
+    image_error = image_reference_credential_error(spec.image_prefix)
+    if image_error:
+        yield ("log", f"Error: {image_error}")
+        yield ("rc", 1)
+        return
+    metadata_repo = sanitize_repo_url(resolved_repo)
     resolved_branch = branch or spec.default_branch
-    # docker tags reject `/` and a few other characters; branch names like
-    # `releases/v0.21.0` are common so sanitize for the tag while keeping
-    # the original string in the `.repo.branch` label.
-    safe_branch = _sanitize_docker_tag(resolved_branch)
-    # custom_tag goes through the same sanitizer: the start path
-    # (`up --dev --tag feat/foo`) sanitizes before looking the image up, so a
-    # raw tag here would either be an invalid docker reference or — worse —
-    # build under a name the runtime never resolves to.
+    branch_error = git_branch_error(resolved_branch)
+    if branch_error:
+        yield ("log", f"Error: {branch_error}")
+        yield ("rc", 1)
+        return
+    safe_branch = sanitize_docker_tag(resolved_branch)
     main_tag = (
-        _sanitize_docker_tag(custom_tag)
+        sanitize_docker_tag(custom_tag)
         if custom_tag
         else f"{safe_branch}-{datetime.now().strftime('%Y%m%d')}"
     )
 
     yield ("log", f"Building {spec.backend} from source")
-    yield ("log", f"Repository: {resolved_repo}")
+    yield ("log", f"Repository: {metadata_repo}")
     yield ("log", f"Branch: {resolved_branch}")
     for extra in extra_log_lines:
         yield ("log", extra)
@@ -330,7 +541,7 @@ async def stream_build(
     for arg_k, arg_v in extra_build_args:
         cmd.extend(["--build-arg", f"{arg_k}={arg_v}"])
     cmd.extend([
-        "--label", f"{label_prefix}.repo.url={resolved_repo}",
+        "--label", f"{label_prefix}.repo.url={metadata_repo}",
         "--label", f"{label_prefix}.repo.branch={resolved_branch}",
         "--label", f"{label_prefix}.commit.hash={commit_hash}",
         "--label", f"{label_prefix}.build.date={build_date}",
@@ -353,12 +564,7 @@ async def stream_build(
 
 
 async def detect_local_gpu_caps() -> list[str]:
-    """Return unique compute_cap strings from `nvidia-smi`, sorted.
-
-    Examples: ["8.9"] for a single RTX 4080 SUPER, ["8.6", "8.9"] for a
-    mixed-SM machine. Empty list if nvidia-smi fails — caller decides
-    whether to fall back to a multi-arch build.
-    """
+    """Return sorted unique compute capabilities from `nvidia-smi`."""
     rc, out = await _run(
         "nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader", timeout=10
     )
@@ -373,15 +579,15 @@ def format_arch_torch(caps: list[str]) -> str:
 
 
 def format_arch_cmake(caps: list[str]) -> str:
-    """CMake CUDA_ARCHITECTURES / llama.cpp CUDA_DOCKER_ARCH convention:
-    no dot, semicolon-separated (e.g. '86;89')."""
+    """Format capabilities as semicolon-separated CMake architecture numbers."""
     return ";".join(c.replace(".", "") for c in caps)
 
 
 async def get_image_label(image_ref: str, label: str) -> str:
-    # The label key must be a Go *string* literal — double-quoted. Single
-    # quotes are parsed as a rune literal and `docker inspect` fails with
-    # rc=64.
+    error = image_reference_credential_error(image_ref)
+    if error:
+        raise RuntimeError(error)
+    # Go templates require double-quoted string literals for label keys.
     rc, out = await _run(
         "docker",
         "inspect",
@@ -390,7 +596,10 @@ async def get_image_label(image_ref: str, label: str) -> str:
         timeout=20,
     )
     if rc != 0:
-        return ""
+        lowered = out.lower()
+        if "no such image" in lowered or "no such object" in lowered:
+            return ""
+        raise RuntimeError(out.strip() or f"docker image inspect {image_ref} failed")
     value = out.strip()
     return "" if value == "<no value>" else value
 
@@ -405,7 +614,7 @@ async def image_matches(
     saved_branch = await get_image_label(image_ref, f"{label_prefix}.repo.branch")
     if not saved_repo or not saved_branch:
         return False
-    return saved_repo == repo_url and saved_branch == branch
+    return saved_repo == sanitize_repo_url(repo_url) and saved_branch == branch
 
 
 @dataclass
@@ -417,8 +626,10 @@ class DevImage:
 
 
 async def list_local_dev_images(spec: DevBuildSpec) -> list[DevImage]:
-    """Local dev images. Raises if the probe fails — an empty list must mean
-    "none built", never "docker could not be reached"."""
+    """List local dev images, raising when Docker cannot be queried."""
+    error = image_reference_credential_error(spec.image_prefix)
+    if error:
+        raise RuntimeError(error)
     rc, out = await _run(
         "docker", "images", spec.image_prefix,
         "--format", "{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}",
@@ -429,16 +640,26 @@ async def list_local_dev_images(spec: DevBuildSpec) -> list[DevImage]:
             f"docker images {spec.image_prefix} failed or timed out: "
             f"{out.strip() or 'no output'}"
         )
-    images: list[DevImage] = []
-    for line in out.strip().splitlines():
-        parts = line.split("\t")
-        if len(parts) >= 4 and parts[1] != "<none>":
-            images.append(DevImage(repository=parts[0], tag=parts[1], size=parts[2], created=parts[3]))
-    return images
+    from tui.common.docker import parse_docker_image_rows
+
+    return [
+        DevImage(repository=repository, tag=tag, size=size, created=created)
+        for repository, tag, size, created in parse_docker_image_rows(out)
+        if tag != "<none>"
+    ]
 
 
 async def image_exists_locally(spec: DevBuildSpec, image_tag: str) -> bool:
-    rc, _ = await _run(
-        "docker", "image", "inspect", f"{spec.image_prefix}:{image_tag}", timeout=20
+    image_ref = f"{spec.image_prefix}:{image_tag}"
+    error = image_reference_credential_error(image_ref)
+    if error:
+        raise RuntimeError(error)
+    rc, out = await _run(
+        "docker", "image", "inspect", image_ref, timeout=20
     )
-    return rc == 0
+    if rc == 0:
+        return True
+    lowered = out.lower()
+    if "no such image" in lowered or "no such object" in lowered:
+        return False
+    raise RuntimeError(out.strip() or f"docker image inspect {image_ref} failed")

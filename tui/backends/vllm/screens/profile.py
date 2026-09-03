@@ -7,7 +7,7 @@ import re
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import ModalScreen
-from textual.widgets import Button, Static, Label, Input, Select, Switch
+from textual.widgets import Button, Static, Label, Input, Select, Switch, TextArea
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual import on
 
@@ -17,7 +17,6 @@ from tui.backends.vllm.backend import (
     save_profile,
     delete_profile,
     list_config_names,
-    list_profile_names,
     validate_name as _validate_name,
 )
 from tui.common import profile_store
@@ -95,6 +94,10 @@ class ProfileFormScreen(ModalScreen[str | None]):
         height: auto;
         margin-left: 2;
     }
+    ProfileFormScreen #env-vars-input {
+        height: 6;
+        margin-bottom: 1;
+    }
     ProfileFormScreen .form-buttons {
         height: auto;
         min-height: 3;
@@ -111,6 +114,7 @@ class ProfileFormScreen(ModalScreen[str | None]):
         self._profile = profile
         self._edit_mode = profile is not None
         self._saved_name: str | None = None
+        self._tp_edited = False
         # In edit mode the name field stays editable: a changed name means a
         # rename, and the original is what tells the two apart at save time.
         self._original_name = profile.name if profile is not None else ""
@@ -209,6 +213,30 @@ class ProfileFormScreen(ModalScreen[str | None]):
                     )
 
                 with Horizontal(classes="form-row"):
+                    yield Label("Max LoRAs")
+                    yield Input(
+                        value=p.max_loras if p else "",
+                        placeholder=t("optional positive integer", "선택 양의 정수"),
+                        id="max-loras-input",
+                    )
+
+                with Horizontal(classes="form-row"):
+                    yield Label("Max LoRA Rank")
+                    yield Input(
+                        value=p.max_lora_rank if p else "",
+                        placeholder=t("optional positive integer", "선택 양의 정수"),
+                        id="max-lora-rank-input",
+                    )
+
+                with Horizontal(classes="form-row"):
+                    yield Label("LoRA Modules")
+                    yield Input(
+                        value=p.lora_modules if p else "",
+                        placeholder="adapter=/app/lora/adapter",
+                        id="lora-modules-input",
+                    )
+
+                with Horizontal(classes="form-row"):
                     yield Label(t("Extra Pip Packages", "추가 Pip 패키지"))
                     yield Input(
                         value=(p.extra_pip_packages if p else ""),
@@ -227,9 +255,24 @@ class ProfileFormScreen(ModalScreen[str | None]):
                         id="image-tag-input",
                     )
 
+                yield Label(
+                    t("Environment Variables (one KEY=VALUE per line)", "환경 변수 (한 줄에 KEY=VALUE 하나)"),
+                    id="env-vars-title",
+                )
+                yield TextArea(
+                    profile_store.format_env_vars_text(p.env_vars if p else {}),
+                    id="env-vars-input",
+                )
+
             with Horizontal(classes="form-buttons"):
                 yield Button(t("Save", "저장"), id="save-btn", variant="primary")
                 yield Button(t("Close", "닫기"), id="cancel-btn", variant="default")
+
+    def on_mount(self) -> None:
+        self.call_after_refresh(self._reset_tp_edit)
+
+    def _reset_tp_edit(self) -> None:
+        self._tp_edited = False
 
     @on(Button.Pressed, "#save-btn")
     async def _on_save(self, event: Button.Pressed) -> None:
@@ -239,6 +282,15 @@ class ProfileFormScreen(ModalScreen[str | None]):
         gpu_id = self.query_one("#gpu-input", Input).value.strip()
         tp = self.query_one("#tp-input", Input).value.strip()
         lora = self.query_one("#lora-switch", Switch).value
+
+        original_gpu = self._profile.gpu_id if self._profile is not None else "0"
+        original_tp = self._profile.tensor_parallel if self._profile is not None else "1"
+        if (
+            (gpu_id or "0") != original_gpu
+            and not self._tp_edited
+            and (tp or "1") == original_tp
+        ):
+            tp = str(len((gpu_id or "0").split(",")))
 
         config_select = self.query_one("#config-select", Select)
         config_name = str(config_select.value) if config_select.value != Select.BLANK else ""
@@ -320,8 +372,38 @@ class ProfileFormScreen(ModalScreen[str | None]):
                             severity="error")
                 return
 
+        max_loras = self.query_one("#max-loras-input", Input).value.strip()
+        max_lora_rank = self.query_one("#max-lora-rank-input", Input).value.strip()
+        lora_modules = self.query_one("#lora-modules-input", Input).value.strip()
+        for label, raw in (
+            ("Max LoRAs", max_loras),
+            ("Max LoRA Rank", max_lora_rank),
+        ):
+            if raw:
+                try:
+                    if int(raw) < 1:
+                        raise ValueError
+                except ValueError:
+                    self.notify(
+                        t(
+                            f"{label} must be a positive integer.",
+                            f"{label} 값은 양의 정수여야 합니다.",
+                        ),
+                        severity="error",
+                    )
+                    return
+
         extra_pip = self.query_one("#extra-pip-input", Input).value.strip()
         image_tag = self.query_one("#image-tag-input", Input).value.strip()
+        try:
+            env_vars = profile_store.parse_env_vars_text(
+                self.query_one("#env-vars-input", TextArea).text,
+                "vllm",
+                existing=self._profile.env_vars if self._profile is not None else None,
+            )
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return
         from tui.common.dev_build import image_tag_error
 
         tag_err = image_tag_error(image_tag)
@@ -329,52 +411,53 @@ class ProfileFormScreen(ModalScreen[str | None]):
             self.notify(tag_err, severity="error")
             return
 
-        if renaming and not await self._rename_to(name):
+        if renaming and not await self._rename_allowed():
             return
 
-        if self._edit_mode and self._profile is not None:
-            profile = self._profile
-            profile.container_name = container or name
-            profile.port = port or _default_port()
-            profile.gpu_id = gpu_id or "0"
-            profile.tensor_parallel = tp or "1"
-            profile.config_name = config_name
-            profile.model_id = model_id
-            profile.enable_lora = "true" if lora else "false"
-            profile.extra_pip_packages = extra_pip
-            profile.image_tag = image_tag
-        else:
-            profile = Profile(
-                name=name,
-                container_name=container or name,
-                port=port or _default_port(),
-                gpu_id=gpu_id or "0",
-                tensor_parallel=tp or "1",
-                config_name=config_name,
-                model_id=model_id,
-                enable_lora="true" if lora else "false",
-                extra_pip_packages=extra_pip,
-                image_tag=image_tag,
-            )
+        profile = Profile(
+            name=name,
+            container_name=container or name,
+            port=port or _default_port(),
+            gpu_id=gpu_id or "0",
+            tensor_parallel=tp or "1",
+            config_name=config_name,
+            model_id=model_id,
+            enable_lora="true" if lora else "false",
+            max_loras=max_loras,
+            max_lora_rank=max_lora_rank,
+            lora_modules=lora_modules,
+            extra_pip_packages=extra_pip,
+            image_tag=image_tag,
+            env_vars=env_vars,
+        )
 
-        save_profile(profile)
+        try:
+            if self._profile is not None and hasattr(
+                self._profile, "_stored_snapshot"
+            ):
+                profile._stored_snapshot = self._profile._stored_snapshot
+            save_profile(profile)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.notify(str(exc), severity="error", timeout=8)
+            return
         self.notify(t(f"Saved: {name}", f"저장됨: {name}"), severity="information")
         self._saved_name = name
+        self._profile = profile
+        self._original_name = name
+        self._tp_edited = False
+        self.query_one("#form-title", Static).update(
+            t(f"[b]Edit Profile: {name}[/b]", f"[b]프로필 편집: {name}[/b]")
+        )
 
         if not self._edit_mode:
             self._edit_mode = True
-            self._profile = profile
-            self._original_name = name
-            self.query_one("#form-title", Static).update(
-                t(f"[b]Edit Profile: {name}[/b]", f"[b]프로필 편집: {name}[/b]")
-            )
 
-    async def _rename_to(self, new_name: str) -> bool:
-        """Rename the profile being edited. False = refused, caller must abort.
+    @on(Input.Changed, "#tp-input")
+    def _on_tp_changed(self, event: Input.Changed) -> None:
+        if self.is_mounted:
+            self._tp_edited = True
 
-        The container is named after the profile, so renaming under a running
-        one would orphan it — same rule the dashboard's `R` key enforces.
-        """
+    async def _rename_allowed(self) -> bool:
         from tui.common import docker as common_docker
 
         old_name = self._original_name
@@ -399,17 +482,6 @@ class ProfileFormScreen(ModalScreen[str | None]):
                 severity="error",
             )
             return False
-        try:
-            profile_store.rename_profile(old_name, new_name, "vllm")
-        except ValueError as exc:
-            self.notify(str(exc), severity="error")
-            return False
-
-        self._original_name = new_name
-        self._profile.name = new_name
-        self.query_one("#form-title", Static).update(
-            t(f"[b]Edit Profile: {new_name}[/b]", f"[b]프로필 편집: {new_name}[/b]")
-        )
         return True
 
     @on(Button.Pressed, "#cancel-btn")
@@ -466,40 +538,15 @@ class ProfileDeleteScreen(ModalScreen[bool]):
         super().__init__()
         self._profile_name = profile_name
         self._profile = load_profile(profile_name)
-        self._config_shared = self._has_other_config_refs()
-        # delete_profile() skips the tracked template — say so instead of
-        # promising a deletion that will not happen.
-        self._config_is_template = self._profile.config_name == "example"
-
-    def _has_other_config_refs(self) -> bool:
-        config_name = self._profile.config_name
-        if not config_name:
-            return False
-        for name in list_profile_names():
-            if name == self._profile_name:
-                continue
-            if load_profile(name).config_name == config_name:
-                return True
-        return False
+        self._config_name = self._profile.config_name or profile_name
 
     def compose(self) -> ComposeResult:
         with Vertical():
             if self._profile.config_name:
-                if self._config_shared:
-                    detail = t(
-                        f"(profile only; config is shared: {self._profile.config_name})",
-                        f"(프로필만 삭제; config 는 공유됨: {self._profile.config_name})",
-                    )
-                elif self._config_is_template:
-                    detail = t(
-                        "(profile only; config 'example' is the tracked template — kept)",
-                        "(프로필만 삭제; config 'example' 은 추적 템플릿이라 유지됨)",
-                    )
-                else:
-                    detail = t(
-                        f"(profile + config: {self._profile.config_name})",
-                        f"(프로필 + config: {self._profile.config_name})",
-                    )
+                detail = t(
+                    f"(linked config: {self._profile.config_name})",
+                    f"(연결된 config: {self._profile.config_name})",
+                )
                 yield Static(
                     t(
                         f"Delete [b]{self._profile_name}[/b]?\n{detail}",
@@ -515,37 +562,57 @@ class ProfileDeleteScreen(ModalScreen[bool]):
                     ),
                     id="delete-message",
                 )
+            with Horizontal(classes="form-row"):
+                yield Label(
+                    t(
+                        f"Also delete linked config if unused: {self._config_name}",
+                        f"사용 중이 아니면 연결 config도 삭제: {self._config_name}",
+                    )
+                )
+                yield Switch(value=False, id="delete-config-switch")
             with Horizontal(classes="form-buttons"):
                 yield Button(t("Delete", "삭제"), id="delete-btn", variant="error")
                 yield Button(t("Cancel", "취소"), id="cancel-btn", variant="default")
 
     @on(Button.Pressed, "#delete-btn")
-    def _on_delete(self, event: Button.Pressed) -> None:
-        has_config = bool(self._profile.config_name)
-        delete_profile(self._profile_name, delete_config=has_config)
-        if has_config and self._config_shared:
+    async def _on_delete(self, event: Button.Pressed) -> None:
+        from tui.common import docker as common_docker
+
+        container = self._profile.container_name or self._profile_name
+        try:
+            running = await common_docker.running_container_names()
+        except Exception as exc:
             self.app.notify(
                 t(
-                    f"Deleted profile: {self._profile_name}; shared config kept: {self._profile.config_name}",
-                    f"프로필 삭제됨: {self._profile_name}; 공유 config 유지: {self._profile.config_name}",
-                )
+                    f"Could not verify container state ({exc}); deletion aborted.",
+                    f"컨테이너 상태를 확인할 수 없습니다 ({exc}). 삭제를 중단합니다.",
+                ),
+                severity="error",
             )
-        elif has_config and self._config_is_template:
+            return
+        if container in running:
             self.app.notify(
                 t(
-                    f"Deleted profile: {self._profile_name}; tracked template config kept: example",
-                    f"프로필 삭제됨: {self._profile_name}; 추적 템플릿 config 유지: example",
-                )
+                    f"Container '{container}' is running; stop it before deleting.",
+                    f"컨테이너 '{container}' 가 실행 중입니다. 중지 후 삭제하세요.",
+                ),
+                severity="error",
             )
-        elif has_config:
-            self.app.notify(
-                t(
-                    f"Deleted: {self._profile_name} + config: {self._profile.config_name}",
-                    f"삭제됨: {self._profile_name} + config: {self._profile.config_name}",
-                )
+            return
+        delete_config = self.query_one("#delete-config-switch", Switch).value
+        delete_profile(self._profile_name, delete_config=delete_config)
+        suffix = (
+            t(
+                f"; linked config kept: {self._config_name}",
+                f"; 연결된 config 유지: {self._config_name}",
             )
-        else:
-            self.app.notify(t(f"Deleted profile: {self._profile_name}", f"프로필 삭제됨: {self._profile_name}"))
+            if not delete_config
+            else ""
+        )
+        self.app.notify(
+            t(f"Deleted profile: {self._profile_name}", f"프로필 삭제됨: {self._profile_name}")
+            + suffix
+        )
         self.dismiss(True)
 
     @on(Button.Pressed, "#cancel-btn")

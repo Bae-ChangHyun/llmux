@@ -15,7 +15,6 @@ from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Sta
 from tui.backends.llamacpp.backend import (
     CONFIG_DIR,
     Config,
-    delete_config,
     extract_llama_server_flags,
     format_config_param_value,
     list_config_names,
@@ -26,6 +25,7 @@ from tui.backends.llamacpp.backend import (
     save_config,
     validate_name,
 )
+from tui.common import profile_store
 from tui.common.i18n import t
 from tui.common.widgets import TextPromptModal
 
@@ -94,10 +94,6 @@ LLAMA_SERVER_FLAGS: dict[str, tuple[str, str]] = {
     "host":             ("bind host (docker override 에 의해 강제됨)", "0.0.0.0"),
     "port":             ("bind port (docker override 에 의해 강제됨)", "8080"),
 }
-
-
-_KNOWN_FLAGS: set[str] = set(LLAMA_SERVER_FLAGS.keys())
-_FLAG_SUGGESTER = SuggestFromList(sorted(_KNOWN_FLAGS), case_sensitive=False)
 
 
 class ConfigFormScreen(ModalScreen[str | None]):
@@ -222,11 +218,21 @@ class ConfigFormScreen(ModalScreen[str | None]):
         self._original_name = config_name
         self._param_counter = 0
         self._initial_config: Config | None = None
+        self._initial_text: str | None = None
         self._saved_name: str | None = None
+        self._known_flags = set(LLAMA_SERVER_FLAGS)
+        self._flag_suggester = SuggestFromList(
+            sorted(self._known_flags), case_sensitive=False
+        )
 
     def compose(self) -> ComposeResult:
         if self._edit_mode:
-            self._initial_config = load_config(self._config_name)
+            path = CONFIG_DIR / f"{self._config_name}.yaml"
+            with profile_store.storage_transaction():
+                if not path.exists():
+                    raise ValueError(f"config not found: {path}")
+                self._initial_text = path.read_text()
+                self._initial_config = load_config(self._config_name)
         title = (
             t(f"Edit Config: {self._config_name}", f"Config 편집: {self._config_name}")
             if self._edit_mode
@@ -270,17 +276,41 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 self._add_param_row(key, ex)
         self._load_server_flags()
 
+    def _profile_image(self) -> str:
+        if not self._config_name:
+            return ""
+        images = {
+            load_profile(name).image_tag or ""
+            for name in list_profile_names()
+            if load_profile(name).config_name == self._config_name
+        }
+        if len(images) > 1:
+            raise RuntimeError(
+                f"config '{self._config_name}' is used with multiple images; "
+                "flag discovery requires one image"
+            )
+        return next(iter(images), "")
+
     @work(exclusive=False)
     async def _load_server_flags(self) -> None:
-        global _KNOWN_FLAGS, _FLAG_SUGGESTER
-        extracted = await extract_llama_server_flags()
+        try:
+            extracted = await extract_llama_server_flags(self._profile_image())
+        except RuntimeError as exc:
+            self.notify(
+                t(
+                    f"Could not inspect llama.cpp flags: {exc}",
+                    f"llama.cpp 플래그를 확인할 수 없습니다: {exc}",
+                ),
+                severity="error",
+            )
+            return
         if extracted:
-            _KNOWN_FLAGS.update(extracted)
-            _FLAG_SUGGESTER = SuggestFromList(
-                sorted(_KNOWN_FLAGS), case_sensitive=False
+            self._known_flags = set(extracted)
+            self._flag_suggester = SuggestFromList(
+                sorted(self._known_flags), case_sensitive=False
             )
             for inp in self.query(".param-key"):
-                inp.suggester = _FLAG_SUGGESTER
+                inp.suggester = self._flag_suggester
 
     def _add_param_row(
         self, key: str = "", value: str = "", *, focus: bool = False, enabled: bool = True
@@ -291,7 +321,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
         key_input = Input(
             value=key,
             placeholder=t("flag-name (Tab: autocomplete)", "flag-name (Tab: 자동완성)"),
-            suggester=_FLAG_SUGGESTER,
+            suggester=self._flag_suggester,
             classes="param-key",
         )
         # Switch off → saved as a disabled comment marker (kept, not served).
@@ -324,7 +354,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
             desc, example = info
             ex_suffix = f"  [dim](예: {example})[/dim]" if example else ""
             help_widget.update(f"[b]{key}[/b]: {desc}{ex_suffix}")
-        elif key in _KNOWN_FLAGS:
+        elif key in self._known_flags:
             help_widget.update(f"[b]{key}[/b]: [dim](llama-server --help 에 존재)[/dim]")
         else:
             help_widget.update("")
@@ -366,13 +396,6 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 severity="error",
             )
             return
-        # File existence, not `in list_config_names()` — that helper filters
-        # out `example`, so a config named "example" passed the check and
-        # silently overwrote the tracked example.yaml.
-        if not self._edit_mode and (CONFIG_DIR / f"{name}.yaml").exists():
-            self.notify(t(f"Config '{name}' already exists", f"Config '{name}' 이미 존재"), severity="error")
-            return
-
         params: dict[str, Any] = {}
         disabled_params: dict[str, Any] = {}
         seen: set[str] = set()
@@ -394,7 +417,7 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 return
             (params if switch.value else disabled_params)[key] = parsed
 
-        unknown = [k for k in params if k not in _KNOWN_FLAGS]
+        unknown = [k for k in params if k not in self._known_flags]
         if unknown:
             self.notify(
                 t(
@@ -406,14 +429,29 @@ class ConfigFormScreen(ModalScreen[str | None]):
             )
 
         cfg = Config(name=name, params=params, disabled_params=disabled_params)
-        if (
-            self._edit_mode
-            and name != self._original_name
-            and not await self._rename_to(name)
-        ):
-            return
-
-        save_config(cfg)
+        renaming = self._edit_mode and name != self._original_name
+        if renaming:
+            if not await self._rename_to(name, cfg):
+                return
+        else:
+            try:
+                path = CONFIG_DIR / f"{name}.yaml"
+                with profile_store.storage_transaction():
+                    if self._edit_mode:
+                        if not path.exists():
+                            raise ValueError(f"config not found: {path}")
+                        if path.read_text() != self._initial_text:
+                            raise ValueError(
+                                f"config changed since it was opened: {path}; "
+                                "reload before saving"
+                            )
+                    elif path.exists():
+                        raise ValueError(f"config already exists: {path}")
+                    save_config(cfg)
+                    self._initial_text = path.read_text()
+            except (OSError, RuntimeError, ValueError) as exc:
+                self.notify(str(exc), severity="error", timeout=8)
+                return
         self.notify(t(f"Saved: {name}", f"저장: {name}"), severity="information")
         self._saved_name = name
 
@@ -425,14 +463,9 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 t(f"[b]Edit Config: {name}[/b]", f"[b]Config 편집: {name}[/b]")
             )
 
-    async def _rename_to(self, new_name: str) -> bool:
-        """Rename the config being edited. False = refused, caller must abort.
-
-        Goes through config_store so profiles referencing this config are
-        repointed in the same step, and so a referencing profile whose
-        container is still up blocks the rename.
-        """
+    async def _rename_to(self, new_name: str, config: Config) -> bool:
         from tui.common import config_store, docker as common_docker
+        from tui.common.config_markers import dump_active_config, render_disabled_markers
 
         old_name = self._original_name
         try:
@@ -458,8 +491,20 @@ class ConfigFormScreen(ModalScreen[str | None]):
                 )
                 return False
         try:
-            config_store.rename_config("llamacpp", old_name, new_name)
-        except ValueError as exc:
+            def serialize(source: str) -> str:
+                replacement = dump_active_config(source, config.params)
+                return replacement + render_disabled_markers(config.disabled_params)
+
+            with profile_store.storage_transaction():
+                config_store.rename_config(
+                    "llamacpp",
+                    old_name,
+                    new_name,
+                    replacement=serialize,
+                    expected_text=self._initial_text,
+                )
+                self._initial_text = (CONFIG_DIR / f"{new_name}.yaml").read_text()
+        except (OSError, RuntimeError, ValueError) as exc:
             self.notify(str(exc), severity="error")
             return False
 
@@ -553,13 +598,13 @@ class ConfirmDeleteConfigScreen(ModalScreen[bool]):
 
     @on(Button.Pressed, "#confirm-yes")
     def _on_yes(self, event: Button.Pressed) -> None:
-        delete_config(self._config_name)
-        # 참조 프로필의 CONFIG_NAME 을 빈값으로 (단순 clear)
-        from tui.backends.llamacpp.backend import save_profile
-        for profile_name in self._referencing:
-            p = load_profile(profile_name)
-            p.config_name = ""
-            save_profile(p)
+        from tui.common import config_store
+
+        try:
+            config_store.delete_config("llamacpp", self._config_name)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.app.notify(str(exc), severity="error", timeout=8)
+            return
         self.app.notify(t(f"Deleted: {self._config_name}", f"삭제됨: {self._config_name}"))
         self.dismiss(True)
 
@@ -655,12 +700,20 @@ class ConfigListScreen(Screen):
             if not validate_name(new_name):
                 self.notify(t("Name must be lowercase letters/digits/dashes/underscores", "이름은 소문자/숫자/대시/언더스코어"), severity="error")
                 return
-            if (CONFIG_DIR / f"{new_name}.yaml").exists():
-                self.notify(t(f"Config '{new_name}' already exists", f"Config '{new_name}' 이미 존재"), severity="error")
+            try:
+                with profile_store.storage_transaction():
+                    source = CONFIG_DIR / f"{name}.yaml"
+                    destination = CONFIG_DIR / f"{new_name}.yaml"
+                    if not source.exists():
+                        raise ValueError(f"config not found: {source}")
+                    if destination.exists():
+                        raise ValueError(f"config already exists: {destination}")
+                    cfg = load_config(name)
+                    cfg.name = new_name
+                    save_config(cfg)
+            except (OSError, RuntimeError, ValueError) as exc:
+                self.notify(str(exc), severity="error", timeout=8)
                 return
-            cfg = load_config(name)
-            cfg.name = new_name
-            save_config(cfg)
             self._refresh_table()
             self.notify(t(f"Cloned: '{name}' → '{new_name}'", f"복제: '{name}' → '{new_name}'"))
 
